@@ -55,6 +55,11 @@ module.exports = {
       watch: false,
       env: {
         NODE_ENV: 'production',
+        // Hardcode the gateway URL here so it ALWAYS reaches the gateway via
+        // IPv4 — avoids the IPv6/localhost ambiguity where Next.js fetches
+        // `::1` (IPv6) but the gateway only listens on `127.0.0.1` (IPv4).
+        // Override per-deploy via packages/admin/.env.local if you change ports.
+        SIBERGATE_GATEWAY_URL: 'http://127.0.0.1:8009',
       },
       out_file: './logs/sibergate-admin-out.log',
       error_file: './logs/sibergate-admin-error.log',
