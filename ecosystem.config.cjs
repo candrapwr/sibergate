@@ -41,10 +41,12 @@ module.exports = {
     {
       name: 'sibergate-admin',
       // Admin = Next.js production server. Requires `npm run build` once first
-      // (so packages/admin/.next exists). Runs from packages/admin so Next.js
-      // finds its .next + .env.local there.
-      script: 'node_modules/.bin/next',
-      args: 'start -p ${SIBERGATE_ADMIN_PORT:-3000}',
+      // (so packages/admin/.next exists). Uses scripts/start.mjs (same loader
+      // npm start uses) so SIBERGATE_ADMIN_PORT is read from packages/admin/.env.local
+      // BEFORE next starts — the shell `${...}` expansion otherwise happens too
+      // early and always falls back to 3000.
+      script: 'scripts/start.mjs',
+      args: 'start',
       cwd: `${__dirname}/packages/admin`,
       instances: 1,
       exec_mode: 'fork',
