@@ -1,0 +1,27 @@
+{
+  "name": "sibergate",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SiberGate — a simple, fast, self-hosted OpenAI-compatible AI gateway with smart routing (fallback, fastest, load balancing).",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build:core": "npm run build -w @sibergate/core",
+    "dev": "npm run build:core && concurrently -n gateway,admin -c blue,magenta \"tsx watch packages/gateway/src/index.ts\" \"npm run dev -w @sibergate/admin\"",
+    "dev:gateway": "npm run build:core && tsx watch packages/gateway/src/index.ts",
+    "dev:admin": "npm run dev -w @sibergate/admin",
+    "start": "npm run build:core && tsx packages/gateway/src/index.ts",
+    "seed": "npm run build:core && tsx scripts/seed.ts",
+    "build": "npm run build -w @sibergate/core && npm run build -w @sibergate/gateway",
+    "clean": "rm -rf packages/*/dist packages/*/.next packages/*/tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

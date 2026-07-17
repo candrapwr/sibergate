@@ -1,0 +1,33 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.tsbuildinfo.*
+.next/
+.next-*
+
+# Env
+.env
+.env.local
+!.env.example
+!.env.local.example
+
+# SQLite (runtime data)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Auto-generated encryption master key
+.sibergate/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

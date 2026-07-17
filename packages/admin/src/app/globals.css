@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * SiberGate admin theme — dark-only, tuned to the siber ecosystem palette.
+ * siberflow desktop uses: bg #1a1a1a, sidebar #161616, accent #4daafc,
+ * fg #d4d4d4, success #6abf6e, warning #d9b14a, danger #e07070.
+ *
+ * shadcn expects HSL triplets (no hsl() wrapper) in CSS variables.
+ * Conversions: #1a1a1a≈220 13% 9%, #4daafc≈210 96% 64%, #d4d4d4≈0 0% 83%.
+ */
+@layer base {
+  :root {
+    --background: 220 13% 9%;          /* #1a1a1a main bg */
+    --foreground: 0 0% 83%;            /* #d4d4d4 primary text */
+
+    --card: 222 11% 12%;               /* #1e1e1e surface */
+    --card-foreground: 0 0% 83%;
+
+    --popover: 222 11% 12%;
+    --popover-foreground: 0 0% 83%;
+
+    --primary: 210 96% 64%;            /* #4daafc sky-blue accent */
+    --primary-foreground: 220 13% 9%;
+
+    --secondary: 220 6% 16%;           /* #252526 alt surface */
+    --secondary-foreground: 0 0% 83%;
+
+    --muted: 220 6% 16%;
+    --muted-foreground: 220 5% 54%;    /* #8a8a8a secondary text */
+
+    --accent: 210 96% 64%;             /* same as primary for focus states */
+    --accent-foreground: 220 13% 9%;
+
+    --destructive: 0 56% 66%;          /* #e07070 danger */
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 6% 20%;              /* #333333 */
+    --input: 222 11% 12%;
+    --ring: 210 96% 64%;               /* focus ring = accent */
+
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-size: 13px;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+}
+
+/* Thin custom scrollbars (siberflow convention) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(220 6% 20%);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(220 6% 26%);
+}

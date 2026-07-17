@@ -1,0 +1,16 @@
+{
+  "name": "@sibergate/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@sibergate/core": "0.1.0",
+    "hono": "^4.6.14",
+    "@hono/node-server": "^1.13.7"
+  }
+}
