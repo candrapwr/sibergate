@@ -15,6 +15,7 @@ import {
   RefreshCw,
   Clapperboard,
   LogOut,
+  Users,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSystem, useReload } from '@/lib/queries';
@@ -28,6 +29,7 @@ const NAV = [
   { href: '/models', label: 'Models', icon: Cpu },
   { href: '/routes', label: 'Routes', icon: Route },
   { href: '/api-keys', label: 'API Keys', icon: KeyRound },
+  { href: '/users', label: 'Users', icon: Users },
   { href: '/logs', label: 'Logs', icon: ScrollText },
   { href: '/playground', label: 'Chat Playground', icon: MessageSquare },
   { href: '/playground/media', label: 'Media Lab', icon: Clapperboard },

@@ -1,5 +1,16 @@
 import { Hono } from 'hono';
-import { admin, ConfigStore, ConflictError, KNOWN_PROVIDERS, type SiberGateConfig } from '@sibergate/core';
+import {
+  admin,
+  ConfigStore,
+  ConflictError,
+  KNOWN_PROVIDERS,
+  createUser,
+  deleteUser,
+  listUsers,
+  setUserStatus,
+  updateUser,
+  type SiberGateConfig,
+} from '@sibergate/core';
 import { adminAuthMiddleware } from './admin-middleware.js';
 
 /**
@@ -199,6 +210,55 @@ export function createAdminRouter(configStore: ConfigStore) {
 
   // Detailed usage matrix: tokens + cost grouped by provider × model.
   app.get('/usage', (c) => c.json({ data: admin.usageMatrix() }));
+
+  /* ─────────────────────────────── /admin/users ─────────────────────────── */
+  app.get('/users', (c) => c.json({ data: listUsers() }));
+
+  app.post('/users', async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      email?: string;
+      name?: string;
+      password?: string;
+      role?: string;
+    };
+    if (!body.email || !body.password) {
+      return c.json({ error: { message: 'email and password are required.', type: 'invalid_request_error', param: null, code: null } }, 400);
+    }
+    try {
+      const user = createUser({ email: body.email, name: body.name ?? body.email, password: body.password, role: body.role ?? 'admin' });
+      reload();
+      return c.json(user, 201);
+    } catch {
+      return c.json({ error: { message: 'A user with that email already exists.', type: 'conflict_error', param: 'email', code: 'duplicate' } }, 409);
+    }
+  });
+
+  app.patch('/users/:id', async (c) => {
+    const id = c.req.param('id');
+    const body = (await c.req.json().catch(() => ({}))) as {
+      name?: string;
+      role?: string;
+      password?: string;
+      status?: 'active' | 'disabled';
+    };
+    if (body.status) {
+      setUserStatus(id, body.status);
+    }
+    if (body.name || body.role || body.password) {
+      updateUser(id, { name: body.name, role: body.role, password: body.password });
+    }
+    reload();
+    return c.json({ ok: true });
+  });
+
+  app.delete('/users/:id', (c) => {
+    const ok = deleteUser(c.req.param('id'));
+    if (!ok) return c.json(notFound('user'), 404);
+    reload();
+    return c.json({ ok: true });
+  });
+
+  // Map domain errors to clean HTTP responses.
 
   /* ─────────────────────────── /admin/bulk operations ─────────────────── */
   app.post('/import-providers', (c) => {
