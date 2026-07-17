@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev -p 3000",
+    "dev": "next dev -p ${SIBERGATE_ADMIN_PORT:-3000}",
     "build": "next build",
-    "start": "next start -p 3000",
+    "start": "next start -p ${SIBERGATE_ADMIN_PORT:-3000}",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf .next dist *.tsbuildinfo"
