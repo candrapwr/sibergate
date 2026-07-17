@@ -4,9 +4,13 @@ import {
   ConfigStore,
   ConflictError,
   KNOWN_PROVIDERS,
+  backupToJson,
+  createBackup,
   createUser,
   deleteUser,
   listUsers,
+  parseBackup,
+  restoreBackup,
   setUserStatus,
   updateUser,
   type SiberGateConfig,
@@ -281,6 +285,34 @@ export function createAdminRouter(configStore: ConfigStore) {
     const removed = admin.clearAllData();
     reload();
     return c.json({ ok: true, removed });
+  });
+
+  /* ─────────────────────────── /admin/backup & restore ─────────────────── */
+  // Download a full backup (DB + master key) as a JSON file.
+  app.get('/backup', (c) => {
+    try {
+      const payload = createBackup();
+      const json = backupToJson(payload);
+      const filename = `sibergate-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      c.header('Content-Type', 'application/json');
+      c.header('Content-Disposition', `attachment; filename="${filename}"`);
+      return c.body(json);
+    } catch (err) {
+      return c.json({ error: { message: (err as Error).message, type: 'backup_error' } }, 500);
+    }
+  });
+
+  // Restore from an uploaded backup JSON. Overwrites DB + master key.
+  // The process should be restarted after restore.
+  app.post('/restore', async (c) => {
+    const body = (await c.req.json().catch(() => null)) as { confirm?: string; db?: string; masterKey?: string };
+    if (!body) return c.json({ error: { message: 'Invalid backup payload.', type: 'invalid_request_error' } }, 400);
+    try {
+      restoreBackup(parseBackup(JSON.stringify(body)));
+      return c.json({ ok: true, message: 'Restore complete. Restart the gateway to apply.' });
+    } catch (err) {
+      return c.json({ error: { message: (err as Error).message, type: 'restore_error' } }, 500);
+    }
   });
 
   // Map domain errors to clean HTTP responses.
