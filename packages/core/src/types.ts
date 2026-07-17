@@ -36,6 +36,7 @@ export type ModelModality =
   | 'text-to-text'
   | 'vision'
   | 'image-generation'
+  | 'video-generation'
   | 'audio'
   | 'audio-transcription'
   | 'embeddings';

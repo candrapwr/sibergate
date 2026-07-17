@@ -406,6 +406,102 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
       { id: 'meta-llama/Llama-3.3-70B-Instruct', displayName: 'Llama 3.3 70B', modalities: ['text-to-text'], capabilities: { supports_streaming: true, supports_tools: true } },
     ],
   },
+  {
+    id: 'zai',
+    name: 'Z.AI',
+    baseUrl: 'https://api.z.ai',
+    authScheme: 'bearer',
+    apiKeyEnv: 'ZAI_API_KEY',
+    docsUrl: 'https://docs.z.ai/guides/overview/pricing',
+    endpoints: {
+      chat: '/api/paas/v4/chat/completions',
+    },
+    models: [
+      // Text models (flagship)
+      { id: 'glm-5.2', displayName: 'GLM-5.2', modalities: ['text-to-text'], contextWindow: 1000000, maxOutput: 128000, inputPricePer1m: 1.4, outputPricePer1m: 4.4, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-5.1', displayName: 'GLM-5.1', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 1.4, outputPricePer1m: 4.4, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-5', displayName: 'GLM-5', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 1, outputPricePer1m: 3.2, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-5-turbo', displayName: 'GLM-5-Turbo', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 1.2, outputPricePer1m: 4.0, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      // Text models (general-purpose)
+      { id: 'glm-4.7', displayName: 'GLM-4.7', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 0.6, outputPricePer1m: 2.2, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-4.7-flashx', displayName: 'GLM-4.7-FlashX', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 0.07, outputPricePer1m: 0.4, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.6', displayName: 'GLM-4.6', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 0.6, outputPricePer1m: 2.2, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-4.5', displayName: 'GLM-4.5', modalities: ['text-to-text'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0.6, outputPricePer1m: 2.2, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'glm-4.5-x', displayName: 'GLM-4.5-X', modalities: ['text-to-text'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 2.2, outputPricePer1m: 8.9, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.5-air', displayName: 'GLM-4.5-Air', modalities: ['text-to-text'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0.2, outputPricePer1m: 1.1, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.5-airx', displayName: 'GLM-4.5-AirX', modalities: ['text-to-text'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 1.1, outputPricePer1m: 4.5, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4-32b-0414-128k', displayName: 'GLM-4-32B-0414', modalities: ['text-to-text'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0.1, outputPricePer1m: 0.1, capabilities: { supports_streaming: true, supports_tools: true } },
+      // Free text models
+      { id: 'glm-4.7-flash', displayName: 'GLM-4.7-Flash (free)', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 0, outputPricePer1m: 0, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.5-flash', displayName: 'GLM-4.5-Flash (free)', modalities: ['text-to-text'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 0, outputPricePer1m: 0, capabilities: { supports_streaming: true, supports_tools: true } },
+      // Vision models
+      { id: 'glm-5v-turbo', displayName: 'GLM-5V-Turbo', modalities: ['text-to-text', 'vision'], contextWindow: 200000, maxOutput: 128000, inputPricePer1m: 1.2, outputPricePer1m: 4.0, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.6v', displayName: 'GLM-4.6V', modalities: ['text-to-text', 'vision'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0.3, outputPricePer1m: 0.9, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-ocr', displayName: 'GLM-OCR', modalities: ['text-to-text', 'vision'], inputPricePer1m: 0.03, outputPricePer1m: 0.03 },
+      { id: 'glm-4.6v-flashx', displayName: 'GLM-4.6V-FlashX', modalities: ['text-to-text', 'vision'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0.04, outputPricePer1m: 0.4, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.5v', displayName: 'GLM-4.5V', modalities: ['text-to-text', 'vision'], contextWindow: 64000, maxOutput: 64000, inputPricePer1m: 0.6, outputPricePer1m: 1.8, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'glm-4.6v-flash', displayName: 'GLM-4.6V-Flash (free)', modalities: ['text-to-text', 'vision'], contextWindow: 128000, maxOutput: 128000, inputPricePer1m: 0, outputPricePer1m: 0, capabilities: { supports_streaming: true } },
+      // Image generation
+      { id: 'glm-image', displayName: 'GLM-Image', modalities: ['image-generation'] },
+      { id: 'cogview-4', displayName: 'CogView-4', modalities: ['image-generation'] },
+      // Video generation
+      { id: 'cogvideox-3', displayName: 'CogVideoX-3', modalities: ['video-generation'] },
+      { id: 'viduq1-text', displayName: 'ViduQ1-Text', modalities: ['video-generation'] },
+      { id: 'viduq1-image', displayName: 'ViduQ1-Image', modalities: ['video-generation'] },
+      { id: 'viduq1-start-end', displayName: 'ViduQ1-Start-End', modalities: ['video-generation'] },
+      { id: 'vidu2-image', displayName: 'Vidu2-Image', modalities: ['video-generation'] },
+      { id: 'vidu2-start-end', displayName: 'Vidu2-Start-End', modalities: ['video-generation'] },
+      { id: 'vidu2-reference', displayName: 'Vidu2-Reference', modalities: ['video-generation'] },
+      // Audio (ASR)
+      { id: 'glm-asr-2512', displayName: 'GLM-ASR-2512', modalities: ['audio-transcription'] },
+    ],
+  },
+  {
+    id: 'qwencloud',
+    name: 'Qwen Cloud',
+    baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    authScheme: 'bearer',
+    apiKeyEnv: 'DASHSCOPE_API_KEY',
+    docsUrl: 'https://docs.qwencloud.com/developer-guides/getting-started/pricing',
+    models: [
+      // Qwen3.7 — flagship reasoning & coding
+      { id: 'qwen3.7-max', displayName: 'Qwen3.7-Max', modalities: ['text-to-text'], contextWindow: 1000000, maxOutput: 65536, inputPricePer1m: 2.5, outputPricePer1m: 7.5, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'qwen3.7-plus', displayName: 'Qwen3.7-Plus', modalities: ['text-to-text', 'vision'], contextWindow: 1000000, maxOutput: 65536, inputPricePer1m: 0.4, outputPricePer1m: 1.6, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'qwen3.6-flash', displayName: 'Qwen3.6-Flash', modalities: ['text-to-text', 'vision'], contextWindow: 1000000, maxOutput: 65536, inputPricePer1m: 0.25, outputPricePer1m: 1.5, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'qwen3.6-max-preview', displayName: 'Qwen3.6-Max Preview', modalities: ['text-to-text'], contextWindow: 256000, maxOutput: 65536, inputPricePer1m: 1.3, outputPricePer1m: 7.8, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'qwen3.6-plus', displayName: 'Qwen3.6-Plus', modalities: ['text-to-text', 'vision'], contextWindow: 1000000, maxOutput: 65536, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      // Qwen3.5 series
+      { id: 'qwen3.5-plus', displayName: 'Qwen3.5-Plus', modalities: ['text-to-text', 'vision'], contextWindow: 1000000, maxOutput: 65536, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      { id: 'qwen3.5-flash', displayName: 'Qwen3.5-Flash', modalities: ['text-to-text', 'vision'], contextWindow: 1000000, maxOutput: 65536, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },
+      // Vision models
+      { id: 'qwen3-vl-plus', displayName: 'Qwen3-VL-Plus', modalities: ['text-to-text', 'vision'], contextWindow: 256000, maxOutput: 65536, inputPricePer1m: 0.2, outputPricePer1m: 1.6, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'qwen3-vl-flash', displayName: 'Qwen3-VL-Flash', modalities: ['text-to-text', 'vision'], contextWindow: 256000, maxOutput: 65536, inputPricePer1m: 0.05, outputPricePer1m: 0.4, capabilities: { supports_streaming: true, supports_tools: true } },
+      // Omni (speech-to-speech)
+      { id: 'qwen3.5-omni-plus', displayName: 'Qwen3.5-Omni-Plus', modalities: ['text-to-text', 'vision', 'audio'], inputPricePer1m: 1.4, outputPricePer1m: 8.3, capabilities: { supports_streaming: true, supports_tools: true } },
+      { id: 'qwen3.5-omni-flash', displayName: 'Qwen3.5-Omni-Flash', modalities: ['text-to-text', 'vision', 'audio'], inputPricePer1m: 0.4, outputPricePer1m: 2.2, capabilities: { supports_streaming: true, supports_tools: true } },
+      // Image generation
+      { id: 'qwen-image-2.0-pro', displayName: 'Qwen Image 2.0 Pro', modalities: ['image-generation'] },
+      { id: 'qwen-image-2.0', displayName: 'Qwen Image 2.0', modalities: ['image-generation'] },
+      { id: 'qwen-image-edit', displayName: 'Qwen Image Edit', modalities: ['image-generation'] },
+      { id: 'wan2.6-t2i', displayName: 'Wan 2.6 T2I', modalities: ['image-generation'] },
+      // Video generation
+      { id: 'wan2.6-t2v', displayName: 'Wan 2.6 T2V', modalities: ['video-generation'] },
+      { id: 'wan2.6-i2v', displayName: 'Wan 2.6 I2V', modalities: ['video-generation'] },
+      { id: 'wan2.6-i2v-flash', displayName: 'Wan 2.6 I2V Flash', modalities: ['video-generation'] },
+      // Text-to-speech
+      { id: 'cosyvoice-v3-plus', displayName: 'CosyVoice v3 Plus', modalities: ['audio'] },
+      { id: 'cosyvoice-v3-flash', displayName: 'CosyVoice v3 Flash', modalities: ['audio'] },
+      { id: 'qwen3-tts-flash', displayName: 'Qwen3 TTS Flash', modalities: ['audio'] },
+      // Speech-to-text
+      { id: 'fun-asr', displayName: 'Fun ASR', modalities: ['audio-transcription'] },
+      { id: 'qwen3-asr-flash', displayName: 'Qwen3 ASR Flash', modalities: ['audio-transcription'] },
+      // Embeddings & Rerank
+      { id: 'text-embedding-v4', displayName: 'Text Embedding v4', modalities: ['embeddings'] },
+      { id: 'tongyi-embedding-vision-plus', displayName: 'Tongyi Embedding Vision Plus', modalities: ['embeddings'] },
+      { id: 'tongyi-embedding-vision-flash', displayName: 'Tongyi Embedding Vision Flash', modalities: ['embeddings'] },
+      { id: 'qwen3-rerank', displayName: 'Qwen3 Rerank', modalities: ['embeddings'] },
+    ],
+  },
 ];
 
 /** Flatten: count of providers and models in the catalog. */

@@ -14,7 +14,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
 
-const MODALITIES = ['text-to-text', 'vision', 'image-generation', 'audio', 'audio-transcription', 'embeddings'];
+const MODALITIES = ['text-to-text', 'vision', 'image-generation', 'video-generation', 'audio', 'audio-transcription', 'embeddings'];
 
 export default function ModelsPage() {
   const { data, isLoading } = useModels();
