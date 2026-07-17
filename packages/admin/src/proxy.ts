@@ -12,7 +12,7 @@ const PUBLIC_PATHS = ['/login', '/api/auth'];
  * /api/auth/me routes) — here we only do a fast presence check to avoid a
  * redirect loop and keep logged-out users out of the app shell.
  */
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   // Static assets and Next internals are always allowed.
