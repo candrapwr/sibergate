@@ -101,20 +101,16 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(updated);
   });
 
-  // Partial update (e.g. toggle enabled). Merge onto the existing row so a
-  // bare {enabled:false} works without re-supplying required fields.
+  // Partial update (e.g. toggle enabled). Merge onto the FULL existing row so a
+  // bare {enabled:false} preserves every other field (context window, prices,
+  // capabilities, modalities) — previously those were wiped to null.
   app.patch('/models/:id', async (c) => {
     const id = c.req.param('id');
     const existing = admin.getModel(id) as Record<string, unknown> | null;
     if (!existing) return c.json(notFound('model'), 404);
     const body = await c.req.json();
-    const merged = {
-      id,
-      provider: existing.provider,
-      displayName: existing.displayName,
-      modalities: existing.modalities,
-      ...body,
-    };
+    // Start from ALL existing fields, then apply the patch on top.
+    const merged = { ...existing, ...body, id };
     const updated = admin.upsertModel(merged);
     reload();
     return c.json(updated);
@@ -149,18 +145,14 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(updated);
   });
 
-  // Partial update (e.g. toggle enabled). Merge onto the existing row so a
-  // bare {enabled:false} works without re-supplying targets/required fields.
+  // Partial update (e.g. toggle enabled). Merge onto the FULL existing row so a
+  // bare {enabled:false} preserves modality, timeout, retryOn, targets, etc.
   app.patch('/routes/:id', async (c) => {
     const id = c.req.param('id');
     const existing = admin.getRouteRow(id) as Record<string, unknown> | null;
     if (!existing) return c.json(notFound('route'), 404);
     const body = await c.req.json();
-    const merged = {
-      id,
-      strategy: existing.strategy,
-      ...body,
-    };
+    const merged = { ...existing, ...body, id };
     const updated = admin.upsertRoute(merged);
     reload();
     return c.json(updated);
