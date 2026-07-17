@@ -2,71 +2,82 @@
 
 # 🚪 SiberGate
 
-**The self-hosted AI gateway that routes intelligently across every provider.**
+**Gateway AI self-hosted yang merutekan secara cerdas ke seluruh provider.**
 
-One OpenAI-compatible endpoint. Six modalities. Smart fallback, fastest-pick,
-and load balancing — all on your own infrastructure, with zero markup.
+Satu endpoint kompatibel OpenAI. Enam modalitas. Failover otomatis, pemilihan
+ tercepat, dan load balancing — semuanya di infrastruktur Anda sendiri, tanpa
+ markup.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Lisensi: MIT](https://img.shields.io/badge/lisensi-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
-[![Providers](https://img.shields.io/badge/providers-16-orange.svg)](#-built-in-catalog)
-[![Models](https://img.shields.io/badge/models-149-orange.svg)](#-built-in-catalog)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
+[![Provider](https://img.shields.io/badge/provider-16-orange.svg)](#-katalog-bawaan)
+[![Model](https://img.shields.io/badge/model-149-orange.svg)](#-katalog-bawaan)
+[![PR diterima](https://img.shields.io/badge/PR-diterima-brightgreen.svg)](#-berkontribusi)
 
 </div>
 
 ---
 
-> 🌐 **Part of the [Siber Ecosystem](https://datasiber.com)** — built & maintained by **DataSiberLab**.
+> 📖 **[Read in English](./README.en.md)** · 🌐 **Bagian dari [Ekosistem Siber](https://datasiber.com)** — dibangun & dirawat oleh **DataSiberLab**.
 
-SiberGate is a privacy-first, open-source **reverse proxy** that sits in front of
-your LLM, image, audio, and embedding providers. Instead of hard-coding one
-vendor into every app, you point your clients at SiberGate and let it handle the
-hard parts: routing, failover, load balancing, cost tracking, and credential
-management — all through a clean admin dashboard.
+SiberGate adalah **reverse proxy** open-source yang berdiri di depan provider
+LLM, gambar, audio, dan embedding Anda. Alih-alih meng-hard-code satu vendor ke
+setiap aplikasi, Anda arahkan klien ke SiberGate dan biarkan ia mengurus
+bagian sulitnya: routing, failover, load balancing, pelacakan biaya, dan
+manajemen kredensial — semuanya lewat dashboard admin yang bersih.
 
 ```bash
-# Point any OpenAI SDK client at SiberGate — that's it.
+# Arahkan klien OpenAI SDK apa pun ke SiberGate — selesai.
 const client = new OpenAI({ baseURL: "http://localhost:8787/v1", apiKey: "sg_live_..." });
 await client.chat.completions.create({ model: "smart", messages: [...] });
 ```
 
 <p align="center">
-  <img src="images/dashboard.png" alt="SiberGate Admin Dashboard" width="100%" />
+  <img src="images/dashboard.png" alt="Dashboard Admin SiberGate" width="100%" />
 </p>
 
 ---
 
-## ✨ Why SiberGate?
+## ✨ Apakah SiberGate cocok untuk Anda?
 
-| | OpenRouter / SaaS gateways | **SiberGate** |
-|---|---|---|
-| 🏠 **Where it runs** | Their cloud | **Your machine** |
-| 🔑 **API keys** | They hold them | **You hold them** (AES-256-GCM encrypted) |
-| 💰 **Cost** | + markup per token | **0 markup** — you pay providers directly |
-| 🔒 **Privacy** | Data flows through them | **Data never leaves your infra** |
-| 🎛️ **Control** | Their UI, their limits | **Full control** — self-host, your rules |
-| 🚀 **Setup** | Signup + credits | `npm run seed && npm start` |
+SiberGate adalah gateway **self-hosted** — Anda menjalankannya di mesin sendiri,
+dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut penting:
 
-### 🎯 Key features
+- 🔒 **Privasi & lokasi data** — prompt dan respons tetap di dalam infrastruktur
+  Anda. Tidak ada yg dirutekan lewat pihak ketiga. Ideal untuk industri teregulasi,
+  beban kerja sensitif, atau sekadar menghargai data Anda.
+- 💰 **Tanpa markup** — Anda memanggil provider dengan key sendiri dan membayar
+  mereka langsung. Tidak ada biaya perantara di atas setiap token.
+- 🎛️ **Kontrol penuh** — Anda punya logic routing, brankas key, log, dan
+  dashboard. Tidak ada akun yang bisa di-rate-limit atau dibekukan.
+- 🎨 **Lebih dari sekadar chat** — gambar, suara, transkripsi, embedding, bahkan
+  text-to-music lewat satu gateway, dengan strategi routing untuk masing-masing.
+- 💾 **SQLite tanpa ops** — satu file, tidak perlu Postgres atau Redis untuk
+  deployment single-node. Portabel, mudah backup, mudah dipahami.
 
-- **🔌 One endpoint, all providers** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, and 10+ more, unified behind the OpenAI API you already use.
-- **🧠 Smart routing** — `fallback` (auto-failover), `fastest` (lowest-latency pick), `weighted` (load balancing). Strategies apply to every modality.
-- **🎨 Six modalities** — chat, image generation, text-to-speech, transcription, embeddings, and **text-to-music** (DeepInfra ACE-Step).
-- **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
-- **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys are encrypted at rest, decrypted transiently at request time, and never logged.
-- **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model, live dashboard with charts.
-- **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
-- **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
-- **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
+> Lebih suka layanan fully managed tanpa infrastruktur dengan marketplace publik?
+> Itu kategori berbeda, dan banyak pilihan bagus di sana. SiberGate untuk saat
+> Anda ingin **memiliki gateway-nya sendiri**.
+
+### 🎯 Fitur unggulan
+
+- **🔌 Satu endpoint, semua provider** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, dan 10+ lainnya, disatukan di balik API OpenAI yang sudah Anda pakai.
+- **🧠 Routing cerdas** — `fallback` (failover otomatis), `fastest` (pilih latency terendah), `weighted` (load balancing). Strategi berlaku untuk semua modalitas.
+- **🎨 Enam modalitas** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step).
+- **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
+- **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log.
+- **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model, dashboard live dengan grafik.
+- **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
+- **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
+- **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Mulai cepat
 
-### Prerequisites
-- [Node.js](https://nodejs.org) ≥ 20 (or [Bun](https://bun.sh))
-- That's it. SQLite is bundled; no Postgres/Redis needed.
+### Prasyarat
+- [Node.js](https://nodejs.org) ≥ 20 (atau [Bun](https://bun.sh))
+- Itu saja. SQLite sudah dibundle; tidak perlu Postgres/Redis.
 
 ### 1. Install
 ```bash
@@ -74,65 +85,65 @@ git clone <repo-url> sibergate && cd sibergate
 npm install
 ```
 
-### 2. Configure
+### 2. Konfigurasi
 ```bash
 cp .env.example .env
-# Add at least one provider key, e.g. OPENAI_API_KEY=sk-...
-# Optionally set SIBERGATE_ADMIN_KEY to pin the admin token
+# Tambahkan minimal satu key provider, mis. OPENAI_API_KEY=sk-...
+# Opsional: set SIBERGATE_ADMIN_KEY untuk mem-pin token admin
 ```
 
-### 3. Seed & run
+### 3. Seed & jalankan
 ```bash
-npm run seed     # encrypts keys into SQLite, prints a client API key
-npm run dev      # gateway :8787 + admin dashboard :3000
+npm run seed     # meng-encrypt key ke SQLite, mencetak key API klien
+npm run dev      # gateway :8787 + dashboard admin :3000
 ```
 
-### 4. Try it
+### 4. Coba
 ```bash
-# Chat via the gateway
+# Chat via gateway
 curl http://localhost:8787/v1/chat/completions \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
-  -d '{"model":"smart","messages":[{"role":"user","content":"Hello!"}]}'
+  -d '{"model":"smart","messages":[{"role":"user","content":"Halo!"}]}'
 
-# Generate an image
+# Generate gambar
 curl http://localhost:8787/v1/images/generations \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
-  -d '{"model":"image-fast","prompt":"a cat in a spacesuit"}'
+  -d '{"model":"image-fast","prompt":"kucing astronot"}'
 ```
 
-Or open **http://localhost:3000** for the admin dashboard.
+Atau buka **http://localhost:3000** untuk dashboard admin.
 
 ---
 
-## 🏗️ Architecture — two pillars
+## 🏗️ Arsitektur — dua pilar
 
-### 1. Master Data (SQLite — single source of truth)
-- **Providers** — vendor endpoints + per-modality URL templates + **AES-256-GCM encrypted credentials**
-- **Models** — specs with **JSON modalities** (`text-to-text`, `vision`, `image-generation`, `audio`, `embeddings`, …) so adding new capability types is a data change, not a code change
-- **API keys** — client keys (sha256-hashed; plaintext shown once at creation)
+### 1. Master Data (SQLite — sumber kebenaran tunggal)
+- **Provider** — endpoint vendor + template URL per-modalitas + **kredensial ter-encrypt AES-256-GCM**
+- **Model** — spesifikasi dengan **modalitas JSON** (`text-to-text`, `vision`, `image-generation`, `audio`, `embeddings`, …) sehingga menambah tipe kapabilitas baru hanya ubah data, bukan ubah kode
+- **API key** — key klien (sha256-hash; plaintext ditampilkan sekali saat pembuatan)
 
-### 2. Routing Engine (operational)
-- **Routes** — virtual client-facing endpoints (`smart`, `chat`, `image-fast`, …) tagged with a modality
-- **Route targets** — ordered `(provider, model, weight)` mappings; filtered to providers that actually support the route's modality
-- **Strategies** — `fallback`, `fastest` (EMA latency), `weighted`
-- **Requests** — per-request log (latency, tokens, cost, errors, served-by)
+### 2. Routing Engine (operasional)
+- **Route** — endpoint virtual untuk klien (`smart`, `chat`, `image-fast`, …) diberi tag modalitas
+- **Route target** — pemetaan `(provider, model, weight)` berurutan; difilter ke provider yang benar-benar support modalitas route tersebut
+- **Strategi** — `fallback`, `fastest` (EMA latency), `weighted`
+- **Request** — log per-request (latency, token, biaya, error, served-by)
 
-The polymorphic **provider adapter** dispatches each request to the right
-modality handler (chat / image / speech / transcribe / embed / music), so one
-gateway serves them all.
+**Adapter provider polymorphic** mengirim setiap request ke handler modalitas
+yang tepat (chat / image / speech / transcribe / embed / music), jadi satu
+gateway melayani semuanya.
 
 ---
 
-## 📦 Built-in catalog
+## 📦 Katalog bawaan
 
-SiberGate ships with a curated catalog of **16 providers** and **149 models** —
-importable with one click (empty credentials; you set the keys afterward).
-Coverage spans 6 modalities: text, vision, image-generation, audio (TTS/music),
-audio-transcription, and embeddings.
+SiberGate dikirim dengan katalog kurasi **16 provider** dan **149 model** —
+bisa di-import sekali klik (kredensial kosong; Anda isi key setelahnya).
+Cakupan membentang 6 modalitas: text, vision, image-generation, audio
+(TTS/music), audio-transcription, dan embeddings.
 
-| Provider | Modalities | Highlights |
+| Provider | Modalitas | Sorotan |
 |---|---|---|
 | **OpenAI** | chat · vision · image · speech · transcribe · embed | GPT-5.6 (Sol/Terra/Luna), GPT-5.5, GPT-5.4 family, GPT-5, GPT-4.1, o3/o4, GPT Image 2, DALL·E, Realtime, TTS, Whisper, embeddings |
 | **Anthropic** | chat · vision | Claude Fable 5, Opus 4.8 / 4.7 / 4.6 / 4.5, Sonnet 5 / 4.6 / 4.5, Haiku 4.5, 3.7 / 3.5 line |
@@ -141,165 +152,165 @@ audio-transcription, and embeddings.
 | **Groq** | chat · transcribe | GPT OSS 120B / 20B, Llama 4 Scout, 3.3 70B, Qwen3, DeepSeek R1 distill, Whisper v3 / Turbo |
 | **xAI (Grok)** | chat · vision · image | Grok 4.5 / 4.3 / 4.20 Reasoning, Grok Build, Grok Imagine (image + video) |
 | **Mistral** | chat · vision · embed · audio | Mistral Large 3 / Medium 3.5 / Small 4, Pixtral Large / 12B, OCR 4, Voxtral TTS, Embed |
-| **OpenRouter** | chat · vision | Auto (cheapest), plus cross-vendor GPT-5.x / Claude / Gemini routing |
+| **OpenRouter** | chat · vision | Auto (termurah), plus routing cross-vendor GPT-5.x / Claude / Gemini |
 | **Together AI** | chat · vision · image | DeepSeek V4 Pro / Flash, Llama 4 / 3.3, Qwen 2.5 72B, FLUX.1 schnell / dev |
 | **Fireworks AI** | chat · vision · image · transcribe | DeepSeek V4, GPT OSS 120B, Llama 4 Scout, Kimi K2.7, GLM 5.2, FLUX.1 dev, Whisper v3 |
 | **Cohere** | chat · embed | Command A+ / A, R+ / R, Embed v3 (English + Multilingual) |
 | **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning Pro |
-| **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + FLUX.1 / SDXL / SD 3.5 images |
+| **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + gambar FLUX.1 / SDXL / SD 3.5 |
 | **DeepInfra** | chat · vision · image · music | ACE-Step text-to-music, FLUX.1, SD 3.5, Llama 4, DeepSeek R1 |
-| **Ollama** (local) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
-| **vLLM** (local) | chat | Any HuggingFace model you serve |
+| **Ollama** (lokal) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
+| **vLLM** (lokal) | chat | Model HuggingFace apa pun yang Anda serve |
 
-_Settings → "Import catalog" → fill keys → done. Local providers (Ollama, vLLM)
-need no key — just enable them._
+_Settings → "Import catalog" → isi key → selesai. Provider lokal (Ollama, vLLM)
+tidak butuh key — cukup di-enabled._
 
 ---
 
-## 🖥️ Admin Dashboard
+## 🖥️ Dashboard Admin
 
-A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
+Dashboard bertema gelap (Next.js + shadcn/ui) di `http://localhost:3000`:
 
 <p align="center">
-  <img src="images/dashboard.png" alt="SiberGate Dashboard" width="100%" />
+  <img src="images/dashboard.png" alt="Dashboard SiberGate" width="100%" />
 </p>
 
-### Screenshots
+### Tangkapan layar
 
 <details>
-<summary><b>📸 View all screens</b></summary>
+<summary><b>📸 Lihat semua layar</b></summary>
 
-| Screen | Preview |
+| Layar | Pratinjau |
 |---|---|
-| **Dashboard** — live stats, charts by route/provider/model | <img src="images/dashboard.png" width="600" alt="Dashboard" /> |
-| **Usage** — token & cost monitoring, provider×model matrix | <img src="images/usage.png" width="600" alt="Usage" /> |
-| **Providers** — CRUD with encrypted credentials | <img src="images/providers.png" width="600" alt="Providers" /> |
-| **Models** — directory with modality badges & filters | <img src="images/models.png" width="600" alt="Models" /> |
-| **Routes** — virtual endpoints, modality + target builder | <img src="images/routes.png" width="600" alt="Routes" /> |
-| **API Keys** — issue & manage client keys | <img src="images/api_keys.png" width="600" alt="API Keys" /> |
-| **Logs** — filterable request table + detail drawer | <img src="images/logs.png" width="600" alt="Logs" /> |
-| **Chat Playground** — live SSE streaming test | <img src="images/chat_playGround.png" width="600" alt="Chat Playground" /> |
-| **Media Lab** — image, speech & music generation | <img src="images/media_lab.png" width="600" alt="Media Lab" /> |
-| **Settings** — import catalog & danger zone | <img src="images/settings.png" width="600" alt="Settings" /> |
+| **Dashboard** — statistik live, grafik per route/provider/model | <img src="images/dashboard.png" width="600" alt="Dashboard" /> |
+| **Usage** — monitoring token & biaya, matriks provider×model | <img src="images/usage.png" width="600" alt="Usage" /> |
+| **Providers** — CRUD dengan kredensial ter-encrypt | <img src="images/providers.png" width="600" alt="Providers" /> |
+| **Models** — direktori dengan badge modalitas & filter | <img src="images/models.png" width="600" alt="Models" /> |
+| **Routes** — endpoint virtual, modality + target builder | <img src="images/routes.png" width="600" alt="Routes" /> |
+| **API Keys** — terbitkan & kelola key klien | <img src="images/api_keys.png" width="600" alt="API Keys" /> |
+| **Logs** — tabel request terfilter + drawer detail | <img src="images/logs.png" width="600" alt="Logs" /> |
+| **Chat Playground** — uji streaming SSE live | <img src="images/chat_playGround.png" width="600" alt="Chat Playground" /> |
+| **Media Lab** — generasi gambar, suara & musik | <img src="images/media_lab.png" width="600" alt="Media Lab" /> |
+| **Settings** — import katalog & danger zone | <img src="images/settings.png" width="600" alt="Settings" /> |
 
 </details>
 
-### Features
+### Fitur
 
-- **Dashboard** — live stats (requests, success rate, tokens, spend) + charts by route/provider/model
-- **Usage** — token & cost monitoring across providers, models, and routes; provider×model matrix
-- **Providers / Models / Routes / API Keys** — full CRUD with inline forms; route form filters models by selected modality
-- **Logs** — filterable request table + detail drawer
-- **Chat Playground** — test routes with live SSE streaming
-- **Media Lab** — generate & preview images, speech, and music inline
-- **Route testing** — probe any route and visualize the failover path
-- **Code snippets** — Postman-style client code in cURL / Node / Python / PHP / Go
+- **Dashboard** — statistik live (request, success rate, token, spend) + grafik per route/provider/model
+- **Usage** — monitoring token & biaya lintas provider, model, dan route; matriks provider×model
+- **Providers / Models / Routes / API Keys** — CRUD penuh dengan form inline; form route memfilter model berdasarkan modalitas terpilih
+- **Logs** — tabel request terfilter + drawer detail
+- **Chat Playground** — uji route dengan streaming SSE live
+- **Media Lab** — generate & pratinjau gambar, suara, dan musik secara inline
+- **Route testing** — probe route apa pun dan visualisasi path failover
+- **Code snippets** — kode klien gaya Postman dalam cURL / Node / Python / PHP / Go
 
-The admin key is injected server-side via a proxy route — it never reaches the
-browser. The playground uses a separate client key (`sg_live_*`).
+Key admin di-inject server-side lewat route proxy — tidak pernah sampai browser.
+Playground memakai key klien terpisah (`sg_live_*`).
 
 ---
 
-## 🔌 API reference
+## 🔌 Referensi API
 
-| Method | Path | Description |
+| Method | Path | Deskripsi |
 |---|---|---|
-| `GET` | `/health` | Liveness |
-| `GET` | `/v1/models` | List enabled routes (tagged with modality) |
+| `GET` | `/health` | Cek hidup |
+| `GET` | `/v1/models` | Daftar route aktif (diberi tag modalitas) |
 | `POST` | `/v1/chat/completions` | Chat (streaming + JSON) |
-| `POST` | `/v1/images/generations` | Image generation |
+| `POST` | `/v1/images/generations` | Generasi gambar |
 | `POST` | `/v1/audio/speech` | Text-to-speech (binary) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
-| `POST` | `/v1/embeddings` | Text embeddings |
-| `POST` | `/v1/music/generations` | Text-to-music (SiberGate extension) |
+| `POST` | `/v1/embeddings` | Embedding teks |
+| `POST` | `/v1/music/generations` | Text-to-music (ekstensi SiberGate) |
 
-`model` is always a **route id** (e.g. `smart`), not a vendor model id. Errors
-follow the OpenAI envelope: `{ "error": { message, type, param, code } }`.
+`model` selalu berupa **id route** (mis. `smart`), bukan id model vendor. Error
+mengikuti envelope OpenAI: `{ "error": { message, type, param, code } }`.
 
 ---
 
 ## 🧱 Tech stack
 
-| Layer | Choice |
+| Lapisan | Pilihan |
 |---|---|
-| Runtime | **Node 20+** / Bun, **tsx** for dev |
-| HTTP | **Hono** (fast, type-safe, great streaming) |
-| Database | **SQLite** (`better-sqlite3`) — one file, no server |
-| Crypto | **AES-256-GCM** (auto-generated master key) |
+| Runtime | **Node 20+** / Bun, **tsx** untuk dev |
+| HTTP | **Hono** (cepat, type-safe, streaming bagus) |
+| Database | **SQLite** (`better-sqlite3`) — satu file, tanpa server |
+| Kripto | **AES-256-GCM** (master key auto-generated) |
 | Admin UI | **Next.js 15 + shadcn/ui + Tailwind** |
-| Charts | **Recharts** |
+| Grafik | **Recharts** |
 | Data fetching | **TanStack Query** |
 
-### Monorepo layout (npm workspaces)
+### Layout monorepo (npm workspaces)
 ```
 sibergate/
 ├── packages/
 │   ├── core/        @sibergate/core    → db, crypto, config, engine, adapters, admin
-│   ├── gateway/     @sibergate/gateway → Hono server + OpenAI-compat routes
-│   └── admin/       @sibergate/admin   → Next.js dashboard
-├── scripts/seed.ts                     → seed runner
-├── sibergate.config.json               → master-data seed file
-└── .env                                → provider keys (gitignored)
+│   ├── gateway/     @sibergate/gateway → server Hono + route OpenAI-compat
+│   └── admin/       @sibergate/admin   → dashboard Next.js
+├── scripts/seed.ts                     → runner seed
+├── sibergate.config.json               → file seed master-data
+└── .env                                → key provider (di-gitignore)
 ```
 
 ---
 
-## 🔐 Security
+## 🔐 Keamanan
 
-- Provider credentials are **AES-256-GCM encrypted** at rest. Master key auto-generates at `.sibergate/master-key` (gitignored); pin it via `SIBERGATE_MASTER_KEY` for multi-host deploys.
-- Client API keys are **sha256-hashed**; plaintext shown once at creation.
-- The admin key lives server-side only — the browser hits a proxy route that injects it.
-- Decryption is transient (in-memory at request time); keys are never logged.
+- Kredensial provider **di-encrypt AES-256-GCM** saat disimpan. Master key auto-generated di `.sibergate/master-key` (di-gitignore); pin via `SIBERGATE_MASTER_KEY` untuk deploy multi-host.
+- Key API klien **di-hash sha256**; plaintext ditampilkan sekali saat pembuatan.
+- Key admin hanya ada di server-side — browser mengakses route proxy yang meng-inject-nya.
+- Dekripsi bersifat sementara (in-memory saat request); key tidak pernah di-log.
 
 ---
 
 ## 🗺️ Roadmap
 
-- [x] Core gateway (chat) + routing engine (fallback/fastest/weighted)
-- [x] Multi-modality (image, speech, transcribe, embed, music)
-- [x] Admin dashboard (CRUD, logs, usage, playground, media lab)
-- [x] Built-in provider catalog (16 providers, 149 models)
+- [x] Gateway inti (chat) + routing engine (fallback/fastest/weighted)
+- [x] Multi-modalitas (image, speech, transcribe, embed, music)
+- [x] Dashboard admin (CRUD, log, usage, playground, media lab)
+- [x] Katalog provider bawaan (16 provider, 149 model)
 - [ ] Response caching (exact-match)
-- [ ] Budget guards (monthly spend caps per key)
-- [ ] Video generation (Runway/Pika)
-- [ ] OpenTelemetry metrics export
-- [ ] Helm chart for Kubernetes
+- [ ] Budget guard (cap spend bulanan per key)
+- [ ] Generasi video (Runway/Pika)
+- [ ] Export metrik OpenTelemetry
+- [ ] Helm chart untuk Kubernetes
 
 ---
 
-## 🤝 Contributing
+## 🤝 Berkontribusi
 
-Contributions are welcome! This is part of the **Siber ecosystem** and we'd love
-to grow it with the community.
+Kontribusi diterima! Ini bagian dari **ekosistem Siber** dan kami senang
+menumbuhkannya bersama komunitas.
 
-1. Fork & clone the repo
+1. Fork & clone repo
 2. `npm install && npm run dev`
-3. Make your change (please keep the two-pillar architecture intact)
-4. Open a PR describing what & why
+3. Buat perubahan Anda (mohon menjaga arsitektur dua pilar tetap utuh)
+4. Buka PR menjelaskan apa & mengapa
 
-For major changes, please open an issue first to discuss the direction.
-
----
-
-## 📄 License
-
-Released under the **MIT License**. See [LICENSE](./LICENSE).
-
-You're free to use, modify, and distribute SiberGate — including commercially.
-Attribution to **DataSiberLab** and the Siber ecosystem is appreciated but not
-required.
+Untuk perubahan besar, silakan buka issue dulu untuk mendiskusikan arahnya.
 
 ---
 
-## 📬 Contact & Community
+## 📄 Lisensi
+
+Dirilis di bawah **Lisensi MIT**. Lihat [LICENSE](./LICENSE).
+
+Anda bebas menggunakan, memodifikasi, dan mendistribusikan SiberGate — termasuk
+secara komersial. Atribusi ke **DataSiberLab** dan ekosistem Siber dihargai
+tapi tidak diwajibkan.
+
+---
+
+## 📬 Kontak & Komunitas
 
 <div align="center">
 
-**Built with ❤️ by [DataSiberLab](https://datasiber.com)** as part of the Siber ecosystem.
+**Dibuat dengan ❤️ oleh [DataSiberLab](https://datasiber.com)** sebagai bagian dari ekosistem Siber.
 
-📧 **Contact:** [candrapwr@datasiber.com](mailto:candrapwr@datasiber.com)
+📧 **Kontak:** [candrapwr@datasiber.com](mailto:candrapwr@datasiber.com)
 🌐 **Website:** [datasiber.com](https://datasiber.com)
 
-Found SiberGate useful? ⭐ Star the repo and share it with fellow builders!
+SiberGate berguna? ⭐ Star repo-nya dan bagikan ke sesama builder!
 
 </div>
