@@ -87,6 +87,18 @@ export interface RequestLog {
   error_code: string | null;
   error_message: string | null;
   client_ip: string | null;
+  metadata: string | null;
+}
+
+/** One step in the failover trail (stored in request metadata JSON). */
+export interface TrailStep {
+  provider: string;
+  model: string;
+  outcome: 'served' | 'failed';
+  status?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  latencyMs: number;
 }
 
 export interface SystemInfo {

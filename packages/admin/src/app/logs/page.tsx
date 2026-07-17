@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { ScrollText, X } from 'lucide-react';
+import { ScrollText, X, ArrowRight, CheckCircle2, XCircle } from 'lucide-react';
 import { useLogs, useProviders, useRoutes } from '@/lib/queries';
-import type { RequestLog } from '@/lib/types';
+import type { RequestLog, TrailStep } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -151,6 +151,8 @@ function DetailDrawer({ log, onClose }: { log: RequestLog; onClose: () => void }
               </pre>
             </div>
           )}
+          {/* Failover trail — shows every target tried + why it moved */}
+          <FailoverTrail metadata={log.metadata} />
         </div>
       </div>
     </div>
@@ -162,6 +164,66 @@ function Row({ label, value, mono }: { label: string; value: React.ReactNode; mo
     <div className="flex items-start justify-between gap-4 border-b border-border/50 py-1.5">
       <span className="text-muted-foreground">{label}</span>
       <span className={`text-right ${mono ? 'font-mono text-[12px]' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+/**
+ * Renders the failover trail from the request metadata.
+ * Shows every target tried (provider:model), outcome, and error — so you can
+ * see exactly why the request moved from model X to model Y.
+ */
+function FailoverTrail({ metadata }: { metadata: string | null }) {
+  if (!metadata) return null;
+  let trail: TrailStep[] = [];
+  try {
+    const parsed = JSON.parse(metadata);
+    trail = parsed.trail ?? [];
+  } catch {
+    return null;
+  }
+  if (trail.length === 0) return null;
+
+  const hasFailover = trail.length > 1;
+
+  return (
+    <div className="pt-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+        {hasFailover ? '🔀 Failover trail' : '📍 Routing path'}
+        <span className="normal-case text-muted-foreground/60">({trail.length} step{trail.length > 1 ? 's' : ''})</span>
+      </div>
+      <div className="space-y-1.5">
+        {trail.map((step, i) => {
+          const ok = step.outcome === 'served';
+          return (
+            <div key={i}>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] tabular-nums text-muted-foreground/60">#{i + 1}</span>
+                {ok ? (
+                  <CheckCircle2 size={13} className="shrink-0 text-success" />
+                ) : (
+                  <XCircle size={13} className="shrink-0 text-destructive" />
+                )}
+                <span className="font-mono text-[11px]">{step.provider}:{step.model}</span>
+                <span className={`text-[10px] ${ok ? 'text-success' : 'text-destructive'}`}>
+                  {ok ? 'served' : `failed ${step.status ?? ''}`}
+                </span>
+                <span className="ml-auto text-[10px] text-muted-foreground">{step.latencyMs}ms</span>
+              </div>
+              {!ok && step.errorMessage && (
+                <div className="ml-7 rounded border border-border/50 bg-background px-2 py-1 text-[10px] leading-tight text-muted-foreground">
+                  {step.errorMessage.slice(0, 150)}
+                </div>
+              )}
+              {i < trail.length - 1 && (
+                <div className="ml-3 flex items-center gap-1 py-0.5 text-[10px] text-muted-foreground/50">
+                  <ArrowRight size={10} /> failover to next target
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
