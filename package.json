@@ -10,9 +10,11 @@
     "dev": "npm run build:core && concurrently -n gateway,admin -c blue,magenta \"tsx watch packages/gateway/src/index.ts\" \"npm run dev -w @sibergate/admin\"",
     "dev:gateway": "npm run build:core && tsx watch packages/gateway/src/index.ts",
     "dev:admin": "npm run dev -w @sibergate/admin",
-    "start": "npm run build:core && tsx packages/gateway/src/index.ts",
+    "start": "npm run build:core && concurrently -n gateway,admin -c blue,magenta \"tsx packages/gateway/src/index.ts\" \"npm run start -w @sibergate/admin\"",
+    "start:gateway": "npm run build:core && tsx packages/gateway/src/index.ts",
+    "start:admin": "npm run start -w @sibergate/admin",
     "seed": "npm run build:core && tsx scripts/seed.ts",
-    "build": "npm run build -w @sibergate/core && npm run build -w @sibergate/gateway",
+    "build": "npm run build:core && npm run build -w @sibergate/gateway && npm run build -w @sibergate/admin",
     "clean": "rm -rf packages/*/dist packages/*/.next packages/*/tsconfig.tsbuildinfo"
   },
   "devDependencies": {
