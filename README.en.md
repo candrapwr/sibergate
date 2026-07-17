@@ -9,8 +9,8 @@ and load balancing — all on your own infrastructure, with zero markup.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
-[![Providers](https://img.shields.io/badge/providers-16-orange.svg)](#-built-in-catalog)
-[![Models](https://img.shields.io/badge/models-149-orange.svg)](#-built-in-catalog)
+[![Providers](https://img.shields.io/badge/providers-18-orange.svg)](#-built-in-catalog)
+[![Models](https://img.shields.io/badge/models-206-orange.svg)](#-built-in-catalog)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
 
 </div>
@@ -127,7 +127,7 @@ gateway serves them all.
 
 ## 📦 Built-in catalog
 
-SiberGate ships with a curated catalog of **16 providers** and **149 models** —
+SiberGate ships with a curated catalog of **18 providers** and **206 models** —
 importable with one click (empty credentials; you set the keys afterward).
 Coverage spans 6 modalities: text, vision, image-generation, audio (TTS/music),
 audio-transcription, and embeddings.
@@ -148,6 +148,8 @@ audio-transcription, and embeddings.
 | **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning Pro |
 | **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + FLUX.1 / SDXL / SD 3.5 images |
 | **DeepInfra** | chat · vision · image · music | ACE-Step text-to-music, FLUX.1, SD 3.5, Llama 4, DeepSeek R1 |
+| **Z.AI (GLM)** | chat · vision · image · video · transcribe | GLM-5.2 / 5.1 / 5, GLM-4.7 / 4.6, GLM-V (vision), GLM-OCR, CogView-4, CogVideoX, Vidu (video), GLM-ASR |
+| **Qwen Cloud** | chat · vision · audio · image · video · embed · transcribe | Qwen3.7-Max, Qwen3.6/3.5 series, Qwen-VL, Qwen-Omni (speech), Qwen Image 2.0, Wan 2.6 (video), CosyVoice TTS, embeddings |
 | **Ollama** (local) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
 | **vLLM** (local) | chat | Any HuggingFace model you serve |
 
@@ -258,7 +260,7 @@ sibergate/
 - [x] Core gateway (chat) + routing engine (fallback/fastest/weighted)
 - [x] Multi-modality (image, speech, transcribe, embed, music)
 - [x] Admin dashboard (CRUD, logs, usage, playground, media lab)
-- [x] Built-in provider catalog (16 providers, 149 models)
+- [x] Built-in provider catalog (18 providers, 206 models)
 - [ ] Response caching (exact-match)
 - [ ] Budget guards (monthly spend caps per key)
 - [ ] Video generation (Runway/Pika)

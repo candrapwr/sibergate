@@ -10,8 +10,8 @@ Satu endpoint kompatibel OpenAI. Enam modalitas. Failover otomatis, pemilihan
 
 [![Lisensi: MIT](https://img.shields.io/badge/lisensi-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
-[![Provider](https://img.shields.io/badge/provider-16-orange.svg)](#-katalog-bawaan)
-[![Model](https://img.shields.io/badge/model-149-orange.svg)](#-katalog-bawaan)
+[![Provider](https://img.shields.io/badge/provider-18-orange.svg)](#-katalog-bawaan)
+[![Model](https://img.shields.io/badge/model-206-orange.svg)](#-katalog-bawaan)
 [![PR diterima](https://img.shields.io/badge/PR-diterima-brightgreen.svg)](#-berkontribusi)
 
 </div>
@@ -138,7 +138,7 @@ gateway melayani semuanya.
 
 ## 📦 Katalog bawaan
 
-SiberGate dikirim dengan katalog kurasi **16 provider** dan **149 model** —
+SiberGate dikirim dengan katalog kurasi **18 provider** dan **206 model** —
 bisa di-import sekali klik (kredensial kosong; Anda isi key setelahnya).
 Cakupan membentang 6 modalitas: text, vision, image-generation, audio
 (TTS/music), audio-transcription, dan embeddings.
@@ -159,6 +159,8 @@ Cakupan membentang 6 modalitas: text, vision, image-generation, audio
 | **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning Pro |
 | **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + gambar FLUX.1 / SDXL / SD 3.5 |
 | **DeepInfra** | chat · vision · image · music | ACE-Step text-to-music, FLUX.1, SD 3.5, Llama 4, DeepSeek R1 |
+| **Z.AI (GLM)** | chat · vision · image · video · transcribe | GLM-5.2 / 5.1 / 5, GLM-4.7 / 4.6, GLM-V (vision), GLM-OCR, CogView-4, CogVideoX, Vidu (video), GLM-ASR |
+| **Qwen Cloud** | chat · vision · audio · image · video · embed · transcribe | Qwen3.7-Max, Qwen3.6/3.5 series, Qwen-VL, Qwen-Omni (speech), Qwen Image 2.0, Wan 2.6 (video), CosyVoice TTS, embeddings |
 | **Ollama** (lokal) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
 | **vLLM** (lokal) | chat | Model HuggingFace apa pun yang Anda serve |
 
@@ -269,7 +271,7 @@ sibergate/
 - [x] Gateway inti (chat) + routing engine (fallback/fastest/weighted)
 - [x] Multi-modalitas (image, speech, transcribe, embed, music)
 - [x] Dashboard admin (CRUD, log, usage, playground, media lab)
-- [x] Katalog provider bawaan (16 provider, 149 model)
+- [x] Katalog provider bawaan (18 provider, 206 model)
 - [ ] Response caching (exact-match)
 - [ ] Budget guard (cap spend bulanan per key)
 - [ ] Generasi video (Runway/Pika)
