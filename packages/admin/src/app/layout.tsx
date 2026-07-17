@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Sidebar } from '@/components/layout/sidebar';
+import { AppShell } from '@/components/layout/app-shell';
 import { AppProviders } from '@/components/providers';
 import './globals.css';
 
@@ -13,12 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="dark">
       <body className="antialiased">
         <AppProviders>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <main className="flex-1 overflow-y-auto">
-              <div className="mx-auto max-w-6xl px-8 py-6">{children}</div>
-            </main>
-          </div>
+          <AppShell>{children}</AppShell>
         </AppProviders>
       </body>
     </html>

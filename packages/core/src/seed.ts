@@ -5,6 +5,7 @@ import { loadDotEnv } from './env.js';
 import { getDb } from './db.js';
 import { encryptJSON } from './crypto.js';
 import { generateApiKey } from './api-key.js';
+import { createUser, findUserByEmail, userCount } from './auth.js';
 
 /**
  * Seed SQLite master data from a JSON file (sibergate.config.json).
@@ -169,5 +170,18 @@ export async function seed(configPath?: string): Promise<void> {
     console.log('──────────────────────────────────────────');
   } else {
     console.log('\n✅ Seed complete (API key already exists, skipping key creation).');
+  }
+
+  // Auto-create the first admin panel user from env, if none exist.
+  if (userCount() === 0) {
+    const email = process.env.SIBERGATE_ADMIN_EMAIL;
+    const password = process.env.SIBERGATE_ADMIN_PASSWORD;
+    if (email && password) {
+      createUser({ email, name: 'Administrator', password, role: 'owner' });
+      console.log(`\n ✅ Admin user created: ${email}`);
+      console.log('    Log in at the admin panel with this email + SIBERGATE_ADMIN_PASSWORD.\n');
+    } else {
+      console.log('\n ⚠️  No admin user created (set SIBERGATE_ADMIN_EMAIL + SIBERGATE_ADMIN_PASSWORD in .env).');
+    }
   }
 }

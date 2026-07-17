@@ -3,6 +3,7 @@ import { ConfigStore, getDb, loadDotEnv } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { createApp } from './routes.js';
 import { createAdminRouter } from './admin-routes.js';
+import { createAuthRouter } from './auth-routes.js';
 import { getOrCreateAdminKey } from './admin-middleware.js';
 
 /**
@@ -33,6 +34,11 @@ async function main() {
 
   // Admin REST API (separate auth).
   app.route('/admin', createAdminRouter(configStore));
+
+  // Auth routes for the admin panel (login/logout/me) — no admin-key required;
+  // these issue a session cookie that gates the Next.js UI. Mounted under /auth
+  // (separate from /admin) so the admin-key middleware never intercepts them.
+  app.route('/auth', createAuthRouter());
 
   app.notFound((c) =>
     c.json(

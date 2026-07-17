@@ -14,9 +14,11 @@ import {
   Settings,
   RefreshCw,
   Clapperboard,
+  LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSystem, useReload } from '@/lib/queries';
+import { useUser, useLogout } from '@/lib/auth-client';
 import { toast } from 'sonner';
 
 const NAV = [
@@ -35,6 +37,8 @@ const NAV = [
 export function Sidebar() {
   const pathname = usePathname();
   const { data: system } = useSystem();
+  const { data: user } = useUser();
+  const logout = useLogout();
   const reload = useReload();
 
   return (
@@ -99,6 +103,27 @@ export function Sidebar() {
           <RefreshCw size={12} className={reload.isPending ? 'animate-spin' : ''} />
           Reload config
         </button>
+
+        {/* Signed-in user + logout */}
+        {user ? (
+          <div className="mt-2 flex items-center gap-2 rounded-md border border-border bg-secondary/40 px-2 py-1.5">
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/20 text-[10px] font-semibold text-primary">
+              {(user.name || user.email).slice(0, 1).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[11px] font-medium">{user.name || user.email}</div>
+              <div className="truncate text-[10px] text-muted-foreground">{user.email}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => logout()}
+              title="Sign out"
+              className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-destructive"
+            >
+              <LogOut size={13} />
+            </button>
+          </div>
+        ) : null}
       </div>
     </aside>
   );
