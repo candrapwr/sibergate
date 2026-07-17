@@ -12,10 +12,23 @@ import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
  * it) are considered. Strategies (fallback/fastest/weighted) apply uniformly.
  */
 
+/** One step in the failover trail — for audit/logging. */
+export interface FailoverStep {
+  provider: string;
+  model: string;
+  outcome: 'served' | 'failed';
+  status?: number;
+  errorCode?: string;
+  errorMessage?: string;
+  latencyMs: number;
+}
+
 export interface ExecuteResult {
   response: Response;
   servedBy: RouteTarget;
   latencyMs: number;
+  /** Ordered list of every target tried, with outcome — the failover audit trail. */
+  trail: FailoverStep[];
 }
 
 export async function executeRoute(
@@ -53,6 +66,8 @@ export async function executeRoute(
 
   let lastErr: unknown;
   let lastTarget: RouteTarget | null = null;
+  const trail: FailoverStep[] = [];
+
   for (const target of attempts) {
     const provider = config.providers.find((p) => p.id === target.providerId)!;
     lastTarget = target;
@@ -61,9 +76,21 @@ export async function executeRoute(
       const response = await callProvider({ provider, model: target.modelId, body, signal, modality });
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
-      return { response, servedBy: target, latencyMs };
+      trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs });
+      return { response, servedBy: target, latencyMs, trail };
     } catch (err) {
+      const latencyMs = Date.now() - start;
       recordFailure(target.providerId, target.modelId);
+      const ge = err as GatewayCallError;
+      trail.push({
+        provider: target.providerId,
+        model: target.modelId,
+        outcome: 'failed',
+        status: ge.status,
+        errorCode: ge.code,
+        errorMessage: ge.message?.slice(0, 300),
+        latencyMs,
+      });
       lastErr = err;
       if (!isFailoverable(err)) {
         if (err instanceof GatewayCallError)
@@ -76,9 +103,12 @@ export async function executeRoute(
 
   if (lastErr instanceof GatewayCallError && lastTarget) {
     lastErr.servedBy = { provider: lastTarget.providerId, model: lastTarget.modelId };
+    lastErr.trail = trail;
     throw lastErr;
   }
-  throw new GatewayCallError('all_failed', 'All targets failed.');
+  const allErr = new GatewayCallError('all_failed', 'All targets failed.');
+  allErr.trail = trail;
+  throw allErr;
 }
 
 function orderTargets(strategy: Route['strategy'], targets: RouteTarget[]): RouteTarget[] {

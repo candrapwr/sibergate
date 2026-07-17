@@ -6,7 +6,7 @@ export { encryptJSON, decryptJSON, sha256Hex, type EncryptedBlob } from './crypt
 export { generateApiKey, hashApiKey, extractBearer, type GeneratedKey } from './api-key.js';
 export { seed } from './seed.js';
 export { callProvider, GatewayCallError, isFailoverable } from './provider.js';
-export { executeRoute, type ExecuteResult } from './engine.js';
+export { executeRoute, type ExecuteResult, type FailoverStep } from './engine.js';
 export { recordLatency, recordFailure, getLatency } from './latency.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
 export { ConfigStore } from './config-store.js';

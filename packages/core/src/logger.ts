@@ -14,6 +14,7 @@ export interface LogRequest {
   provider?: string | null;
   model?: string | null;
   strategy?: string | null;
+  modality?: string | null;
   streamed?: boolean;
   promptTokens?: number;
   completionTokens?: number;
@@ -22,16 +23,18 @@ export interface LogRequest {
   errorCode?: string | null;
   errorMessage?: string | null;
   clientIp?: string | null;
+  /** JSON-serializable metadata (e.g. failover trail). */
+  metadata?: Record<string, unknown>;
 }
 
 const insertStmt = `
   INSERT INTO requests
     (request_id, method, path, status, latency_ms, route, provider, model, strategy,
      streamed, prompt_tokens, completion_tokens, total_tokens, cost_usd, error_code,
-     error_message, client_ip)
+     error_message, client_ip, metadata)
   VALUES (@requestId, @method, @path, @status, @latencyMs, @route, @provider, @model,
           @strategy, @streamed, @promptTokens, @completionTokens, @totalTokens, @costUsd,
-          @errorCode, @errorMessage, @clientIp)
+          @errorCode, @errorMessage, @clientIp, @metadata)
 `;
 
 export function logRequest(entry: LogRequest): void {
@@ -56,6 +59,7 @@ export function logRequest(entry: LogRequest): void {
         errorCode: entry.errorCode ?? null,
         errorMessage: entry.errorMessage ?? null,
         clientIp: entry.clientIp ?? null,
+        metadata: JSON.stringify(entry.metadata ?? {}),
       });
   } catch (err) {
     console.error('[sibergate] failed to write log:', (err as Error).message);

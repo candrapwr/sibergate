@@ -121,6 +121,8 @@ export class GatewayCallError extends Error {
   readonly code: string;
   readonly status?: number;
   servedBy?: { provider: string; model: string };
+  /** Failover trail accumulated before this error was thrown (for audit logging). */
+  trail?: import('./engine.js').FailoverStep[];
   constructor(code: string, message: string, status?: number) {
     super(message);
     this.name = 'GatewayCallError';
