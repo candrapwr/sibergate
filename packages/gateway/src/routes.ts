@@ -86,7 +86,7 @@ export function createApp(configStore: ConfigStore) {
     };
 
     try {
-      const { response, servedBy, latencyMs } = await executeRoute(config, route, body, controller.signal);
+      const { response, servedBy, latencyMs, trail } = await executeRoute(config, route, body, controller.signal);
 
       if (body.stream === true) {
         const { response: streamRes, done } = proxySSEStream(c, response);
@@ -102,6 +102,7 @@ export function createApp(configStore: ConfigStore) {
             promptTokens,
             completionTokens,
             totalTokens,
+            metadata: { trail },
           });
         });
         return streamRes;
@@ -122,10 +123,11 @@ export function createApp(configStore: ConfigStore) {
         promptTokens,
         completionTokens,
         totalTokens,
+        metadata: { trail },
       });
       return c.json(json);
     } catch (err) {
-      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string } };
+      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string }; trail?: import('@sibergate/core').FailoverStep[] };
       const status = e.status ?? 502;
       const latencyMs = Math.round(performance.now() - startedAt);
       logRequest({
@@ -136,6 +138,7 @@ export function createApp(configStore: ConfigStore) {
         model: e.servedBy?.model ?? null,
         errorCode: e.code ?? null,
         errorMessage: (e.message ?? String(e)).slice(0, 500),
+        metadata: e.trail ? { trail: e.trail } : undefined,
       });
       const type =
         e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';

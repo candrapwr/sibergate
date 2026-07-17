@@ -171,6 +171,9 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
   `);
+
+  // Failover audit trail stored as JSON (array of {provider, model, outcome, error}).
+  addColumnIfMissing(db, 'requests', 'metadata', "TEXT NOT NULL DEFAULT '{}'");
 }
 
 /** Add a column only if it doesn't already exist (idempotent migration). */
