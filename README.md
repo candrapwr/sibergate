@@ -125,21 +125,30 @@ gateway serves them all.
 
 SiberGate ships with a curated catalog of **16 providers** and **149 models** —
 importable with one click (empty credentials; you set the keys afterward).
+Coverage spans 6 modalities: text, vision, image-generation, audio (TTS/music),
+audio-transcription, and embeddings.
 
-| Provider | Highlights |
-|---|---|
-| **OpenAI** | GPT-5, GPT-4.1, o3, DALL·E, TTS, Whisper, embeddings |
-| **Anthropic** | Claude Opus 4.1, Sonnet 4/4.5, Haiku 4.5 |
-| **Google Gemini** | 2.5 Pro/Flash/Flash-Lite, nano banana image |
-| **DeepSeek** | V3, R1 |
-| **Groq** | Llama 4 Scout/Maverick, Whisper v3, PlayAI TTS |
-| **xAI** | Grok 4, Grok 4 Fast |
-| **Mistral** | Large/Medium/Small, Pixtral, Embed |
-| **Novita AI** | DeepSeek/Llama/Qwen via Novita + FLUX/SDXL images |
-| **DeepInfra** | ACE-Step text-to-music, FLUX, Llama 4 |
-| **OpenRouter, Together, Fireworks, Cohere, Perplexity, Ollama, vLLM** | … |
+| Provider | Modalities | Highlights |
+|---|---|---|
+| **OpenAI** | chat · vision · image · speech · transcribe · embed | GPT-5 / 5-mini / 5-nano, GPT-4.1 family, o3, o4-mini, GPT Image 1, DALL·E 3, TTS, Whisper, embeddings |
+| **Anthropic** | chat · vision | Claude Opus 4.1, Sonnet 4 / 4.5, Haiku 4.5, 3.7 Sonnet, 3.5 line |
+| **Google Gemini** | chat · vision · audio · image · embed | 2.5 Pro / Flash / Flash-Lite, 2.5 Flash Image (nano banana), 2.0 Flash |
+| **DeepSeek** | chat | DeepSeek V3 (chat), R1 (reasoner) |
+| **Groq** | chat · vision · transcribe · audio | Llama 4 Scout / Maverick, 3.3 70B, Whisper v3, PlayAI TTS |
+| **xAI (Grok)** | chat · vision · image | Grok 4, Grok 4 Fast, Grok 2 Vision / Image |
+| **Mistral** | chat · vision · embed | Large / Medium / Small, Pixtral Large / 12B, Mistral Embed |
+| **OpenRouter** | chat · vision | Auto (cheapest), plus cross-vendor GPT/Claude/Gemini routing |
+| **Together AI** | chat · vision · image | Llama 4 / 3.3, Qwen 2.5 72B, FLUX.1 schnell / dev |
+| **Fireworks AI** | chat · vision · image · transcribe | Llama 4 Scout, 3.3 70B, DeepSeek V3, FLUX.1 dev, Whisper v3 |
+| **Cohere** | chat · embed | Command A, R+ / R, Embed v3 (English + Multilingual) |
+| **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning / Reasoning Pro |
+| **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + FLUX.1 / SDXL / SD 3.5 images |
+| **DeepInfra** | chat · vision · image · music | ACE-Step text-to-music, FLUX.1, SD 3.5, Llama 4, DeepSeek R1 |
+| **Ollama** (local) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
+| **vLLM** (local) | chat | Any HuggingFace model you serve |
 
-_Settings → "Import catalog" → fill keys → done._
+_Settings → "Import catalog" → fill keys → done. Local providers (Ollama, vLLM)
+need no key — just enable them._
 
 ---
 
