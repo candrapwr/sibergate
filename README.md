@@ -96,8 +96,19 @@ cp .env.example .env
 ### 3. Seed & jalankan
 ```bash
 npm run seed     # meng-encrypt key ke SQLite, mencetak key API klien
-npm run dev      # gateway :8787 + dashboard admin :3000
+npm run dev      # gateway :8787 + dashboard admin :3000 (hot-reload, untuk development)
 ```
+
+> **Production / self-host** — build sekali lalu jalankan kedua layanan bareng:
+> ```bash
+> npm run build    # build core + gateway + admin
+> npm start        # gateway :8787 + admin :3000 (mode produksi, tanpa hot-reload)
+> ```
+> Lihat juga [bagian Deployment (PM2)](#-deployment-pm2) di bawah untuk auto-restart & boot-on-reboot.
+
+**Port bisa diubah.** Gateway via `SIBERGATE_PORT` di `.env`; admin via `SIBERGATE_ADMIN_PORT`
+di `packages/admin/.env.local` (default `3000`). Contoh: admin di port `8010` —
+tambah `SIBERGATE_ADMIN_PORT=8010` ke `packages/admin/.env.local`, lalu restart.
 
 ### 4. Coba
 ```bash
@@ -114,7 +125,7 @@ curl http://localhost:8787/v1/images/generations \
   -d '{"model":"image-fast","prompt":"kucing astronot"}'
 ```
 
-Atau buka **http://localhost:3000** untuk dashboard admin.
+Atau buka **http://localhost:3000** (atau port `SIBERGATE_ADMIN_PORT` yang Anda set) untuk dashboard admin.
 
 ---
 
@@ -272,6 +283,32 @@ sibergate/
 - Key admin hanya ada di server-side — browser mengakses route proxy yang meng-inject-nya.
 - Dekripsi bersifat sementara (in-memory saat request); key tidak pernah di-log.
 - **Skema autentikasi upstream** — pilih per provider sesuai kebutuhan API tujuan: `bearer` (default, gaya OpenAI), `x-api-key` (gaya Anthropic), `query` (`?api_key=`), `basic` (HTTP Basic), atau `none` (API publik). Key tetap di-encrypt saat disimpan apa pun skemanya.
+
+---
+
+## 🚀 Deployment (PM2)
+
+Untuk server produksi, jalankan gateway + admin sebagai proses terkelola yang
+auto-restart & nyala setelah reboot lewat [PM2](https://pm2.keymetrics.io/).
+File `ecosystem.config.cjs` sudah disediakan.
+
+```bash
+npm install -g pm2
+npm install && npm run build      # build sekali (core + gateway + admin)
+pm2 start ecosystem.config.cjs    # start gateway + admin bareng
+pm2 logs                          # tail log kedua proses
+pm2 save && pm2 startup           # auto-start saat server reboot (sekali)
+```
+
+| Aksi | Perintah |
+|---|---|
+| Lihat status | `pm2 status` |
+| Restart setelah ubah kode/env | `npm run build && pm2 restart all` |
+| Stop / hapus | `pm2 stop all` / `pm2 delete all` |
+
+Log ditulis ke `./logs/` (sudah di-gitignore). Port admin tetap dibaca dari
+`packages/admin/.env.local` (`SIBERGATE_ADMIN_PORT`), jadi cara ganti port sama
+seperti mode dev.
 
 ---
 
