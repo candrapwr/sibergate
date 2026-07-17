@@ -35,3 +35,10 @@ export {
   type SafeUser,
 } from './auth.js';
 export { estimateTokens } from './tokens.js';
+export {
+  createBackup,
+  restoreBackup,
+  backupToJson,
+  parseBackup,
+  type BackupPayload,
+} from './backup.js';
