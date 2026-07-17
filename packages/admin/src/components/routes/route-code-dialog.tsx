@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { generateSample, detectBaseUrl, LANGUAGES, type Language } from '@/lib/code-samples';
+import { generateSample, detectBaseUrl, languagesForModality, defaultPromptFor, type Language } from '@/lib/code-samples';
 
 /**
  * "Get code" dialog for a route — Postman-style sample snippets.
@@ -20,11 +20,14 @@ import { generateSample, detectBaseUrl, LANGUAGES, type Language } from '@/lib/c
  */
 export function RouteCodeDialog({ route }: { route: Route }) {
   const [open, setOpen] = useState(false);
-  const [lang, setLang] = useState<Language>('curl');
   const [apiKey, setApiKey] = useState('sg_live_xxxxxxxxxxxxxxxx');
   const [baseUrl, setBaseUrl] = useState(detectBaseUrl());
-  const [prompt, setPrompt] = useState('Hello!');
+  const [prompt, setPrompt] = useState(defaultPromptFor(route.modality));
   const [copied, setCopied] = useState(false);
+
+  const langs = languagesForModality(route.modality);
+  const [lang, setLang] = useState<Language>('curl');
+  const isTranscribe = route.modality === 'transcribe';
 
   const code = generateSample(lang, { routeId: route.id, modality: route.modality, baseUrl, apiKey, prompt });
 
@@ -67,14 +70,16 @@ export function RouteCodeDialog({ route }: { route: Route }) {
             <Input id="curl-key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="text-[12px]" />
           </div>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="curl-prompt">Prompt</Label>
-          <Input id="curl-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-[12px]" />
-        </div>
+        {!isTranscribe && (
+          <div className="space-y-1.5">
+            <Label htmlFor="curl-prompt">{route.modality === 'embed' ? 'Input text' : 'Prompt'}</Label>
+            <Input id="curl-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-[12px]" />
+          </div>
+        )}
 
-        {/* Language tabs */}
+        {/* Language tabs (stream only shown for chat) */}
         <div className="flex flex-wrap gap-1">
-          {LANGUAGES.map((l) => (
+          {langs.map((l) => (
             <button
               key={l.id}
               onClick={() => setLang(l.id)}

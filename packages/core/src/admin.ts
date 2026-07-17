@@ -31,7 +31,7 @@ export interface ProviderInput {
   id: string;
   name?: string;
   baseUrl: string;
-  authScheme?: 'bearer' | 'x-api-key';
+  authScheme?: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   /** Plaintext API key — encrypted here, never returned, never logged. */
   apiKey?: string;
   /** Existing encrypted blob (carried through on partial updates). */
@@ -237,7 +237,7 @@ export interface RouteInput {
   id: string;
   name?: string;
   /** Which adapter handles this route. Defaults to 'chat'. */
-  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music';
+  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
   strategy?: 'fallback' | 'fastest' | 'weighted';
   timeoutMs?: number;
   maxRetries?: number;

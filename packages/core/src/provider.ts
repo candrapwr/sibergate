@@ -5,6 +5,7 @@ import { speech } from './adapters/speech.js';
 import { transcribe } from './adapters/transcribe.js';
 import { embed } from './adapters/embed.js';
 import { music } from './adapters/music.js';
+import { generic } from './adapters/generic.js';
 
 /**
  * Polymorphic provider adapter.
@@ -33,18 +34,41 @@ const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> 
   transcribe,
   embed,
   music,
+  generic,
 };
 
-/** Build the upstream URL for a (provider, modality, model) combination. */
-export function resolveEndpoint(provider: Provider, modality: RouteModality, model: string): string | null {
+/**
+ * Build the upstream URL for a (provider, modality, model) combination.
+ *
+ * Recognized placeholders in the endpoint template:
+ *   {model}    → the target's model id (URL-encoded)
+ *   {model_id} → same as {model}
+ *   {path}     → the request path suffix (generic modality only; NOT encoded,
+ *                so it may carry its own query string). Lets a single generic
+ *                endpoint fan out to many upstream paths.
+ */
+export function resolveEndpoint(
+  provider: Provider,
+  modality: RouteModality,
+  model: string,
+  path?: string,
+): string | null {
   const tpl = provider.endpoints[modality];
   if (!tpl) return null; // provider does not support this modality
-  return tpl.replace('{model}', encodeURIComponent(model)).replace('{model_id}', encodeURIComponent(model));
+  return tpl
+    .replace('{model}', encodeURIComponent(model))
+    .replace('{model_id}', encodeURIComponent(model))
+    .replace('{path}', path ?? '');
 }
 
 /** Build the absolute upstream URL (baseUrl + endpoint). */
-export function upstreamUrl(provider: Provider, modality: RouteModality, model: string): string {
-  const ep = resolveEndpoint(provider, modality, model);
+export function upstreamUrl(
+  provider: Provider,
+  modality: RouteModality,
+  model: string,
+  path?: string,
+): string {
+  const ep = resolveEndpoint(provider, modality, model, path);
   if (!ep) throw new GatewayCallError('unsupported', `${provider.id} has no endpoint for modality '${modality}'`);
   // Handle templates that are absolute vs relative to baseUrl.
   if (/^https?:\/\//.test(ep)) return ep;
@@ -67,14 +91,34 @@ export async function sendUpstream(opts: {
   signal: AbortSignal;
   contentType?: string;
 }): Promise<Response> {
-  const { url, provider, body, signal } = opts;
+  const { provider, body, signal } = opts;
+  let url = opts.url;
   const headers: Record<string, string> = {
     'Content-Type': opts.contentType ?? 'application/json',
     ...provider.headers,
   };
-  if (provider.apiKey) {
-    if (provider.authScheme === 'x-api-key') headers['x-api-key'] = provider.apiKey;
-    else headers.Authorization = `Bearer ${provider.apiKey}`;
+  // Attach credentials according to the provider's auth scheme.
+  // 'none' skips auth entirely (public upstreams); the others inject the key.
+  if (provider.apiKey && provider.authScheme !== 'none') {
+    switch (provider.authScheme) {
+      case 'x-api-key':
+        headers['x-api-key'] = provider.apiKey;
+        break;
+      case 'query':
+        // Append ?api_key= (or &api_key=) to the URL.
+        url += (url.includes('?') ? '&' : '?') + `api_key=${encodeURIComponent(provider.apiKey)}`;
+        break;
+      case 'basic': {
+        // key may be "user:pass" already, or a bare token treated as the password.
+        const raw = provider.apiKey.includes(':') ? provider.apiKey : `:${provider.apiKey}`;
+        headers.Authorization = `Basic ${Buffer.from(raw).toString('base64')}`;
+        break;
+      }
+      case 'bearer':
+      default:
+        headers.Authorization = `Bearer ${provider.apiKey}`;
+        break;
+    }
   }
 
   let res: Response;

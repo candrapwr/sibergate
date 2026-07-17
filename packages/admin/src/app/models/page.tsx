@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Plus, Trash2, Pencil, Cpu } from 'lucide-react';
 import { toast } from 'sonner';
 import { useModels, useProviders, useUpsertModel, useDeleteModel, useToggleModel } from '@/lib/queries';
@@ -13,6 +13,8 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { Pagination } from '@/components/pagination';
 
 const MODALITIES = ['text-to-text', 'vision', 'image-generation', 'video-generation', 'audio', 'audio-transcription', 'embeddings'];
 
@@ -53,6 +55,15 @@ export default function ModelsPage() {
   }, [models, filter]);
 
   const hasFilters = filter.provider || filter.modality || filter.q;
+
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = filtered.slice(page * pageSize, page * pageSize + pageSize);
+  // Reset to first page whenever the filter narrows the result set.
+  const filteredLen = filtered.length;
+  useEffect(() => {
+    setPage(0);
+  }, [filter.provider, filter.modality, filter.q, filteredLen]);
 
   return (
     <div className="space-y-6">
@@ -102,6 +113,7 @@ export default function ModelsPage() {
       ) : filtered.length === 0 ? (
         <EmptyState icon={Cpu} title="No models match" hint="Adjust the filters above." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -115,9 +127,18 @@ export default function ModelsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map((m) => <ModelRow key={m.id} model={m} />)}
+            {paged.map((m) => <ModelRow key={m.id} model={m} />)}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={filtered.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="models"
+        />
+        </>
       )}
     </div>
   );
@@ -147,9 +168,22 @@ function ModelRow({ model }: { model: Model }) {
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">
           <EditButton model={model} />
-          <Button variant="ghost" size="icon" onClick={() => del.mutateAsync(model.id).catch((e) => toast.error(e.status === 409 ? 'Used by a route' : e.message))}>
-            <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-          </Button>
+          <ConfirmDialog
+            trigger={
+              <Button variant="ghost" size="icon">
+                <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+              </Button>
+            }
+            title={`Delete model "${model.id}"?`}
+            description="This permanently removes the model from the directory. Routes that target it will keep the reference but the target will no longer resolve."
+            pending={del.isPending}
+            onConfirm={() =>
+              del
+                .mutateAsync(model.id)
+                .then(() => toast.success('Model deleted'))
+                .catch((e) => toast.error(e.status === 409 ? 'Used by a route' : e.message))
+            }
+          />
         </div>
       </TableCell>
     </TableRow>

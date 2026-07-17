@@ -26,10 +26,15 @@ import {
 } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { Pagination } from '@/components/pagination';
 
 export default function ProvidersPage() {
   const { data, isLoading } = useProviders();
   const providers = data?.data ?? [];
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = providers.slice(page * pageSize, page * pageSize + pageSize);
 
   return (
     <div className="space-y-6">
@@ -43,6 +48,7 @@ export default function ProvidersPage() {
       ) : providers.length === 0 ? (
         <EmptyState icon={Boxes} title="No providers yet" hint="Add one to start routing requests." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -56,11 +62,20 @@ export default function ProvidersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {providers.map((p) => (
+            {paged.map((p) => (
               <ProviderRow key={p.id} provider={p} />
             ))}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={providers.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="providers"
+        />
+        </>
       )}
     </div>
   );
@@ -89,17 +104,22 @@ function ProviderRow({ provider }: { provider: Provider }) {
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">
           <EditButton provider={provider} />
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() =>
+          <ConfirmDialog
+            trigger={
+              <Button variant="ghost" size="icon">
+                <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+              </Button>
+            }
+            title={`Delete provider "${provider.id}"?`}
+            description="This permanently removes the provider and its encrypted credentials. Models that reference it will also be deleted. Routes may lose targets."
+            pending={del.isPending}
+            onConfirm={() =>
               del
                 .mutateAsync(provider.id)
+                .then(() => toast.success('Provider deleted'))
                 .catch((e) => toast.error(e.status === 409 ? 'Still in use by a model/route' : e.message))
             }
-          >
-            <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-          </Button>
+          />
         </div>
       </TableCell>
     </TableRow>
@@ -177,17 +197,32 @@ function ProviderForm({
     baseUrl: provider?.baseUrl ?? '',
     authScheme: provider?.authScheme ?? 'bearer',
     apiKey: '',
-    timeoutMs: provider?.timeoutMs ?? '',
   });
+  // Per-modality endpoint templates (e.g. {generic:"/anything/{path}"}).
+  // Initialized from the provider's existing endpoints map on edit.
+  const [endpoints, setEndpoints] = useState<Array<{ key: string; value: string }>>(
+    provider ? Object.entries(provider.endpoints).map(([key, value]) => ({ key, value })) : [],
+  );
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const endpointMap: Record<string, string> = {};
+    for (const { key, value } of endpoints) {
+      const k = key.trim();
+      if (k) endpointMap[k] = value;
+    }
     const payload: Record<string, unknown> = {
       id: form.id,
       name: form.name || form.id,
       baseUrl: form.baseUrl,
       authScheme: form.authScheme,
-      ...(form.timeoutMs ? { timeoutMs: Number(form.timeoutMs) } : {}),
+      // Only send endpoints when the operator added custom templates; otherwise
+      // the provider inherits the OpenAI-compatible defaults at the catalog/
+      // config layer (empty {} would wipe them).
+      ...(Object.keys(endpointMap).length > 0 ? { endpoints: endpointMap } : {}),
+      // 'none' auth needs no key; on create the gateway requires a key, so send
+      // a harmless placeholder. On edit, blank keeps the existing credentials.
+      ...(form.authScheme === 'none' && !isEdit ? { apiKey: 'none' } : {}),
       ...(form.apiKey ? { apiKey: form.apiKey } : {}),
     };
     try {
@@ -213,23 +248,89 @@ function ProviderForm({
           <Label htmlFor="purl">Base URL</Label>
           <Input id="purl" value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" required />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="pauth">Auth scheme</Label>
-            <select id="pauth" value={form.authScheme} onChange={(e) => setForm({ ...form, authScheme: e.target.value as 'bearer' | 'x-api-key' })} className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]">
-              <option value="bearer">bearer</option>
-              <option value="x-api-key">x-api-key</option>
-            </select>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ptimeout">Timeout (ms)</Label>
-            <Input id="ptimeout" type="number" value={form.timeoutMs} onChange={(e) => setForm({ ...form, timeoutMs: e.target.value })} placeholder="30000" />
-          </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pauth">Auth scheme</Label>
+          <select
+            id="pauth"
+            value={form.authScheme}
+            onChange={(e) => setForm({ ...form, authScheme: e.target.value as Provider['authScheme'] })}
+            className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]"
+          >
+            <option value="bearer">bearer</option>
+            <option value="x-api-key">x-api-key</option>
+            <option value="query">query (?api_key=)</option>
+            <option value="basic">basic (HTTP Basic)</option>
+            <option value="none">none (public)</option>
+          </select>
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pkey">API key {isEdit && <span className="text-muted-foreground">(blank = keep current)</span>}</Label>
-          <Input id="pkey" type="password" value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." required={!isEdit} />
+          <Label htmlFor="pkey">
+            API key{' '}
+            {isEdit ? <span className="text-muted-foreground">(blank = keep current)</span> : null}
+            {form.authScheme === 'none' && <span className="text-muted-foreground">(not required for none)</span>}
+          </Label>
+          <Input
+            id="pkey"
+            type="password"
+            value={form.apiKey}
+            onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+            placeholder="sk-..."
+            required={isEdit ? false : form.authScheme !== 'none'}
+          />
         </div>
+
+        {/* Per-modality endpoint templates.
+            Most providers inherit the OpenAI-compatible defaults automatically,
+            so this is empty for them. It matters for `generic` (the passthrough
+            modality) where you MUST set the upstream path, optionally with
+            {model} / {path} placeholders. */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="pendpoints">Endpoint templates</Label>
+            <button
+              type="button"
+              onClick={() => setEndpoints([...endpoints, { key: '', value: '' }])}
+              className="flex items-center gap-1 text-[11px] text-primary hover:underline"
+            >
+              <Plus size={11} /> Add
+            </button>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Optional. Override the upstream path per modality. For <code className="font-mono">generic</code> routes, set e.g.{' '}
+            <code className="rounded bg-secondary px-1 font-mono">{'{ "generic": "/anything{path}" }'}</code>. Placeholders:{' '}
+            <code className="font-mono">{'{path}'}</code> (request suffix), <code className="font-mono">{'{model}'}</code>.
+          </p>
+          <div className="space-y-2">
+            {endpoints.length === 0 && (
+              <p className="text-[11px] italic text-muted-foreground">No custom endpoints — provider inherits OpenAI-compatible defaults.</p>
+            )}
+            {endpoints.map((ep, i) => (
+              <div key={i} className="flex gap-2">
+                <Input
+                  value={ep.key}
+                  onChange={(e) => setEndpoints(endpoints.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))}
+                  placeholder="generic"
+                  className="font-mono text-[12px]"
+                />
+                <Input
+                  value={ep.value}
+                  onChange={(e) => setEndpoints(endpoints.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                  placeholder="/anything{path}"
+                  className="font-mono text-[12px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setEndpoints(endpoints.filter((_, j) => j !== i))}
+                  className="px-2 text-muted-foreground hover:text-destructive"
+                  title="Remove"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <DialogFooter><Button type="submit" disabled={submitting}>{submitLabel}</Button></DialogFooter>
       </form>
     </>

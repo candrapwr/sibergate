@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { formatMs, formatNum } from '@/lib/utils';
+import { defaultPromptFor } from '@/lib/code-samples';
 
 /**
  * Inline route tester: send a probe request through the gateway and visualize
@@ -20,8 +21,9 @@ import { formatMs, formatNum } from '@/lib/utils';
 export function RouteTestDialog({ route }: { route: Route }) {
   const [open, setOpen] = useState(false);
   const [clientKey, setClientKey] = useState('');
-  const [prompt, setPrompt] = useState('Reply with exactly: OK');
+  const [prompt, setPrompt] = useState(defaultPromptFor(route.modality));
   const { test, result, testing } = useRouteTest();
+  const isTranscribe = route.modality === 'transcribe';
 
   const run = async () => {
     try {
@@ -59,10 +61,12 @@ export function RouteTestDialog({ route }: { route: Route }) {
               className="text-[12px]"
             />
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="tprompt">Probe prompt</Label>
-            <Input id="tprompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-[12px]" />
-          </div>
+          {!isTranscribe && (
+            <div className="space-y-1.5">
+              <Label htmlFor="tprompt">{route.modality === 'embed' ? 'Input text' : 'Probe prompt'}</Label>
+              <Input id="tprompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-[12px]" />
+            </div>
+          )}
 
           <Button onClick={run} disabled={testing} className="w-full">
             {testing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}

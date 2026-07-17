@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute, useToggleRoute } from '@/lib/queries';
+import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute, useToggleRoute, useUpsertModel } from '@/lib/queries';
 import type { Route } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,8 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { Pagination } from '@/components/pagination';
 import { RouteTestDialog } from '@/components/routes/route-test-dialog';
 import { RouteCodeDialog } from '@/components/routes/route-code-dialog';
 
@@ -29,11 +31,15 @@ const MODALITIES = [
   { id: 'transcribe', label: 'Transcribe', desc: 'Audio→text (/v1/audio/transcriptions)' },
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
   { id: 'music', label: 'Music', desc: 'Text-to-music (/v1/music/generations)' },
+  { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/proxy/:id) — non-LLM' },
 ] as const;
 
 export default function RoutesPage() {
   const { data, isLoading } = useRoutes();
   const routes = data?.data ?? [];
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = routes.slice(page * pageSize, page * pageSize + pageSize);
   return (
     <div className="space-y-6">
       <PageHeader title="Routes" subtitle="Virtual endpoints clients call — resolved by strategy" actions={<CreateButton />} />
@@ -42,6 +48,7 @@ export default function RoutesPage() {
       ) : routes.length === 0 ? (
         <EmptyState icon={RouteIcon} title="No routes yet" hint="Create a route to expose a virtual model." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -54,9 +61,18 @@ export default function RoutesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {routes.map((r) => <RouteRow key={r.id} route={r} />)}
+            {paged.map((r) => <RouteRow key={r.id} route={r} />)}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={routes.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="routes"
+        />
+        </>
       )}
     </div>
   );
@@ -95,9 +111,22 @@ function RouteRow({ route }: { route: Route }) {
           <RouteCodeDialog route={route} />
           <RouteTestDialog route={route} />
           <EditButton route={route} />
-          <Button variant="ghost" size="icon" onClick={() => del.mutateAsync(route.id).catch((e) => toast.error(e.message))}>
-            <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-          </Button>
+          <ConfirmDialog
+            trigger={
+              <Button variant="ghost" size="icon">
+                <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+              </Button>
+            }
+            title={`Delete route "${route.id}"?`}
+            description="This permanently removes the virtual endpoint. Clients calling this route id will immediately start receiving 404s."
+            pending={del.isPending}
+            onConfirm={() =>
+              del
+                .mutateAsync(route.id)
+                .then(() => toast.success('Route deleted'))
+                .catch((e) => toast.error(e.message))
+            }
+          />
         </div>
       </TableCell>
     </TableRow>
@@ -130,6 +159,7 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   const { data: providers } = useProviders();
   const { data: models } = useModels();
   const upsert = useUpsertRoute();
+  const upsertModel = useUpsertModel();
   const isEdit = !!route;
   const [form, setForm] = useState({
     id: route?.id ?? '',
@@ -177,14 +207,15 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   // can serve that modality". e.g. route modality "image" ↔ model capability
   // "image-generation"; "speech"/"music" ↔ "audio"; "transcribe" ↔ "audio-
   // transcription". Chat matches any text model.
-  const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
-    chat: ['text-to-text', 'vision'],
-    image: ['image-generation'],
-    speech: ['audio'],
-    transcribe: ['audio-transcription'],
-    embed: ['embeddings'],
-    music: ['audio'],
-  };
+const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
+  chat: ['text-to-text', 'vision'],
+  image: ['image-generation'],
+  speech: ['audio'],
+  transcribe: ['audio-transcription'],
+  embed: ['embeddings'],
+  music: ['audio'],
+  generic: [], // passthrough doesn't care about model capability — any model qualifies
+};
   const neededCaps = ROUTE_TO_MODEL_MODALITY[form.modality] ?? [];
 
   const availableModels =
@@ -194,6 +225,27 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
       if (neededCaps.length === 0) return true;
       return m.modalities.some((cap) => neededCaps.includes(cap));
     }) ?? [];
+
+  // Generic passthrough has no real "model", but route_targets needs a model FK.
+  // Offer a one-click placeholder so operators aren't forced to leave this page.
+  const isGeneric = form.modality === 'generic';
+  const providerHasModels = availableModels.length > 0;
+  const createDefaultModel = async () => {
+    if (!newTarget.provider) return;
+    const id = `${newTarget.provider}-default`;
+    try {
+      await upsertModel.mutateAsync({
+        id,
+        provider: newTarget.provider,
+        displayName: `${newTarget.provider} (default)`,
+        modalities: [],
+      } as any);
+      setNewTarget({ ...newTarget, model: id });
+      toast.success(`Created placeholder model '${id}'`);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
 
   return (
     <>
@@ -261,6 +313,14 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
               </select>
               <Button type="button" variant="outline" size="sm" onClick={addTarget}><Plus size={14} /></Button>
             </div>
+            {isGeneric && newTarget.provider && !providerHasModels && (
+              <div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-[11px] text-muted-foreground">
+                <span className="flex-1">No model on this provider yet. Generic routes need a target model (any will do).</span>
+                <Button type="button" variant="outline" size="sm" onClick={createDefaultModel} disabled={upsertModel.isPending}>
+                  Create placeholder
+                </Button>
+              </div>
+            )}
           </div>
         </div>
         <DialogFooter><Button type="submit" disabled={upsert.isPending || form.targets.length === 0}>{submitLabel}</Button></DialogFooter>

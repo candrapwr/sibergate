@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { ScrollText, X, ArrowRight, CheckCircle2, XCircle } from 'lucide-react';
 import { useLogs, useProviders, useRoutes } from '@/lib/queries';
 import type { RequestLog, TrailStep } from '@/lib/types';
@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { Pagination } from '@/components/pagination';
 import { formatMs, formatTs, formatUsd, formatNum } from '@/lib/utils';
 
 export default function LogsPage() {
@@ -44,6 +45,15 @@ export default function LogsPage() {
     });
   }, [logs, filter]);
 
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = filtered.slice(page * pageSize, page * pageSize + pageSize);
+  // Reset to first page whenever the filter or result set changes.
+  const filteredLen = filtered.length;
+  useEffect(() => {
+    setPage(0);
+  }, [filter.status, filter.route, filter.provider, filter.q, filteredLen]);
+
   const routes = [...new Set(logs.map((l) => l.route).filter(Boolean))] as string[];
   const providers = [...new Set(logs.map((l) => l.provider).filter(Boolean))] as string[];
 
@@ -78,6 +88,7 @@ export default function LogsPage() {
       ) : filtered.length === 0 ? (
         <EmptyState icon={ScrollText} title="No requests yet" hint="Send a request via /v1/chat/completions to see logs." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -91,7 +102,7 @@ export default function LogsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.map((l) => (
+            {paged.map((l) => (
               <TableRow key={l.id} className="cursor-pointer" onClick={() => setSelected(l)}>
                 <TableCell className="whitespace-nowrap text-[12px] text-muted-foreground">{formatTs(l.ts)}</TableCell>
                 <TableCell className="font-mono text-[12px]">{l.route ?? '—'}</TableCell>
@@ -104,6 +115,15 @@ export default function LogsPage() {
             ))}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={filtered.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="logs"
+        />
+        </>
       )}
 
       {selected && <DetailDrawer log={selected} onClose={() => setSelected(null)} />}
