@@ -86,8 +86,20 @@ cp .env.example .env
 ### 3. Seed & run
 ```bash
 npm run seed     # encrypts keys into SQLite, prints a client API key
-npm run dev      # gateway :8787 + admin dashboard :3000
+npm run dev      # gateway :8787 + admin dashboard :3000 (hot-reload, for development)
 ```
+
+> **Production / self-host** — build once, then run both services together:
+> ```bash
+> npm run build    # build core + gateway + admin
+> npm start        # gateway :8787 + admin :3000 (production mode, no hot-reload)
+> ```
+> See also the [Deployment (PM2)](#-deployment-pm2) section below for auto-restart & boot-on-reboot.
+
+**Ports are configurable.** The gateway reads `SIBERGATE_PORT` from `.env`; the
+admin reads `SIBERGATE_ADMIN_PORT` from `packages/admin/.env.local` (default
+`3000`). Example: to run the admin on `8010`, add `SIBERGATE_ADMIN_PORT=8010`
+to `packages/admin/.env.local` and restart.
 
 ### 4. Try it
 ```bash
@@ -104,7 +116,7 @@ curl http://localhost:8787/v1/images/generations \
   -d '{"model":"image-fast","prompt":"a cat in a spacesuit"}'
 ```
 
-Or open **http://localhost:3000** for the admin dashboard.
+Or open **http://localhost:3000** (or whatever `SIBERGATE_ADMIN_PORT` you set) for the admin dashboard.
 
 ---
 
@@ -263,6 +275,32 @@ sibergate/
 - The admin key lives server-side only — the browser hits a proxy route that injects it.
 - Decryption is transient (in-memory at request time); keys are never logged.
 - **Upstream auth schemes** — pick per provider to match the target API: `bearer` (default, OpenAI-style), `x-api-key` (Anthropic-style), `query` (`?api_key=`), `basic` (HTTP Basic), or `none` (public APIs). The key stays encrypted at rest regardless of scheme.
+
+---
+
+## 🚀 Deployment (PM2)
+
+For a production server, run the gateway + admin as managed processes that
+auto-restart and survive reboots via [PM2](https://pm2.keymetrics.io/). An
+`ecosystem.config.cjs` file is included.
+
+```bash
+npm install -g pm2
+npm install && npm run build      # build once (core + gateway + admin)
+pm2 start ecosystem.config.cjs    # start gateway + admin together
+pm2 logs                          # tail both processes' logs
+pm2 save && pm2 startup           # auto-start on server reboot (once)
+```
+
+| Action | Command |
+|---|---|
+| View status | `pm2 status` |
+| Restart after code/env change | `npm run build && pm2 restart all` |
+| Stop / remove | `pm2 stop all` / `pm2 delete all` |
+
+Logs are written to `./logs/` (already gitignored). The admin port is still read
+from `packages/admin/.env.local` (`SIBERGATE_ADMIN_PORT`), so changing the port
+works the same as in dev mode.
 
 ---
 
