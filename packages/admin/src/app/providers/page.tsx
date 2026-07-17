@@ -8,6 +8,7 @@ import {
   useCreateProvider,
   useUpdateProvider,
   useDeleteProvider,
+  useToggleProvider,
 } from '@/lib/queries';
 import type { Provider } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -67,6 +68,7 @@ export default function ProvidersPage() {
 
 function ProviderRow({ provider }: { provider: Provider }) {
   const del = useDeleteProvider();
+  const toggle = useToggleProvider();
   return (
     <TableRow>
       <TableCell className="font-mono text-[12px]">{provider.id}</TableCell>
@@ -77,7 +79,12 @@ function ProviderRow({ provider }: { provider: Provider }) {
         {provider.hasCredentials ? <Badge variant="success">set</Badge> : <Badge variant="warning">missing</Badge>}
       </TableCell>
       <TableCell>
-        <Badge variant={provider.enabled ? 'success' : 'muted'}>{provider.enabled ? 'enabled' : 'disabled'}</Badge>
+        <button
+          onClick={() => toggle.mutate({ id: provider.id, enabled: !provider.enabled })}
+          title={provider.enabled ? 'Click to disable' : 'Click to enable'}
+        >
+          <Badge variant={provider.enabled ? 'success' : 'muted'}>{provider.enabled ? 'enabled' : 'disabled'}</Badge>
+        </button>
       </TableCell>
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">

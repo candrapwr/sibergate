@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Plus, Trash2, Pencil, Cpu } from 'lucide-react';
 import { toast } from 'sonner';
-import { useModels, useProviders, useUpsertModel, useDeleteModel } from '@/lib/queries';
+import { useModels, useProviders, useUpsertModel, useDeleteModel, useToggleModel } from '@/lib/queries';
 import type { Model } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
@@ -125,6 +125,7 @@ export default function ModelsPage() {
 
 function ModelRow({ model }: { model: Model }) {
   const del = useDeleteModel();
+  const toggle = useToggleModel();
   return (
     <TableRow>
       <TableCell className="font-mono text-[12px]">{model.id}</TableCell>
@@ -138,7 +139,11 @@ function ModelRow({ model }: { model: Model }) {
       <TableCell className="text-muted-foreground">
         {model.inputPricePer1m != null ? `$${model.inputPricePer1m}/${model.outputPricePer1m ?? '-'}` : '—'}
       </TableCell>
-      <TableCell><Badge variant={model.enabled ? 'success' : 'muted'}>{model.enabled ? 'enabled' : 'disabled'}</Badge></TableCell>
+      <TableCell>
+        <button onClick={() => toggle.mutate({ id: model.id, enabled: !model.enabled })} title={model.enabled ? 'Click to disable' : 'Click to enable'}>
+          <Badge variant={model.enabled ? 'success' : 'muted'}>{model.enabled ? 'enabled' : 'disabled'}</Badge>
+        </button>
+      </TableCell>
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">
           <EditButton model={model} />

@@ -116,6 +116,18 @@ export function useDeleteProvider() {
   });
 }
 
+export function useToggleProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.patch(`providers/${id}`, { enabled }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['providers'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
 /* ──────────────────────────── Model mutations ───────────────────────── */
 
 export function useUpsertModel() {
@@ -143,6 +155,18 @@ export function useDeleteModel() {
   });
 }
 
+export function useToggleModel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.patch(`models/${id}`, { enabled }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['models'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
 /* ──────────────────────────── Route mutations ───────────────────────── */
 
 export function useUpsertRoute() {
@@ -163,6 +187,18 @@ export function useDeleteRoute() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete(`routes/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['routes'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+export function useToggleRoute() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      api.patch(`routes/${id}`, { enabled }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['routes'] });
       qc.invalidateQueries({ queryKey: ['system'] });

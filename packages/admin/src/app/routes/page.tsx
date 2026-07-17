@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
-import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute } from '@/lib/queries';
+import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute, useToggleRoute } from '@/lib/queries';
 import type { Route } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
@@ -64,6 +64,7 @@ export default function RoutesPage() {
 
 function RouteRow({ route }: { route: Route }) {
   const del = useDeleteRoute();
+  const toggle = useToggleRoute();
   return (
     <TableRow>
       <TableCell className="font-mono text-[12px]">{route.id}</TableCell>
@@ -84,7 +85,11 @@ function RouteRow({ route }: { route: Route }) {
         </div>
       </TableCell>
       <TableCell className="text-muted-foreground">{(route.timeoutMs / 1000).toFixed(0)}s</TableCell>
-      <TableCell><Badge variant={route.enabled ? 'success' : 'muted'}>{route.enabled ? 'enabled' : 'disabled'}</Badge></TableCell>
+      <TableCell>
+        <button onClick={() => toggle.mutate({ id: route.id, enabled: !route.enabled })} title={route.enabled ? 'Click to disable' : 'Click to enable'}>
+          <Badge variant={route.enabled ? 'success' : 'muted'}>{route.enabled ? 'enabled' : 'disabled'}</Badge>
+        </button>
+      </TableCell>
       <TableCell className="text-right">
         <div className="flex justify-end gap-1">
           <RouteCodeDialog route={route} />
