@@ -154,6 +154,23 @@ function migrate(db: DB): void {
 
   addColumnIfMissing(db, 'requests', 'modality', "TEXT");
   // For logging: which modality a request used (chat by default).
+
+  // ── admin panel users (login) ──
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id            TEXT PRIMARY KEY,
+      email         TEXT NOT NULL UNIQUE,
+      name          TEXT NOT NULL,
+      -- scrypt hash: "scrypt:<N>:<salt_hex>:<hash_hex>"
+      password_hash TEXT NOT NULL,
+      role          TEXT NOT NULL DEFAULT 'admin',  -- owner | admin | viewer
+      status        TEXT NOT NULL DEFAULT 'active', -- active | disabled
+      last_login_at TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  `);
 }
 
 /** Add a column only if it doesn't already exist (idempotent migration). */

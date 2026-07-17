@@ -21,8 +21,8 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
   let keyCount = -1;
   return async (c, next) => {
     const path = new URL(c.req.url).pathname;
-    // Public paths + admin (admin has its own auth middleware).
-    if (path === '/' || path === '/health' || path.startsWith('/admin')) {
+    // Public paths + admin + auth (these have their own auth handling).
+    if (path === '/' || path === '/health' || path.startsWith('/admin') || path.startsWith('/auth')) {
       await next();
       return;
     }

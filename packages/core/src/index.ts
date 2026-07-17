@@ -14,4 +14,20 @@ export * as admin from './admin.js';
 export { ConflictError } from './admin.js';
 export { KNOWN_PROVIDERS, KNOWN_STATS } from './known-providers.js';
 export type { KnownProvider, KnownModel } from './known-providers.js';
+export {
+  hashPassword,
+  verifyPassword,
+  signSession,
+  verifySession,
+  sessionCookieHeader,
+  clearSessionCookieHeader,
+  SESSION_COOKIE,
+  authenticate,
+  createUser,
+  findUserById,
+  findUserByEmail,
+  userCount,
+  type User,
+  type SafeUser,
+} from './auth.js';
 export { estimateTokens } from './tokens.js';
