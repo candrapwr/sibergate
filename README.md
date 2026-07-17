@@ -17,7 +17,7 @@ and load balancing — all on your own infrastructure, with zero markup.
 
 ---
 
-> 🌐 **Part of the [Siber Ecosystem](https://datasiber.id)** — built & maintained by **DataSiberLab**.
+> 🌐 **Part of the [Siber Ecosystem](https://datasiber.com)** — built & maintained by **DataSiberLab**.
 
 SiberGate is a privacy-first, open-source **reverse proxy** that sits in front of
 your LLM, image, audio, and embedding providers. Instead of hard-coding one
@@ -130,18 +130,18 @@ audio-transcription, and embeddings.
 
 | Provider | Modalities | Highlights |
 |---|---|---|
-| **OpenAI** | chat · vision · image · speech · transcribe · embed | GPT-5 / 5-mini / 5-nano, GPT-4.1 family, o3, o4-mini, GPT Image 1, DALL·E 3, TTS, Whisper, embeddings |
-| **Anthropic** | chat · vision | Claude Opus 4.1, Sonnet 4 / 4.5, Haiku 4.5, 3.7 Sonnet, 3.5 line |
-| **Google Gemini** | chat · vision · audio · image · embed | 2.5 Pro / Flash / Flash-Lite, 2.5 Flash Image (nano banana), 2.0 Flash |
-| **DeepSeek** | chat | DeepSeek V3 (chat), R1 (reasoner) |
-| **Groq** | chat · vision · transcribe · audio | Llama 4 Scout / Maverick, 3.3 70B, Whisper v3, PlayAI TTS |
-| **xAI (Grok)** | chat · vision · image | Grok 4, Grok 4 Fast, Grok 2 Vision / Image |
-| **Mistral** | chat · vision · embed | Large / Medium / Small, Pixtral Large / 12B, Mistral Embed |
-| **OpenRouter** | chat · vision | Auto (cheapest), plus cross-vendor GPT/Claude/Gemini routing |
-| **Together AI** | chat · vision · image | Llama 4 / 3.3, Qwen 2.5 72B, FLUX.1 schnell / dev |
-| **Fireworks AI** | chat · vision · image · transcribe | Llama 4 Scout, 3.3 70B, DeepSeek V3, FLUX.1 dev, Whisper v3 |
-| **Cohere** | chat · embed | Command A, R+ / R, Embed v3 (English + Multilingual) |
-| **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning / Reasoning Pro |
+| **OpenAI** | chat · vision · image · speech · transcribe · embed | GPT-5.6 (Sol/Terra/Luna), GPT-5.5, GPT-5.4 family, GPT-5, GPT-4.1, o3/o4, GPT Image 2, DALL·E, Realtime, TTS, Whisper, embeddings |
+| **Anthropic** | chat · vision | Claude Fable 5, Opus 4.8 / 4.7 / 4.6 / 4.5, Sonnet 5 / 4.6 / 4.5, Haiku 4.5, 3.7 / 3.5 line |
+| **Google Gemini** | chat · vision · audio · image · embed | Gemini 3.5 Flash, 3.1 Pro / Flash-Lite, 3 Flash, 2.5 Pro / Flash, Nano Banana 2 / Pro, Lyria 3 (music), Flash TTS, embeddings |
+| **DeepSeek** | chat | DeepSeek V4 Flash / Pro, V3, R1 |
+| **Groq** | chat · transcribe | GPT OSS 120B / 20B, Llama 4 Scout, 3.3 70B, Qwen3, DeepSeek R1 distill, Whisper v3 / Turbo |
+| **xAI (Grok)** | chat · vision · image | Grok 4.5 / 4.3 / 4.20 Reasoning, Grok Build, Grok Imagine (image + video) |
+| **Mistral** | chat · vision · embed · audio | Mistral Large 3 / Medium 3.5 / Small 4, Pixtral Large / 12B, OCR 4, Voxtral TTS, Embed |
+| **OpenRouter** | chat · vision | Auto (cheapest), plus cross-vendor GPT-5.x / Claude / Gemini routing |
+| **Together AI** | chat · vision · image | DeepSeek V4 Pro / Flash, Llama 4 / 3.3, Qwen 2.5 72B, FLUX.1 schnell / dev |
+| **Fireworks AI** | chat · vision · image · transcribe | DeepSeek V4, GPT OSS 120B, Llama 4 Scout, Kimi K2.7, GLM 5.2, FLUX.1 dev, Whisper v3 |
+| **Cohere** | chat · embed | Command A+ / A, R+ / R, Embed v3 (English + Multilingual) |
+| **Perplexity** | chat | Sonar Pro, Sonar, Sonar Reasoning Pro |
 | **Novita AI** | chat · image · embed | DeepSeek / Llama / Qwen via Novita + FLUX.1 / SDXL / SD 3.5 images |
 | **DeepInfra** | chat · vision · image · music | ACE-Step text-to-music, FLUX.1, SD 3.5, Llama 4, DeepSeek R1 |
 | **Ollama** (local) | chat · vision · embed | Llama 3.3, Qwen 2.5, LLaVA, Nomic Embed |
@@ -265,10 +265,10 @@ required.
 
 <div align="center">
 
-**Built with ❤️ by [DataSiberLab](https://datasiber.id)** as part of the Siber ecosystem.
+**Built with ❤️ by [DataSiberLab](https://datasiber.com)** as part of the Siber ecosystem.
 
-📧 **Contact:** [candrapwr@datasiber.id](mailto:candrapwr@datasiber.id)
-🌐 **Website:** [datasiber.id](https://datasiber.id)
+📧 **Contact:** [candrapwr@datasiber.com](mailto:candrapwr@datasiber.com)
+🌐 **Website:** [datasiber.com](https://datasiber.com)
 
 Found SiberGate useful? ⭐ Star the repo and share it with fellow builders!
 
