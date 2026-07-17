@@ -56,6 +56,9 @@ export function useRouteTest() {
     setResult(null);
     const start = performance.now();
     const ep = modalityEndpoint(modality);
+    // Generic passthrough selects the route via the path (not a `model` body
+    // field), so substitute the route id into /v1/proxy/{routeId}.
+    const proxyPath = ep.proxyPath.replace('{routeId}', routeId);
     try {
       // Build the request body based on the route's modality.
       const p = prompt || DEFAULT_PROMPT;
@@ -73,12 +76,16 @@ export function useRouteTest() {
         case 'music':
           reqBody.prompt = p;
           break;
+        case 'generic':
+          // Generic REST passthrough — arbitrary body (no `model` field).
+          reqBody.example = p || 'payload';
+          break;
         default:
           reqBody.messages = [{ role: 'user', content: p }];
           reqBody.stream = false;
       }
 
-      const res = await fetch(`${window.location.origin}${ep.proxyPath}`, {
+      const res = await fetch(`${window.location.origin}${proxyPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
         body: JSON.stringify(reqBody),

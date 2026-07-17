@@ -11,7 +11,15 @@ export interface Provider {
   id: string;
   name: string;
   baseUrl: string;
-  authScheme: 'bearer' | 'x-api-key';
+  /**
+   * How the provider's key is attached to upstream requests.
+   *   bearer    → Authorization: Bearer <key>     (default; OpenAI-style)
+   *   x-api-key → x-api-key: <key>                (Anthropic-style)
+   *   query     → ?api_key=<key> appended to URL  (some REST APIs)
+   *   basic     → Authorization: Basic <base64(user:key)>  (HTTP Basic)
+   *   none      → no auth header (public upstreams; apiKey optional)
+   */
+  authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   /** Decrypted API key (held in memory only at runtime). */
   apiKey: string;
   headers: Record<string, string>;
@@ -29,7 +37,7 @@ export interface Provider {
 }
 
 /** The KIND of gateway request / route (which adapter handles it). */
-export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music';
+export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
 
 /** What a model can do (capabilities). JSON array stored in DB. */
 export type ModelModality =

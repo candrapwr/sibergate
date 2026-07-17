@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Boxes, Cpu, Route as RouteIcon } from 'lucide-react';
 import {
   Bar,
@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { Pagination } from '@/components/pagination';
 import { formatMs, formatNum, formatUsd } from '@/lib/utils';
 
 const ACCENT = '#4daafc';
@@ -43,6 +44,14 @@ export default function UsagePage() {
     const list = dim === 'route' ? stats?.byRoute : dim === 'provider' ? stats?.byProvider : stats?.byModel;
     return (list ?? []).slice().sort((a, b) => b.totalTokens - a.totalTokens);
   }, [dim, stats]);
+
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  // Reset to first page when switching dimension.
+  useEffect(() => {
+    setPage(0);
+  }, [dim]);
+  const paged = rows.slice(page * pageSize, page * pageSize + pageSize);
 
   const chartData = rows.map((r) => ({ name: r.name, tokens: r.totalTokens, cost: r.costUsd }));
 
@@ -127,6 +136,7 @@ export default function UsagePage() {
           ) : rows.length === 0 ? (
             <EmptyState icon={DIM_META[dim].icon} title="No usage data yet" hint="Send requests to see token consumption." />
           ) : (
+            <>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -140,7 +150,7 @@ export default function UsagePage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((r) => (
+                {paged.map((r) => (
                   <TableRow key={r.name}>
                     <TableCell className="font-mono text-[12px]">{r.name}</TableCell>
                     <TableCell className="text-right">{formatNum(r.count)}</TableCell>
@@ -153,6 +163,15 @@ export default function UsagePage() {
                 ))}
               </TableBody>
             </Table>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={rows.length}
+              onPageChange={setPage}
+              onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+              itemName="rows"
+            />
+            </>
           )}
         </CardContent>
       </Card>

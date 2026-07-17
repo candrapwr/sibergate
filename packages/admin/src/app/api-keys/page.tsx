@@ -13,11 +13,16 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { Pagination } from '@/components/pagination';
 import { formatTs } from '@/lib/utils';
 
 export default function ApiKeysPage() {
   const { data, isLoading } = useApiKeys();
   const keys = data?.data ?? [];
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = keys.slice(page * pageSize, page * pageSize + pageSize);
   return (
     <div className="space-y-6">
       <PageHeader title="API Keys" subtitle="Client keys for calling /v1/* (sha256-hashed)" actions={<CreateButton />} />
@@ -26,6 +31,7 @@ export default function ApiKeysPage() {
       ) : keys.length === 0 ? (
         <EmptyState icon={KeyRound} title="No API keys yet" hint="Create one for clients to authenticate." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -41,6 +47,15 @@ export default function ApiKeysPage() {
             {keys.map((k) => <KeyRow key={k.id} apiKey={k} />)}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={keys.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="keys"
+        />
+        </>
       )}
     </div>
   );
@@ -61,9 +76,22 @@ function KeyRow({ apiKey }: { apiKey: ApiKey }) {
         </button>
       </TableCell>
       <TableCell className="text-right">
-        <Button variant="ghost" size="icon" onClick={() => del.mutateAsync(apiKey.id).catch((e) => toast.error(e.message))}>
-          <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-        </Button>
+        <ConfirmDialog
+          trigger={
+            <Button variant="ghost" size="icon">
+              <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+            </Button>
+          }
+          title={`Delete API key "${apiKey.name}"?`}
+          description={`This permanently revokes the ${apiKey.keyPrefix}… key. Any client still using it will immediately start receiving 401 Unauthorized.`}
+          pending={del.isPending}
+          onConfirm={() =>
+            del
+              .mutateAsync(apiKey.id)
+              .then(() => toast.success('API key deleted'))
+              .catch((e) => toast.error(e.message))
+          }
+        />
       </TableCell>
     </TableRow>
   );

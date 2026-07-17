@@ -18,16 +18,18 @@ export const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        // overflow-hidden + min-w-0 force grid children (e.g. wide <pre>) to
-        // shrink to the dialog width and scroll internally instead of blowing
-        // out the dialog horizontally.
-        'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-lg border border-border bg-card p-5 shadow-lg [&>*]:min-w-0',
+        // max-h + overflow-y-auto keep tall dialogs inside the viewport so the
+        // footer (and everything else) stays reachable — the body scrolls when
+        // content overflows instead of the dialog growing past the screen.
+        // overflow-x stays hidden + min-w-0 so wide children (e.g. code <pre>)
+        // shrink to the dialog width and scroll internally, not horizontally.
+        'fixed left-1/2 top-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-card p-5 shadow-lg [&>*]:min-w-0',
         className,
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-3 top-3 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none">
+      <DialogPrimitive.Close className="absolute right-3 top-3 z-10 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none">
         <X size={16} className="text-muted-foreground" />
         <span className="sr-only">Close</span>
       </DialogPrimitive.Close>

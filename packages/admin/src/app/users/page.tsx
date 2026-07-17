@@ -14,6 +14,8 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { EmptyState } from '@/components/empty-state';
+import { ConfirmDialog } from '@/components/confirm-dialog';
+import { Pagination } from '@/components/pagination';
 import { formatTs } from '@/lib/utils';
 
 const ROLES = ['owner', 'admin', 'viewer'] as const;
@@ -22,6 +24,9 @@ export default function UsersPage() {
   const { data, isLoading } = useUsers();
   const { data: me } = useUser();
   const users = data?.data ?? [];
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const paged = users.slice(page * pageSize, page * pageSize + pageSize);
 
   return (
     <div className="space-y-6">
@@ -31,6 +36,7 @@ export default function UsersPage() {
       ) : users.length === 0 ? (
         <EmptyState icon={UsersIcon} title="No users yet" hint="Create one to grant admin panel access." />
       ) : (
+        <>
         <Table>
           <TableHeader>
             <TableRow>
@@ -43,11 +49,20 @@ export default function UsersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {users.map((u) => (
+            {paged.map((u) => (
               <UserRow key={u.id} user={u} selfId={me?.id} />
             ))}
           </TableBody>
         </Table>
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          total={users.length}
+          onPageChange={setPage}
+          onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
+          itemName="users"
+        />
+        </>
       )}
     </div>
   );
@@ -88,9 +103,22 @@ function UserRow({ user, selfId }: { user: User; selfId?: string }) {
         <div className="flex justify-end gap-1">
           <EditButton user={user} />
           {!isSelf && (
-            <Button variant="ghost" size="icon" onClick={() => del.mutateAsync(user.id).catch((e) => toast.error(e.message))}>
-              <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-            </Button>
+            <ConfirmDialog
+              trigger={
+                <Button variant="ghost" size="icon">
+                  <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+                </Button>
+              }
+              title={`Delete user "${user.email}"?`}
+              description="This permanently removes the user's login. They will be signed out immediately and can no longer access the admin panel."
+              pending={del.isPending}
+              onConfirm={() =>
+                del
+                  .mutateAsync(user.id)
+                  .then(() => toast.success('User deleted'))
+                  .catch((e) => toast.error(e.message))
+              }
+            />
           )}
         </div>
       </TableCell>

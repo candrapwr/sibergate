@@ -27,7 +27,7 @@ export interface KnownProvider {
   id: string;
   name: string;
   baseUrl: string;
-  authScheme: 'bearer' | 'x-api-key';
+  authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   /** Env var name convention for the key (informational; key is blank until set). */
   apiKeyEnv: string;
   docsUrl?: string;

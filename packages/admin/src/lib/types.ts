@@ -4,7 +4,7 @@ export interface Provider {
   id: string;
   name: string;
   baseUrl: string;
-  authScheme: 'bearer' | 'x-api-key';
+  authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   hasCredentials: boolean;
   endpoints: Record<string, string>;
   /** Modalities this provider can serve (keys of `endpoints`). */
@@ -54,7 +54,7 @@ export interface Route {
   updatedAt: string;
 }
 
-export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music';
+export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
 
 export interface ApiKey {
   id: string;

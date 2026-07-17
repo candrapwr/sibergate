@@ -4,9 +4,9 @@
 
 **Gateway AI self-hosted yang merutekan secara cerdas ke seluruh provider.**
 
-Satu endpoint kompatibel OpenAI. Enam modalitas. Failover otomatis, pemilihan
- tercepat, dan load balancing — semuanya di infrastruktur Anda sendiri, tanpa
- markup.
+Satu endpoint kompatibel OpenAI. Enam modalitas AI, plus passthrough REST generik.
+Failover otomatis, pemilihan tercepat, dan load balancing — semuanya di
+infrastruktur Anda sendiri, tanpa markup.
 
 [![Lisensi: MIT](https://img.shields.io/badge/lisensi-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-green.svg)](https://nodejs.org)
@@ -63,7 +63,8 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 
 - **🔌 Satu endpoint, semua provider** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, dan 10+ lainnya, disatukan di balik API OpenAI yang sudah Anda pakai.
 - **🧠 Routing cerdas** — `fallback` (failover otomatis), `fastest` (pilih latency terendah), `weighted` (load balancing). Strategi berlaku untuk semua modalitas.
-- **🎨 Enam modalitas** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step).
+- **🎨 Enam modalitas AI + passthrough REST** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama.
+- **🌐 Gateway untuk API biasa juga** — lewat `/v1/proxy/:routeId/*`, SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log.
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model, dashboard live dengan grafik.
@@ -131,8 +132,8 @@ Atau buka **http://localhost:3000** untuk dashboard admin.
 - **Request** — log per-request (latency, token, biaya, error, served-by)
 
 **Adapter provider polymorphic** mengirim setiap request ke handler modalitas
-yang tepat (chat / image / speech / transcribe / embed / music), jadi satu
-gateway melayani semuanya.
+yang tepat (chat / image / speech / transcribe / embed / music / generic), jadi
+satu gateway melayani semuanya.
 
 ---
 
@@ -225,9 +226,16 @@ Playground memakai key klien terpisah (`sg_live_*`).
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Embedding teks |
 | `POST` | `/v1/music/generations` | Text-to-music (ekstensi SiberGate) |
+| `ANY` | `/v1/proxy/:routeId/*` | **Passthrough REST generik** — proxy API non-LLM (GET/POST/PUT/PATCH/DELETE), body & response diteruskan verbatim (ekstensi SiberGate) |
 
 `model` selalu berupa **id route** (mis. `smart`), bukan id model vendor. Error
 mengikuti envelope OpenAI: `{ "error": { message, type, param, code } }`.
+
+> **Modality `generic`** memilih route dari path (`/v1/proxy/:routeId`), bukan
+> dari field `model` di body. Method, header, dan body klien diteruskan apa
+> adanya ke upstream; status code & response upstream dikembalikan verbatim.
+> Cocok untuk mem-proxy REST API, webhook, atau microservice internal dengan
+> routing + failover yang sama.
 
 ---
 
@@ -263,6 +271,7 @@ sibergate/
 - Key API klien **di-hash sha256**; plaintext ditampilkan sekali saat pembuatan.
 - Key admin hanya ada di server-side — browser mengakses route proxy yang meng-inject-nya.
 - Dekripsi bersifat sementara (in-memory saat request); key tidak pernah di-log.
+- **Skema autentikasi upstream** — pilih per provider sesuai kebutuhan API tujuan: `bearer` (default, gaya OpenAI), `x-api-key` (gaya Anthropic), `query` (`?api_key=`), `basic` (HTTP Basic), atau `none` (API publik). Key tetap di-encrypt saat disimpan apa pun skemanya.
 
 ---
 
