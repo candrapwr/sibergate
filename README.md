@@ -31,6 +31,10 @@ const client = new OpenAI({ baseURL: "http://localhost:8787/v1", apiKey: "sg_liv
 await client.chat.completions.create({ model: "smart", messages: [...] });
 ```
 
+<p align="center">
+  <img src="images/dashboard.png" alt="SiberGate Admin Dashboard" width="100%" />
+</p>
+
 ---
 
 ## ✨ Why SiberGate?
@@ -155,6 +159,32 @@ need no key — just enable them._
 ## 🖥️ Admin Dashboard
 
 A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
+
+<p align="center">
+  <img src="images/dashboard.png" alt="SiberGate Dashboard" width="100%" />
+</p>
+
+### Screenshots
+
+<details>
+<summary><b>📸 View all screens</b></summary>
+
+| Screen | Preview |
+|---|---|
+| **Dashboard** — live stats, charts by route/provider/model | <img src="images/dashboard.png" width="600" alt="Dashboard" /> |
+| **Usage** — token & cost monitoring, provider×model matrix | <img src="images/usage.png" width="600" alt="Usage" /> |
+| **Providers** — CRUD with encrypted credentials | <img src="images/providers.png" width="600" alt="Providers" /> |
+| **Models** — directory with modality badges & filters | <img src="images/models.png" width="600" alt="Models" /> |
+| **Routes** — virtual endpoints, modality + target builder | <img src="images/routes.png" width="600" alt="Routes" /> |
+| **API Keys** — issue & manage client keys | <img src="images/api_keys.png" width="600" alt="API Keys" /> |
+| **Logs** — filterable request table + detail drawer | <img src="images/logs.png" width="600" alt="Logs" /> |
+| **Chat Playground** — live SSE streaming test | <img src="images/chat_playGround.png" width="600" alt="Chat Playground" /> |
+| **Media Lab** — image, speech & music generation | <img src="images/media_lab.png" width="600" alt="Media Lab" /> |
+| **Settings** — import catalog & danger zone | <img src="images/settings.png" width="600" alt="Settings" /> |
+
+</details>
+
+### Features
 
 - **Dashboard** — live stats (requests, success rate, tokens, spend) + charts by route/provider/model
 - **Usage** — token & cost monitoring across providers, models, and routes; provider×model matrix
