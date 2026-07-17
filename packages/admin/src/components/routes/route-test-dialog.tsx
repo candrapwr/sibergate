@@ -25,7 +25,7 @@ export function RouteTestDialog({ route }: { route: Route }) {
 
   const run = async () => {
     try {
-      const r = await test(route.id, clientKey || undefined, prompt);
+      const r = await test(route.id, clientKey || undefined, prompt, route.modality);
       if (r.ok) toast.success(`Served by ${r.servedBy?.provider ?? 'gateway'} in ${formatMs(r.latencyMs)}`);
       else toast.error(r.errorMessage ?? 'Test failed');
     } catch (err) {

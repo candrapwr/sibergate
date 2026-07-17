@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { modalityEndpoint } from '@/lib/modality-endpoints';
 
 /**
  * Test a route by sending a real chat request through the gateway and
@@ -46,7 +47,7 @@ export function useRouteTest() {
   const [result, setResult] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
 
-  const test = useCallback(async (routeId: string, clientKey?: string, prompt?: string) => {
+  const test = useCallback(async (routeId: string, clientKey?: string, prompt?: string, modality?: string) => {
     const key = clientKey || readClientKey();
     if (!key) {
       throw new Error('No client API key. Set one in the Playground first (it is saved to your browser).');
@@ -54,15 +55,33 @@ export function useRouteTest() {
     setTesting(true);
     setResult(null);
     const start = performance.now();
+    const ep = modalityEndpoint(modality);
     try {
-      const res = await fetch(`${window.location.origin}/v1/chat/completions`, {
+      // Build the request body based on the route's modality.
+      const p = prompt || DEFAULT_PROMPT;
+      const reqBody: Record<string, unknown> = { model: routeId };
+      switch (modality) {
+        case 'image':
+          reqBody.prompt = p; reqBody.n = 1; reqBody.size = '1024x1024';
+          break;
+        case 'speech':
+          reqBody.input = p; reqBody.voice = 'alloy';
+          break;
+        case 'embed':
+          reqBody.input = p;
+          break;
+        case 'music':
+          reqBody.prompt = p;
+          break;
+        default:
+          reqBody.messages = [{ role: 'user', content: p }];
+          reqBody.stream = false;
+      }
+
+      const res = await fetch(`${window.location.origin}${ep.proxyPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({
-          model: routeId,
-          messages: [{ role: 'user', content: prompt || DEFAULT_PROMPT }],
-          stream: false,
-        }),
+        body: JSON.stringify(reqBody),
       });
 
       const latencyMs = Math.round(performance.now() - start);

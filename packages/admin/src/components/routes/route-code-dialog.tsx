@@ -26,7 +26,7 @@ export function RouteCodeDialog({ route }: { route: Route }) {
   const [prompt, setPrompt] = useState('Hello!');
   const [copied, setCopied] = useState(false);
 
-  const code = generateSample(lang, { routeId: route.id, baseUrl, apiKey, prompt });
+  const code = generateSample(lang, { routeId: route.id, modality: route.modality, baseUrl, apiKey, prompt });
 
   const copy = () => {
     navigator.clipboard.writeText(code);
