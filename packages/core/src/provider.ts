@@ -129,14 +129,19 @@ export class GatewayCallError extends Error {
   }
 }
 
-/** Should the engine fail over to the next target given this error? */
+/**
+ * Should the engine fail over to the next target given this error?
+ *
+ * Each route target is a distinct (provider, model) pair, so almost ANY
+ * upstream error is worth trying the next target for — a 400 "model not found"
+ * from one provider doesn't mean the next provider's model will also fail.
+ * The only case we DON'T fail over is when the route itself has no targets.
+ */
 export function isFailoverable(err: unknown): boolean {
   if (!(err instanceof GatewayCallError)) return false;
-  if (['timeout', 'network', 'rate_limited', 'server_error', 'unsupported'].includes(err.code)) return true;
-  const status = err.status;
-  if (typeof status === 'number') {
-    if (status === 401 || status === 403) return true; // per-provider keys
-    if (status >= 500) return true;
-  }
-  return false;
+  // 'no_targets' / 'all_failed' mean there's nothing left to try.
+  if (err.code === 'no_targets' || err.code === 'all_failed') return false;
+  // Everything else (timeout, network, rate-limited, server errors, AND client
+  // errors like 400/404 "model not found") → try the next target.
+  return true;
 }
