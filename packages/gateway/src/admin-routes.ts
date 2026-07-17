@@ -90,6 +90,25 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(updated);
   });
 
+  // Partial update (e.g. toggle enabled). Merge onto the existing row so a
+  // bare {enabled:false} works without re-supplying required fields.
+  app.patch('/models/:id', async (c) => {
+    const id = c.req.param('id');
+    const existing = admin.getModel(id) as Record<string, unknown> | null;
+    if (!existing) return c.json(notFound('model'), 404);
+    const body = await c.req.json();
+    const merged = {
+      id,
+      provider: existing.provider,
+      displayName: existing.displayName,
+      modalities: existing.modalities,
+      ...body,
+    };
+    const updated = admin.upsertModel(merged);
+    reload();
+    return c.json(updated);
+  });
+
   app.delete('/models/:id', (c) => {
     const ok = admin.deleteModel(c.req.param('id'));
     if (!ok) return c.json(notFound('model'), 404);
@@ -115,6 +134,23 @@ export function createAdminRouter(configStore: ConfigStore) {
   app.put('/routes/:id', async (c) => {
     const body = await c.req.json();
     const updated = admin.upsertRoute({ ...body, id: c.req.param('id') });
+    reload();
+    return c.json(updated);
+  });
+
+  // Partial update (e.g. toggle enabled). Merge onto the existing row so a
+  // bare {enabled:false} works without re-supplying targets/required fields.
+  app.patch('/routes/:id', async (c) => {
+    const id = c.req.param('id');
+    const existing = admin.getRouteRow(id) as Record<string, unknown> | null;
+    if (!existing) return c.json(notFound('route'), 404);
+    const body = await c.req.json();
+    const merged = {
+      id,
+      strategy: existing.strategy,
+      ...body,
+    };
+    const updated = admin.upsertRoute(merged);
     reload();
     return c.json(updated);
   });
