@@ -35,6 +35,7 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  // Run on all paths except static/asset routes.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  // Run on all paths except static assets, Next internals, and API routes
+  // (API routes do their own session check in the proxy handler).
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|api).*)'],
 };

@@ -89,14 +89,24 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(created, 201);
   });
 
-  app.get('/models/:id', (c) => {
-    const row = admin.getModel(c.req.param('id'));
+  // NOTE: model ids can contain a slash (e.g. "anthropic/claude-sonnet-4.6",
+  // "meta-llama/Llama-3.3-70B"). A :id param won't match slashes, so we use a
+  // wildcard splat and extract the id from the full URL pathname.
+  const modelId = (c: any) => {
+    const pathname = new URL(c.req.url).pathname;
+    // Strip the /admin/models/ prefix (router is mounted at /admin).
+    return decodeURIComponent(pathname.replace(/^\/admin\/models\//, ''));
+  };
+
+  app.get('/models/*', (c) => {
+    const id = modelId(c);
+    const row = admin.getModel(id);
     return row ? c.json(row) : c.json(notFound('model'), 404);
   });
 
-  app.put('/models/:id', async (c) => {
+  app.put('/models/*', async (c) => {
     const body = await c.req.json();
-    const updated = admin.upsertModel({ ...body, id: c.req.param('id') });
+    const updated = admin.upsertModel({ ...body, id: modelId(c) });
     reload();
     return c.json(updated);
   });
@@ -104,8 +114,8 @@ export function createAdminRouter(configStore: ConfigStore) {
   // Partial update (e.g. toggle enabled). Merge onto the FULL existing row so a
   // bare {enabled:false} preserves every other field (context window, prices,
   // capabilities, modalities) — previously those were wiped to null.
-  app.patch('/models/:id', async (c) => {
-    const id = c.req.param('id');
+  app.patch('/models/*', async (c) => {
+    const id = modelId(c);
     const existing = admin.getModel(id) as Record<string, unknown> | null;
     if (!existing) return c.json(notFound('model'), 404);
     const body = await c.req.json();
@@ -116,8 +126,8 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(updated);
   });
 
-  app.delete('/models/:id', (c) => {
-    const ok = admin.deleteModel(c.req.param('id'));
+  app.delete('/models/*', (c) => {
+    const ok = admin.deleteModel(modelId(c));
     if (!ok) return c.json(notFound('model'), 404);
     reload();
     return c.json({ ok: true });
