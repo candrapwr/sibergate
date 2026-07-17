@@ -162,3 +162,45 @@ export function authenticate(email: string, password: string): SafeUser | null {
   const safe = findUserById(user.id)!;
   return safe;
 }
+
+/* ──────────────────── user management (admin) ─────────────────────────── */
+
+/** List all users (safe — no password hashes). */
+export function listUsers(): SafeUser[] {
+  return (getDb().prepare('SELECT * FROM users ORDER BY created_at DESC').all() as any[]).map(toSafe);
+}
+
+/** Delete a user by id. Returns true if a row was removed. */
+export function deleteUser(id: string): boolean {
+  return getDb().prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
+}
+
+/** Enable or disable a user. */
+export function setUserStatus(id: string, status: 'active' | 'disabled'): boolean {
+  return (
+    getDb()
+      .prepare("UPDATE users SET status = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(status, id).changes > 0
+  );
+}
+
+/** Update a user's name and/or role (password left untouched when omitted). */
+export function updateUser(
+  id: string,
+  patch: { name?: string; role?: string; password?: string },
+): SafeUser | null {
+  const existing = findUserById(id);
+  if (!existing) return null;
+  const name = patch.name ?? existing.name;
+  const role = patch.role ?? existing.role;
+  if (patch.password !== undefined) {
+    getDb()
+      .prepare("UPDATE users SET name = ?, role = ?, password_hash = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(name, role, hashPassword(patch.password), id);
+  } else {
+    getDb()
+      .prepare("UPDATE users SET name = ?, role = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(name, role, id);
+  }
+  return findUserById(id)!;
+}

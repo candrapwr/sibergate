@@ -27,6 +27,10 @@ export {
   findUserById,
   findUserByEmail,
   userCount,
+  listUsers,
+  deleteUser,
+  setUserStatus,
+  updateUser,
   type User,
   type SafeUser,
 } from './auth.js';

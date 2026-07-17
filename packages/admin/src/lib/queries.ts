@@ -14,6 +14,7 @@ import type {
   RequestLog,
   Route,
   SystemInfo,
+  User,
   UsageMatrixRow,
   UsageStats,
 } from './types';
@@ -244,6 +245,41 @@ export function useReload() {
   return useMutation({
     mutationFn: () => api.post('reload'),
     onSuccess: () => qc.invalidateQueries(),
+  });
+}
+
+/* ──────────────────────────── User management ────────────────────────── */
+
+export function useUsers() {
+  return useQuery({
+    queryKey: ['users'],
+    queryFn: () => api.get<ListResponse<User>>('users'),
+  });
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; name: string; password: string; role?: string }) =>
+      api.post<User>('users', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: { name?: string; role?: string; password?: string; status?: 'active' | 'disabled' } }) =>
+      api.patch(`users/${id}`, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`users/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });
 }
 

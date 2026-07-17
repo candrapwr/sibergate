@@ -133,6 +133,16 @@ export interface UsageMatrixRow {
   avgLatencyMs: number;
 }
 
+/** Admin panel user (no password hash). */
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  status: string;
+  lastLoginAt: string | null;
+}
+
 export interface ListResponse<T> {
   data: T[];
 }
