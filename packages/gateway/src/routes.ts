@@ -1,6 +1,7 @@
 import { Hono, type Context } from 'hono';
 import {
   ConfigStore,
+  computeCost,
   estimateTokens,
   executeRoute,
   getRoute,
@@ -94,6 +95,8 @@ export function createApp(configStore: ConfigStore) {
           const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
           const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
           const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
+          const model = config.models.find((m) => m.id === servedBy.modelId);
+          const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
           logRequest({
             ...baseLog,
             provider: servedBy.providerId,
@@ -102,6 +105,7 @@ export function createApp(configStore: ConfigStore) {
             promptTokens,
             completionTokens,
             totalTokens,
+            costUsd,
             metadata: { trail },
           });
         });
@@ -115,6 +119,8 @@ export function createApp(configStore: ConfigStore) {
       const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
       const completionTokens = json.usage?.completion_tokens ?? 0;
       const totalTokens = json.usage?.total_tokens ?? promptTokens + completionTokens;
+      const model = config.models.find((m) => m.id === servedBy.modelId);
+      const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
       logRequest({
         ...baseLog,
         provider: servedBy.providerId,
@@ -123,6 +129,7 @@ export function createApp(configStore: ConfigStore) {
         promptTokens,
         completionTokens,
         totalTokens,
+        costUsd,
         metadata: { trail },
       });
       return c.json(json);
@@ -245,11 +252,17 @@ async function modalityHandler(
 
     // Forward the body verbatim with the upstream Content-Type (binary or JSON).
     const buf = Buffer.from(await response.arrayBuffer());
+    // Non-chat modalities don't carry token usage today, so cost stays 0 until
+    // per-modality pricing (per-image/per-second) is wired. The lookup is here
+    // so filling a model's price later makes it count with no code change.
+    const model = config.models.find((m) => m.id === servedBy.modelId);
+    const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
     logRequest({
       ...baseLog,
       provider: servedBy.providerId,
       model: servedBy.modelId,
       latencyMs,
+      costUsd,
     });
     return new Response(buf, {
       status: 200,
@@ -378,12 +391,17 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       if (!HOP_BY_HOP.has(k.toLowerCase())) respHeaders.set(k, v);
     });
     const buf = Buffer.from(await response.arrayBuffer());
+    // Generic passthrough is opaque to billing — no token usage to compute from.
+    // Cost stays 0; the lookup is kept for symmetry in case pricing is added later.
+    const model = config.models.find((m) => m.id === servedBy.modelId);
+    const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
     logRequest({
       ...baseLog,
       status: response.status,
       provider: servedBy.providerId,
       model: servedBy.modelId,
       latencyMs,
+      costUsd,
     });
     return new Response(buf, {
       status: response.status,
