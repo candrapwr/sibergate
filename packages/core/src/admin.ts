@@ -25,6 +25,34 @@ export class ConflictError extends Error {
   }
 }
 
+/** Thrown when input fails validation (bad id, bad shape). Maps to HTTP 400. */
+export class ValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ValidationError';
+  }
+}
+
+/**
+ * Validate an id used as a URL path segment (route id, provider id).
+ *
+ * These ids become part of the URL (e.g. /v1/proxy/:routeId, /admin/routes/:id),
+ * so they must NOT contain characters that break path parsing: slashes, spaces,
+ * or be empty. Model ids are EXEMPT (they conventionally contain a slash, e.g.
+ * "anthropic/claude-sonnet-4.6") and are handled by the wildcard route.
+ */
+export function assertValidPathId(kind: string, id: string): void {
+  if (!id || !id.trim()) {
+    throw new ValidationError(`${kind} id must not be empty.`);
+  }
+  if (/[\/\s]/.test(id)) {
+    throw new ValidationError(
+      `${kind} id "${id}" is invalid: it must not contain slashes or whitespace ` +
+        `(it becomes part of the URL). Use letters, numbers, '-', or '_'.`,
+    );
+  }
+}
+
 /* ───────────────────────────── PROVIDERS ───────────────────────────── */
 
 export interface ProviderInput {
@@ -71,6 +99,7 @@ export function updateProvider(id: string, input: Partial<ProviderInput>): Recor
 }
 
 function upsertProvider(input: ProviderInput): Record<string, unknown> {
+  assertValidPathId('Provider', input.id);
   const db = getDb();
   // Only re-encrypt if a fresh apiKey is provided; otherwise keep existing creds.
   let credentials = input.credentials;
@@ -247,6 +276,7 @@ export interface RouteInput {
 }
 
 export function upsertRoute(input: RouteInput): Record<string, unknown> {
+  assertValidPathId('Route', input.id);
   const db = getDb();
   db.prepare(
     `INSERT INTO routes (id, name, modality, strategy, timeout_ms, max_retries, retry_on, enabled)

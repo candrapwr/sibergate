@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight } from 'lucide-react';
+import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight, GripVertical, ChevronUp, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute, useToggleRoute, useUpsertModel } from '@/lib/queries';
 import type { Route } from '@/lib/types';
@@ -153,7 +153,12 @@ function EditButton({ route }: { route: Route }) {
   );
 }
 
-interface TargetInput { provider: string; model: string; priority: number; weight: number }
+interface TargetInput { uid: string; provider: string; model: string; priority: number; weight: number }
+
+/** Stable id for a target row, so React preserves row identity (and input
+ * focus) across reorders. priority is the payload field; uid is UI-only. */
+let targetSeq = 0;
+const newTargetUid = () => `t${++targetSeq}`;
 
 function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; submitLabel: string; route?: Route; onSubmit: () => void }) {
   const { data: providers } = useProviders();
@@ -167,21 +172,31 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
     modality: route?.modality ?? 'chat',
     strategy: route?.strategy ?? 'fallback',
     timeoutMs: route?.timeoutMs ?? 30000,
-    targets: (route?.targets ?? []).map((t) => ({ provider: t.provider, model: t.model, priority: t.priority, weight: t.weight })) as TargetInput[],
+    targets: (route?.targets ?? []).map((t) => ({ uid: newTargetUid(), provider: t.provider, model: t.model, priority: t.priority, weight: t.weight })) as TargetInput[],
   });
   const [newTarget, setNewTarget] = useState({ provider: '', model: '' });
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // Only providers that support the selected modality can be picked as targets.
   const capableProviders = providers?.data.filter((p) => p.modalities.includes(form.modality)) ?? [];
 
   const addTarget = () => {
     if (!newTarget.provider || !newTarget.model) return;
-    setForm({ ...form, targets: [...form.targets, { ...newTarget, priority: form.targets.length, weight: 1 }] });
+    setForm({ ...form, targets: [...form.targets, { uid: newTargetUid(), ...newTarget, priority: form.targets.length, weight: 1 }] });
     setNewTarget({ provider: '', model: '' });
   };
   const removeTarget = (i: number) => setForm({ ...form, targets: form.targets.filter((_, idx) => idx !== i).map((t, idx) => ({ ...t, priority: idx })) });
   const updateTarget = (i: number, patch: Partial<TargetInput>) =>
     setForm({ ...form, targets: form.targets.map((t, idx) => (idx === i ? { ...t, ...patch } : t)) });
+  /** Move a target to a new position, then renormalize priority to array index
+   *  (the invariant the submit payload + replaceTargets rely on). */
+  const moveTarget = (from: number, to: number) => {
+    if (to < 0 || to >= form.targets.length || from === to) return;
+    const next = [...form.targets];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved!);
+    setForm({ ...form, targets: next.map((t, idx) => ({ ...t, priority: idx })) });
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -254,7 +269,15 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="rid">ID</Label>
-            <Input id="rid" value={form.id} disabled={isEdit} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="smart" required />
+            <Input
+              id="rid"
+              value={form.id}
+              disabled={isEdit}
+              onChange={(e) => setForm({ ...form, id: e.target.value.replace(/[\s/]+/g, '') })}
+              placeholder="smart"
+              required
+            />
+            <p className="text-[10px] text-muted-foreground">Huruf, angka, <code>-</code>, atau <code>_</code>. Slash/spasi otomatis dihapus (id jadi bagian URL).</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="rname">Name</Label>
@@ -292,16 +315,51 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
           <Input id="rtimeout" type="number" value={form.timeoutMs} onChange={(e) => setForm({ ...form, timeoutMs: Number(e.target.value) })} />
         </div>
         <div className="space-y-1.5">
-          <Label>Targets {form.strategy === 'fallback' && '(ordered)'}</Label>
+          <Label>
+            Targets {form.strategy === 'fallback' && '(ordered — drag to reorder)'}
+            {form.strategy === 'weighted' && ' (set weight for load split)'}
+          </Label>
+          {form.targets.length > 1 && form.strategy !== 'fallback' && (
+            <p className="text-[10px] text-muted-foreground">
+              Order only affects the <code>fallback</code> strategy; for <code>{form.strategy}</code> it's kept for reference.
+            </p>
+          )}
           <div className="space-y-1.5">
-            {form.targets.map((t, i) => (
-              <div key={i} className="flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5">
-                <span className="text-[11px] text-muted-foreground">#{i}</span>
-                <span className="flex-1 font-mono text-[12px]">{t.provider}:{t.model}</span>
-                <Input type="number" value={t.weight} onChange={(e) => updateTarget(i, { weight: Number(e.target.value) })} className="h-7 w-16 px-2 text-[12px]" placeholder="w" />
-                <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => removeTarget(i)}><X size={12} /></Button>
-              </div>
-            ))}
+            {form.targets.map((t, i) => {
+              const draggable = form.targets.length > 1;
+              return (
+                <div
+                  key={t.uid}
+                  draggable={draggable}
+                  onDragStart={() => setDragIndex(i)}
+                  onDragOver={(e) => { e.preventDefault(); }}
+                  onDrop={() => { if (dragIndex !== null) moveTarget(dragIndex, i); setDragIndex(null); }}
+                  onDragEnd={() => setDragIndex(null)}
+                  className={`flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 ${
+                    dragIndex === i ? 'opacity-40 border-primary' : 'border-border'
+                  }`}
+                >
+                  <GripVertical size={14} className={draggable ? 'shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing' : 'shrink-0 text-muted-foreground/30'} />
+                  <span className="text-[11px] text-muted-foreground">{i + 1}.</span>
+                  <span className="flex-1 truncate font-mono text-[12px]">{t.provider}:{t.model}</span>
+                  {form.strategy === 'weighted' && (
+                    <label className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Relative share of requests (weighted strategy only)">
+                      wt
+                      <Input type="number" min={1} value={t.weight} onChange={(e) => updateTarget(i, { weight: Number(e.target.value) })} className="h-7 w-14 px-2 text-[12px]" />
+                    </label>
+                  )}
+                  <div className="flex shrink-0 flex-col">
+                    <button type="button" onClick={() => moveTarget(i, i - 1)} disabled={i === 0} className="leading-none text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up">
+                      <ChevronUp size={14} />
+                    </button>
+                    <button type="button" onClick={() => moveTarget(i, i + 1)} disabled={i === form.targets.length - 1} className="leading-none text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move down">
+                      <ChevronDown size={14} />
+                    </button>
+                  </div>
+                  <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onClick={() => removeTarget(i)} title="Remove"><X size={12} /></Button>
+                </div>
+              );
+            })}
             <div className="flex items-center gap-2">
               <select value={newTarget.provider} onChange={(e) => setNewTarget({ provider: e.target.value, model: '' })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
                 <option value="">provider…</option>
