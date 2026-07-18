@@ -147,22 +147,32 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(created, 201);
   });
 
-  app.get('/routes/:id', (c) => {
-    const row = admin.getRouteRow(c.req.param('id'));
+  // NOTE: route ids can contain a slash (e.g. "/xxxx", "v1/smart",
+  // "org/route-name"). A :id param won't match slashes, so we use a wildcard
+  // splat and extract the id from the full URL pathname — same fix that was
+  // applied to /models for ids like "anthropic/claude-sonnet-4.6".
+  const routeId = (c: any) => {
+    const pathname = new URL(c.req.url).pathname;
+    // Strip the /admin/routes/ prefix (router is mounted at /admin).
+    return decodeURIComponent(pathname.replace(/^\/admin\/routes\//, ''));
+  };
+
+  app.get('/routes/*', (c) => {
+    const row = admin.getRouteRow(routeId(c));
     return row ? c.json(row) : c.json(notFound('route'), 404);
   });
 
-  app.put('/routes/:id', async (c) => {
+  app.put('/routes/*', async (c) => {
     const body = await c.req.json();
-    const updated = admin.upsertRoute({ ...body, id: c.req.param('id') });
+    const updated = admin.upsertRoute({ ...body, id: routeId(c) });
     reload();
     return c.json(updated);
   });
 
   // Partial update (e.g. toggle enabled). Merge onto the FULL existing row so a
   // bare {enabled:false} preserves modality, timeout, retryOn, targets, etc.
-  app.patch('/routes/:id', async (c) => {
-    const id = c.req.param('id');
+  app.patch('/routes/*', async (c) => {
+    const id = routeId(c);
     const existing = admin.getRouteRow(id) as Record<string, unknown> | null;
     if (!existing) return c.json(notFound('route'), 404);
     const body = await c.req.json();
@@ -172,8 +182,8 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json(updated);
   });
 
-  app.delete('/routes/:id', (c) => {
-    const ok = admin.deleteRoute(c.req.param('id'));
+  app.delete('/routes/*', (c) => {
+    const ok = admin.deleteRoute(routeId(c));
     if (!ok) return c.json(notFound('route'), 404);
     reload();
     return c.json({ ok: true });
