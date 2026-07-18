@@ -238,7 +238,15 @@ function ProviderForm({
       <form onSubmit={submit} className="space-y-3" autoComplete="off">
         <div className="space-y-1.5">
           <Label htmlFor="pid">ID</Label>
-          <Input id="pid" value={form.id} disabled={isEdit} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="openai" required />
+          <Input
+            id="pid"
+            value={form.id}
+            disabled={isEdit}
+            onChange={(e) => setForm({ ...form, id: e.target.value.replace(/[\s/]+/g, '') })}
+            placeholder="openai"
+            required
+          />
+          <p className="text-[10px] text-muted-foreground">Huruf, angka, <code>-</code>, atau <code>_</code>. Slash/spasi otomatis dihapus.</p>
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="pname">Display name</Label>

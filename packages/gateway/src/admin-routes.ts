@@ -3,6 +3,7 @@ import {
   admin,
   ConfigStore,
   ConflictError,
+  ValidationError,
   KNOWN_PROVIDERS,
   backupToJson,
   createBackup,
@@ -331,6 +332,12 @@ export function createAdminRouter(configStore: ConfigStore) {
       return c.json(
         { error: { message: err.message, type: 'conflict_error', param: null, code: 'in_use' } },
         409,
+      );
+    }
+    if (err instanceof ValidationError) {
+      return c.json(
+        { error: { message: err.message, type: 'invalid_request_error', param: null, code: 'invalid_id' } },
+        400,
       );
     }
     console.error('[sibergate] admin error:', (err as Error).message);
