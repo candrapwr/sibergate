@@ -15,6 +15,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/empty-state';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Pagination } from '@/components/pagination';
+import { StatusFilter } from '@/components/status-filter';
 import { RouteTestDialog } from '@/components/routes/route-test-dialog';
 import { RouteCodeDialog } from '@/components/routes/route-code-dialog';
 
@@ -36,7 +37,11 @@ const MODALITIES = [
 
 export default function RoutesPage() {
   const { data, isLoading } = useRoutes();
-  const routes = data?.data ?? [];
+  const allRoutes = data?.data ?? [];
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
+  const routes = statusFilter === 'all'
+    ? allRoutes
+    : allRoutes.filter((r) => (statusFilter === 'enabled' ? r.enabled : !r.enabled));
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const paged = routes.slice(page * pageSize, page * pageSize + pageSize);
@@ -45,9 +50,14 @@ export default function RoutesPage() {
       <PageHeader title="Routes" subtitle="Virtual endpoints clients call — resolved by strategy" actions={<CreateButton />} />
       {isLoading ? (
         <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-md bg-secondary/40" />)}</div>
-      ) : routes.length === 0 ? (
+      ) : allRoutes.length === 0 ? (
         <EmptyState icon={RouteIcon} title="No routes yet" hint="Create a route to expose a virtual model." />
       ) : (
+        <>
+        <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+        {routes.length === 0 ? (
+          <EmptyState icon={RouteIcon} title="No routes match" hint={`No ${statusFilter} routes. Switch the filter.`} />
+        ) : (
         <>
         <Table>
           <TableHeader>
@@ -72,6 +82,8 @@ export default function RoutesPage() {
           onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
           itemName="routes"
         />
+        </>
+        )}
         </>
       )}
     </div>
