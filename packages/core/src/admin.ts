@@ -199,6 +199,21 @@ export interface ModelInput {
 
 export function upsertModel(input: ModelInput): Record<string, unknown> {
   const db = getDb();
+  // Defense-in-depth: tolak id kosong / hanya prefix provider (mis. 'exa_ai_1/').
+  // Tanpa ini, nama model kosong lolos tersimpan dgn id '' atau 'provider/' yg
+  // tidak bisa dihapus via URL krn trailing slash ambigu. Normalisasi penuh ada
+  // di POST route, tapi API direct / internal caller tetap perlu dijaga di sini.
+  const trimmedId = (input.id ?? '').trim();
+  const trimmedProvider = (input.provider ?? '').trim();
+  if (!trimmedId || !trimmedProvider) {
+    throw new ValidationError('Model id and provider must not be empty.');
+  }
+  if (trimmedId.endsWith('/')) {
+    throw new ValidationError(`Model id "${trimmedId}" is invalid: it ends with a slash, meaning the model name is empty.`);
+  }
+  input.id = trimmedId;
+  input.provider = trimmedProvider;
+
   // Konflik pada composite (provider_id, id) — sehingga model dgn nama yg sama
   // di provider berbeda menjadi baris terpisah, bukan menimpa baris provider lain.
   // Sebelumnya konflik pada `id` saja, yg diam-diam menimpa baris provider manapun

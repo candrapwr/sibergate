@@ -253,6 +253,14 @@ function ModelForm({ title, submitLabel, model, onSubmit }: { title: string; sub
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Validasi nama model: setelah strip prefix provider, harus ada sisa nama.
+    // Tanpa ini user bisa submit field berisi hanya 'exa_ai_1/' (prefik otomatis
+    // tapi nama kosong) → backend simpan id '' / trailing slash → tidak bisa dihapus.
+    const namePart = form.id.includes('/') ? form.id.slice(form.id.indexOf('/') + 1).trim() : form.id.trim();
+    if (!isEdit && !namePart) {
+      toast.error('Model name must not be empty.');
+      return;
+    }
     const payload: Record<string, unknown> = {
       id: form.id,
       provider: form.provider,
