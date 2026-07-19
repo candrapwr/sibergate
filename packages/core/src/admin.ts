@@ -41,15 +41,30 @@ export class ValidationError extends Error {
  * or be empty. Model ids are EXEMPT (they conventionally contain a slash, e.g.
  * "anthropic/claude-sonnet-4.6") and are handled by the wildcard route.
  */
-export function assertValidPathId(kind: string, id: string): void {
-  if (!id || !id.trim()) {
+export function assertValidPathId(kind: string, id: string, opts: { allowSlash?: boolean } = {}): void {
+  const trimmed = id?.trim();
+  if (!trimmed) {
     throw new ValidationError(`${kind} id must not be empty.`);
   }
-  if (/[\/\s]/.test(id)) {
+  // Tolak whitespace selalu. Slash hanya boleh bila allowSlash (mis. Route id
+  // multi-segment 'app/secret'). Provider id TIDAK boleh slash krn jadi prefix
+  // model id ('{provider}/...') — slash di provider bikin ambigu saat strip.
+  if (/\s/.test(trimmed)) {
+    throw new ValidationError(`${kind} id "${trimmed}" is invalid: it must not contain whitespace.`);
+  }
+  if (!opts.allowSlash && /[\/]/.test(trimmed)) {
     throw new ValidationError(
-      `${kind} id "${id}" is invalid: it must not contain slashes or whitespace ` +
+      `${kind} id "${trimmed}" is invalid: it must not contain slashes ` +
         `(it becomes part of the URL). Use letters, numbers, '-', or '_'.`,
     );
+  }
+  if (opts.allowSlash) {
+    // Tolak trailing/leading slash dan segment kosong ('/a', 'a//b', 'a/').
+    if (trimmed.startsWith('/') || trimmed.endsWith('/') || trimmed.includes('//')) {
+      throw new ValidationError(
+        `${kind} id "${trimmed}" is invalid: each segment between slashes must be non-empty.`,
+      );
+    }
   }
 }
 
@@ -315,7 +330,10 @@ export interface RouteInput {
 }
 
 export function upsertRoute(input: RouteInput): Record<string, unknown> {
-  assertValidPathId('Route', input.id);
+  // Route id boleh multi-segment ('app/secret', 'team/prod/chat') — kini
+  // diizinkan supaya operator bisa atur route secara hierarkis. Setiap segment
+  // antar slash harus non-empty (tidak boleh 'a//b' atau 'a/').
+  assertValidPathId('Route', input.id, { allowSlash: true });
   const db = getDb();
   db.prepare(
     `INSERT INTO routes (id, name, modality, strategy, timeout_ms, max_retries, retry_on, enabled)
