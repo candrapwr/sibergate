@@ -90,9 +90,12 @@ export function createApp(configStore: ConfigStore) {
     try {
       const { response, servedBy, latencyMs, trail } = await executeRoute(config, route, body, controller.signal);
 
-      // Route modality 'responses': upstream menerima/mengembalikan format Responses
-      // API, tapi client tetap format chat/completions. Convert di gateway.
-      const isResponsesModality = (route.modality ?? 'chat') === 'responses';
+      // Route/target modality 'responses': upstream menerima/mengembalikan format
+      // Responses API, tapi client tetap format chat/completions. Convert di gateway.
+      // Pakai servedBy.modality (override per-target) bila ada; fallback route.modality.
+      // Ini krusial: jika target OpenAI responses sukses setelah failover, gateway
+      // harus convert — walau route.modality mungkin 'chat'.
+      const isResponsesModality = (servedBy.modality ?? route.modality ?? 'chat') === 'responses';
       // Model id upstream = strip prefix provider (sama dgn yg dikirim adapter).
       const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
         ? servedBy.modelId.slice(servedBy.providerId.length + 1)

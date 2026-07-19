@@ -74,6 +74,12 @@ export interface RouteTarget {
   priority: number;
   weight: number;
   enabled: boolean;
+  /**
+   * Override modality per-target (opsional). Bila null/undefined, target
+   * memakai route.modality. Contoh: route chat biasa, tapi salah satu target
+   * (OpenAI) diakses via modality 'responses' — gateway convert dua arah.
+   */
+  modality?: RouteModality | null;
 }
 
 /** A virtual client-facing endpoint. */

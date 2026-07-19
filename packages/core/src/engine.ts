@@ -37,16 +37,22 @@ export async function executeRoute(
   body: Record<string, unknown>,
   signal: AbortSignal,
 ): Promise<ExecuteResult> {
-  const modality: RouteModality = route.modality ?? 'chat';
+  const routeModality: RouteModality = route.modality ?? 'chat';
+  // Modality efektif tiap target: override bila di-set, jika tidak pakai
+  // route.modality. Memungkinkan route campur target dgn modality berbeda
+  // (mis. OpenAI responses + DeepSeek chat di route yg sama, dgn failover
+  // antar modality).
+  const effectiveModality = (t: RouteTarget): RouteModality => t.modality ?? routeModality;
 
-  // Filter targets: enabled + provider enabled + provider supports this modality
-  // + model enabled. A provider "supports" a modality when its endpoints map
-  // has a key for it.
+  // Filter targets: enabled + provider enabled + provider supports modality
+  // efektif target tsb + model enabled. Provider "supports" modality ketika
+  // endpoints map-nya punya key utk modality itu.
   const usable = route.targets.filter((t) => {
     if (!t.enabled) return false;
     const p = config.providers.find((x) => x.id === t.providerId && x.enabled);
     if (!p) return false;
-    if (!p.endpoints[modality]) return false;
+    const em = effectiveModality(t);
+    if (!p.endpoints[em]) return false;
     const m = config.models.find((x) => x.id === t.modelId && x.enabled);
     return !!m;
   });
@@ -54,7 +60,7 @@ export async function executeRoute(
   if (usable.length === 0) {
     throw new GatewayCallError(
       'no_targets',
-      `Route '${route.id}' has no enabled targets that support modality '${modality}'.`,
+      `Route '${route.id}' has no enabled targets that support its modality.`,
     );
   }
 
@@ -71,6 +77,10 @@ export async function executeRoute(
   for (const target of attempts) {
     const provider = config.providers.find((p) => p.id === target.providerId)!;
     lastTarget = target;
+    // Modality target ini (override atau route default). Dipakai utk pilih
+    // adapter saat dispatch. servedBy (RouteTarget) juga membawa modality ini
+    // supaya gateway tahu converter mana yg dipakai saat response dikembalikan.
+    const modality = effectiveModality(target);
     const start = Date.now();
     // target.modelId adalah id internal namespaced ('{provider}/{name}'). Upstream
     // provider hanya mengenal nama asli, jadi strip prefix '{providerId}/' sebelum
@@ -104,7 +114,9 @@ export async function executeRoute(
           err.servedBy = { provider: target.providerId, model: target.modelId };
         throw err;
       }
-      // else: loop to next target (failover)
+      // else: loop to next target (failover) — target berikutnya mungkin punya
+      // modality berbeda (mis. responses gagal → failover ke chat). Adapter &
+      // converter disesuaikan otomatis per-iterasi via effectiveModality().
     }
   }
 

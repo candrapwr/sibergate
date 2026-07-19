@@ -193,7 +193,7 @@ function EditButton({ route }: { route: Route }) {
   );
 }
 
-interface TargetInput { uid: string; provider: string; model: string; priority: number; weight: number }
+interface TargetInput { uid: string; provider: string; model: string; priority: number; weight: number; modality: string }
 
 /** Stable id for a target row, so React preserves row identity (and input
  * focus) across reorders. priority is the payload field; uid is UI-only. */
@@ -212,9 +212,9 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
     modality: route?.modality ?? 'chat',
     strategy: route?.strategy ?? 'fallback',
     timeoutMs: route?.timeoutMs ?? 30000,
-    targets: (route?.targets ?? []).map((t) => ({ uid: newTargetUid(), provider: t.provider, model: t.model, priority: t.priority, weight: t.weight })) as TargetInput[],
+    targets: (route?.targets ?? []).map((t) => ({ uid: newTargetUid(), provider: t.provider, model: t.model, priority: t.priority, weight: t.weight, modality: (t as any).modality ?? '' })) as TargetInput[],
   });
-  const [newTarget, setNewTarget] = useState({ provider: '', model: '' });
+  const [newTarget, setNewTarget] = useState({ provider: '', model: '', modality: '' });
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // Only providers that support the selected modality can be picked as targets.
@@ -223,7 +223,7 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   const addTarget = () => {
     if (!newTarget.provider || !newTarget.model) return;
     setForm({ ...form, targets: [...form.targets, { uid: newTargetUid(), ...newTarget, priority: form.targets.length, weight: 1 }] });
-    setNewTarget({ provider: '', model: '' });
+    setNewTarget({ provider: '', model: '', modality: '' });
   };
   const removeTarget = (i: number) => setForm({ ...form, targets: form.targets.filter((_, idx) => idx !== i).map((t, idx) => ({ ...t, priority: idx })) });
   const updateTarget = (i: number, patch: Partial<TargetInput>) =>
@@ -246,7 +246,14 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
       modality: form.modality,
       strategy: form.strategy,
       timeoutMs: Number(form.timeoutMs),
-      targets: form.targets.map((t) => ({ provider: t.provider, model: t.model, priority: t.priority, weight: Number(t.weight) })),
+      targets: form.targets.map((t) => ({
+        provider: t.provider,
+        model: t.model,
+        priority: t.priority,
+        weight: Number(t.weight),
+        // modality: string kosong → undefined → backend simpan NULL (route default).
+        ...(t.modality ? { modality: t.modality } : {}),
+      })),
       ...(isEdit ? { __edit: true } : {}),
     };
     try {
@@ -329,7 +336,7 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
           <Label>Modality</Label>
           <select
             value={form.modality}
-            onChange={(e) => { setForm({ ...form, modality: e.target.value as typeof form.modality, targets: [] }); setNewTarget({ provider: '', model: '' }); }}
+            onChange={(e) => { setForm({ ...form, modality: e.target.value as typeof form.modality, targets: [] }); setNewTarget({ provider: '', model: '', modality: '' }); }}
             className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]"
           >
             {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
@@ -389,6 +396,15 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                       <Input type="number" min={1} value={t.weight} onChange={(e) => updateTarget(i, { weight: Number(e.target.value) })} className="h-7 w-14 px-2 text-[12px]" />
                     </label>
                   )}
+                  <select
+                    value={t.modality}
+                    onChange={(e) => updateTarget(i, { modality: e.target.value })}
+                    className="h-7 rounded-md border border-border bg-background px-1.5 text-[11px]"
+                    title="Override modality for this target (default: route modality)"
+                  >
+                    <option value="">route default ({form.modality})</option>
+                    {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
+                  </select>
                   <div className="flex shrink-0 flex-col">
                     <button type="button" onClick={() => moveTarget(i, i - 1)} disabled={i === 0} className="leading-none text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up">
                       <ChevronUp size={14} />
@@ -402,13 +418,22 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
               );
             })}
             <div className="flex items-center gap-2">
-              <select value={newTarget.provider} onChange={(e) => setNewTarget({ provider: e.target.value, model: '' })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
+              <select value={newTarget.provider} onChange={(e) => setNewTarget({ provider: e.target.value, model: '', modality: '' })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
                 <option value="">provider…</option>
                 {capableProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <select value={newTarget.model} onChange={(e) => setNewTarget({ ...newTarget, model: e.target.value })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
                 <option value="">model…</option>
                 {availableModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+              </select>
+              <select
+                value={newTarget.modality}
+                onChange={(e) => setNewTarget({ ...newTarget, modality: e.target.value })}
+                className="h-9 w-32 rounded-md border border-border bg-background px-2 text-[11px]"
+                title="Override modality for this target (default: route modality)"
+              >
+                <option value="">route default ({form.modality})</option>
+                {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
               </select>
               <Button type="button" variant="outline" size="sm" onClick={addTarget}><Plus size={14} /></Button>
             </div>

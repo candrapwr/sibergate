@@ -321,13 +321,24 @@ export interface RouteInput {
   id: string;
   name?: string;
   /** Which adapter handles this route. Defaults to 'chat'. */
-  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
+  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses';
   strategy?: 'fallback' | 'fastest' | 'weighted';
   timeoutMs?: number;
   maxRetries?: number;
   retryOn?: number[];
   enabled?: boolean;
-  targets?: Array<{ provider: string; model: string; priority?: number; weight?: number }>;
+  /**
+   * Targets route. Tiap target boleh override modality (mis. OpenAI pakai
+   * 'responses' sementara route default-nya 'chat'). Bila modality target
+   * null/undefined → pakai route.modality.
+   */
+  targets?: Array<{
+    provider: string;
+    model: string;
+    priority?: number;
+    weight?: number;
+    modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | null;
+  }>;
 }
 
 export function upsertRoute(input: RouteInput): Record<string, unknown> {
@@ -368,6 +379,8 @@ export function getRouteRow(id: string): Record<string, unknown> | null {
     priority: t.priority,
     weight: t.weight,
     enabled: t.enabled === 1,
+    // modality null = pakai route.modality (default behavior, backward compat).
+    modality: t.modality ?? null,
   }));
   return {
     id: route.id,
@@ -396,17 +409,25 @@ export function deleteRoute(id: string): boolean {
 
 function replaceTargets(
   routeId: string,
-  targets: Array<{ provider: string; model: string; priority?: number; weight?: number }>,
+  targets: Array<{
+    provider: string;
+    model: string;
+    priority?: number;
+    weight?: number;
+    modality?: string | null;
+  }>,
 ): void {
   const db = getDb();
   db.transaction(() => {
     db.prepare('DELETE FROM route_targets WHERE route_id = ?').run(routeId);
     const stmt = db.prepare(
-      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled)
-       VALUES (?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled, modality)
+       VALUES (?, ?, ?, ?, ?, 1, ?)`,
     );
     for (const t of targets) {
-      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1);
+      // modality NULL = pakai route.modality (default). String kosong dianggap NULL.
+      const mod = t.modality && t.modality.trim() ? t.modality.trim() : null;
+      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1, mod);
     }
   })();
 }
