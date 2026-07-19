@@ -18,7 +18,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
  */
 
 const GATEWAY = process.env.SIBERGATE_GATEWAY_URL ?? 'http://localhost:8787';
-const ADMIN_KEY = process.env.SIBERGATE_ADMIN_KEY;
+// IMPORTANT: gateway /v1/* authenticates CLIENT keys (sg_live_*, stored in the
+// api_keys table), NOT the admin key. So the playground proxy must inject a
+// client key here — the operator sets one via SIBERGATE_PLAYGROUND_KEY. The
+// admin key would be rejected with 401 "Invalid API key".
+const PLAYGROUND_KEY = process.env.SIBERGATE_PLAYGROUND_KEY;
 const SESSION_SECRET = process.env.SIBERGATE_SESSION_SECRET;
 const SESSION_COOKIE = 'sibergate_session';
 
@@ -75,11 +79,13 @@ async function proxy(req: NextRequest, ctx: { params: Promise<{ path: string[] }
   const headers = new Headers(req.headers);
   headers.delete('host');
   headers.delete('connection');
-  // Inject the admin key ONLY when the caller didn't supply their own Authorization.
-  // This keeps an explicit client key test working while making the playground
-  // usable without one.
-  if (!headers.has('authorization')) {
-    headers.set('Authorization', `Bearer ${ADMIN_KEY ?? ''}`);
+  // Inject the playground CLIENT key (sg_live_*) only when the caller didn't
+  // supply their own Authorization. The gateway /v1/* surface authenticates
+  // client keys, not the admin key — so SIBERGATE_PLAYGROUND_KEY must be a
+  // real client key created in the API Keys page. An explicit Authorization
+  // header (e.g. to test a specific key) still wins.
+  if (!headers.has('authorization') && PLAYGROUND_KEY) {
+    headers.set('Authorization', `Bearer ${PLAYGROUND_KEY}`);
   }
 
   const init: RequestInit = {
