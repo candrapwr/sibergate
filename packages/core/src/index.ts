@@ -9,8 +9,9 @@ export { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 export {
   convertChatRequestToResponses,
   convertResponsesToChat,
-  convertResponsesStreamEventToChatChunk,
+  createResponsesStreamConverter,
   type ChatCompletionResponse,
+  type ChatToolCall,
 } from './adapters/responses.js';
 export { executeRoute, type ExecuteResult, type FailoverStep } from './engine.js';
 export { recordLatency, recordFailure, getLatency, resetLatency } from './latency.js';
