@@ -286,11 +286,11 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
               id="rid"
               value={form.id}
               disabled={isEdit}
-              onChange={(e) => setForm({ ...form, id: e.target.value.replace(/[\s/]+/g, '') })}
-              placeholder="smart"
+              onChange={(e) => setForm({ ...form, id: e.target.value.replace(/\s+/g, '') })}
+              placeholder="smart atau app/secret"
               required
             />
-            <p className="text-[10px] text-muted-foreground">Huruf, angka, <code>-</code>, atau <code>_</code>. Slash/spasi otomatis dihapus (id jadi bagian URL).</p>
+            <p className="text-[10px] text-muted-foreground">Huruf, angka, <code>-</code>, <code>_</code>, atau <code>/</code> (boleh multi-segment, mis. <code>app/secret</code>). Spasi otomatis dihapus.</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="rname">Name</Label>

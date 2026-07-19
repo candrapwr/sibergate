@@ -168,12 +168,15 @@ export function createApp(configStore: ConfigStore) {
   app.post('/v1/music/generations', (c) => modalityHandler(c, configStore, 'music', '/v1/music/generations'));
 
   // SiberGate extension — generic REST passthrough. Unlike the OpenAI-shaped
-  // endpoints above, this one selects the route from the URL path (:routeId),
-  // forwards the original HTTP method + headers + body verbatim, and returns
-  // the upstream response (status, headers, body) untouched. Lets SiberGate
-  // proxy non-LLM APIs with the same routing/failover as LLM routes.
-  app.all('/v1/generic/:routeId/*', (c) => genericHandler(c, configStore));
-  app.all('/v1/generic/:routeId', (c) => genericHandler(c, configStore));
+  // endpoints above, this one selects the route from the URL path, forwards
+  // the original HTTP method + headers + body verbatim, and returns the upstream
+  // response (status, headers, body) untouched. Lets SiberGate proxy non-LLM
+  // APIs with the same routing/failover as LLM routes.
+  //
+  // Pakai wildcard splat (bukan :routeId) supaya route id multi-segment
+  // ('app/secret', 'team/prod/chat') juga match. Ambiguitas pemisahan route id
+  // vs path suffix di-resolve di genericHandler dgn longest-prefix match.
+  app.all('/v1/generic/*', (c) => genericHandler(c, configStore));
 
   return app;
 }
@@ -327,18 +330,29 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   const config = configStore.get();
   const requestId = c.get('requestId');
   const startedAt = c.get('startedAt');
-  const routeId = c.req.param('routeId') ?? '';
+
+  // URL matcher wildcard: /v1/generic/* → c.req.path berisi sisa path setelah
+  // prefix. Karena route id sekarang boleh multi-segment ('app/secret'), kita
+  // tdk bisa sekadar ambil segmen pertama. Resolve dgn longest-prefix match:
+  // cari route id terpanjang yg match awal dari sisa path (setiap kandidat
+  // harus diikuti oleh '/' atau akhir string — supaya 'app' tdk salah match
+  // pd 'app/secret/foo').
+  const splat = c.req.path.startsWith('/v1/generic/')
+    ? decodeURIComponent(c.req.path.slice('/v1/generic/'.length))
+    : '';
+  const candidates = config.routes
+    .filter((r) => r.enabled && (r.modality ?? 'chat') === 'generic')
+    .map((r) => r.id)
+    .filter((id) => splat === id || splat.startsWith(`${id}/`))
+    .sort((a, b) => b.length - a.length);
+  const routeId = candidates[0] ?? '';
   if (!routeId) {
-    return errorResponse(c, 404, `Route id missing from path.`, 'invalid_request_error', 'model_not_found', 'model');
+    return errorResponse(c, 404, `Route '${splat}' not found.`, 'invalid_request_error', 'model_not_found', 'model');
   }
 
-  // Path suffix after /v1/generic/:routeId (may be empty) — spliced into {path}.
-  // Parse it straight from the URL pathname so we don't depend on Hono's
-  // internal route-pattern representation, which varies between `:routeId` and
-  // `:routeId/*` matchers.
-  const prefix = `/v1/generic/${routeId}`;
-  const pathname = new URL(c.req.url).pathname;
-  const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : '';
+  // Path suffix setelah route id (sisanya dari splat) — disuntik ke template
+  // upstream via placeholder {path}.
+  const suffix = splat.slice(routeId.length);
 
   let route;
   try {
