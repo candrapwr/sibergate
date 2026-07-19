@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 
 /**
  * Proxy for the generic passthrough modality (route tester / playground):
- * browser → /v1/proxy/<routeId>/... → gateway.
+ * browser → /v1/generic/<routeId>/... → gateway.
  *
  * Mirrors the per-modality proxy handlers but is a catch-all: it supports any
  * HTTP method and forwards the full path + query string + body verbatim. Like
@@ -13,10 +13,10 @@ import { type NextRequest, NextResponse } from 'next/server';
 const GATEWAY = process.env.SIBERGATE_GATEWAY_URL ?? 'http://localhost:8787';
 
 async function proxy(req: NextRequest) {
-  // Reconstruct the path after /v1/proxy/ from the catch-all params.
+  // Reconstruct the path after /v1/generic/ from the catch-all params.
   const segments = (req as unknown as { params: { path: string[] } }).params?.path ?? [];
   const suffix = segments.join('/');
-  const target = `${GATEWAY}/v1/proxy/${suffix}${req.nextUrl.search}`;
+  const target = `${GATEWAY}/v1/generic/${suffix}${req.nextUrl.search}`;
 
   const headers = new Headers(req.headers);
   headers.delete('host');

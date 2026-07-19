@@ -32,7 +32,7 @@ const MODALITIES = [
   { id: 'transcribe', label: 'Transcribe', desc: 'Audio→text (/v1/audio/transcriptions)' },
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
   { id: 'music', label: 'Music', desc: 'Text-to-music (/v1/music/generations)' },
-  { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/proxy/:id) — non-LLM' },
+  { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/generic/:id) — non-LLM' },
 ] as const;
 
 export default function RoutesPage() {

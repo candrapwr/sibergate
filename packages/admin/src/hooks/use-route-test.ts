@@ -36,6 +36,16 @@ export interface TestResult {
   attempts: TestAttempt[];
 }
 
+/** Raw response from the mini-Postman sendRaw — status + headers + body text. */
+export interface RawResult {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  latencyMs: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
 const DEFAULT_PROMPT = 'Reply with exactly: OK';
 
 function readClientKey(): string {
@@ -57,7 +67,7 @@ export function useRouteTest() {
     const start = performance.now();
     const ep = modalityEndpoint(modality);
     // Generic passthrough selects the route via the path (not a `model` body
-    // field), so substitute the route id into /v1/proxy/{routeId}.
+    // field), so substitute the route id into /v1/generic/{routeId}.
     const proxyPath = ep.proxyPath.replace('{routeId}', routeId);
     try {
       // Build the request body based on the route's modality.
@@ -154,7 +164,46 @@ export function useRouteTest() {
     }
   }, []);
 
-  return { test, result, testing, setResult };
+  /**
+   * Mini-Postman send: execute an explicit request (method/path/headers/body)
+   * and return the raw response (status, headers, body text, latency). Routes
+   * through /api/v1/* so it works without a client key (admin key auto-injected
+   * when no Authorization header is supplied).
+   */
+  const sendRaw = useCallback(async (opts: {
+    method: string;
+    proxyPath: string; // e.g. /api/v1/chat/completions or /api/v1/generic/{id}
+    headers: Array<{ key: string; value: string }>;
+    body: string;
+  }): Promise<RawResult> => {
+    setTesting(true);
+    setResult(null);
+    const start = performance.now();
+    try {
+      const headers: Record<string, string> = {};
+      for (const h of opts.headers) {
+        if (h.key.trim()) headers[h.key.trim()] = h.value;
+      }
+      const hasBody = opts.body.trim().length > 0 && opts.method !== 'GET' && opts.method !== 'HEAD';
+      const res = await fetch(`${window.location.origin}${opts.proxyPath}`, {
+        method: opts.method,
+        headers,
+        body: hasBody ? opts.body : undefined,
+      });
+      const latencyMs = Math.round(performance.now() - start);
+      const text = await res.text();
+      const respHeaders: Record<string, string> = {};
+      res.headers.forEach((v, k) => { respHeaders[k] = v; });
+      return { ok: res.ok, status: res.status, statusText: res.statusText, latencyMs, headers: respHeaders, body: text };
+    } catch (err) {
+      const latencyMs = Math.round(performance.now() - start);
+      return { ok: false, status: 0, statusText: 'Network error', latencyMs, headers: {}, body: (err as Error).message };
+    } finally {
+      setTesting(false);
+    }
+  }, []);
+
+  return { test, result, testing, setResult, sendRaw };
 }
 
 function safeParse(text: string): unknown {

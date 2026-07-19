@@ -24,6 +24,11 @@ export interface SampleContext {
   baseUrl: string;
   apiKey: string;
   prompt?: string;
+  /** Mini-Postman overrides — when present, take precedence over the generated
+   *  defaults so the live curl preview tracks the editor. */
+  method?: string;
+  headers?: Array<{ key: string; value: string }>;
+  body?: string;
 }
 
 export type Language = 'curl' | 'node' | 'python' | 'php' | 'go' | 'stream';
@@ -67,7 +72,7 @@ function genericBody(ctx: SampleContext): string {
 /* ───────────────────────── shared body builders ────────────────────────── */
 
 /** JSON request body for JSON-based modalities (chat, image, speech, embed, music). */
-function bodyForModality(ctx: SampleContext): string {
+export function bodyForModality(ctx: SampleContext): string {
   const prompt = ctx.prompt || defaultPrompt(ctx.modality);
   switch (ctx.modality) {
     case 'image':
@@ -112,7 +117,7 @@ const SAMPLES: Record<Language, (ctx: SampleContext) => string> = {
   -F "file=@audio.mp3"`;
     }
 
-    // Generic: passthrough to /v1/proxy/<routeId> (any method/body).
+    // Generic: passthrough to /v1/generic/<routeId> (any method/body).
     if (c.modality === 'generic') {
       const path = resolvePath(c);
       return `curl -X POST ${c.baseUrl}${path} \\
@@ -199,7 +204,7 @@ console.log(res.choices[0].message.content);`;
     // Generic passthrough: not an OpenAI endpoint → raw fetch with any method/body.
     if (c.modality === 'generic') {
       const path = resolvePath(c);
-      return `// /v1/proxy/${c.routeId} is a SiberGate passthrough — forward any method + body.
+      return `// /v1/generic/${c.routeId} is a SiberGate passthrough — forward any method + body.
 const res = await fetch("${c.baseUrl}${path}", {
   method: "POST",
   headers: {
@@ -300,7 +305,7 @@ print(res.choices[0].message.content)`;
     // Generic passthrough: not an OpenAI endpoint → raw requests with any method/body.
     if (c.modality === 'generic') {
       const path = resolvePath(c);
-      return `# /v1/proxy/${c.routeId} is a SiberGate passthrough — forward any method + body.
+      return `# /v1/generic/${c.routeId} is a SiberGate passthrough — forward any method + body.
 import requests
 
 res = requests.post(
@@ -362,11 +367,11 @@ curl_setopt_array($ch, [
 echo curl_exec($ch);`;
     }
 
-    // Generic passthrough: /v1/proxy/<routeId>, any method/body.
+    // Generic passthrough: /v1/generic/<routeId>, any method/body.
     if (c.modality === 'generic') {
       const path = resolvePath(c);
       return `<?php
-// /v1/proxy/${c.routeId} is a SiberGate passthrough — forward any method + body.
+// /v1/generic/${c.routeId} is a SiberGate passthrough — forward any method + body.
 $ch = curl_init("${c.baseUrl}${path}");
 curl_setopt_array($ch, [
     CURLOPT_RETURNTRANSFER => true,
@@ -431,12 +436,12 @@ func main() {
 }`;
     }
 
-    // Generic passthrough: /v1/proxy/<routeId>, any method/body.
+    // Generic passthrough: /v1/generic/<routeId>, any method/body.
     if (c.modality === 'generic') {
       const path = resolvePath(c);
       return `package main
 
-// /v1/proxy/${c.routeId} is a SiberGate passthrough — forward any method + body.
+// /v1/generic/${c.routeId} is a SiberGate passthrough — forward any method + body.
 import (
 \t"bytes"
 \t"fmt"
@@ -546,9 +551,54 @@ export function generateSample(lang: Language, ctx: SampleContext): string {
   return SAMPLES[lang](ctx);
 }
 
-/** Detect the gateway base URL from the browser. */
+/**
+ * Build a curl command from explicit editor state (method/path/headers/body),
+ * for the mini-Postman's live preview. Unlike the language generators (which
+ * derive a body from the modality), this honors whatever the operator typed.
+ *
+ * `apiKey` (if provided) is rendered as a Bearer header so the preview matches
+ * what would actually be sent.
+ */
+export function buildCurlPreview(opts: {
+  method: string;
+  url: string;
+  headers: Array<{ key: string; value: string }>;
+  body: string;
+  apiKey?: string;
+}): string {
+  const lines: string[] = [`curl -X ${opts.method} ${opts.url}`];
+  const headers = [...opts.headers];
+  if (opts.apiKey && !headers.some((h) => h.key.toLowerCase() === 'authorization')) {
+    headers.push({ key: 'Authorization', value: `Bearer ${opts.apiKey}` });
+  }
+  for (const h of headers) {
+    if (h.key.trim()) lines.push(`  -H "${h.key}: ${h.value}"`);
+  }
+  if (opts.body && opts.body.trim() && opts.method !== 'GET' && opts.method !== 'HEAD') {
+    // Single-line the body for a clean curl (escape double quotes).
+    lines.push(`  -d '${opts.body.replace(/'/g, "'\\''")}'`);
+  }
+  return lines.join(' \\\n');
+}
+
+/**
+ * Detect the gateway base URL for sample code.
+ *
+ * The samples must point clients at the GATEWAY (where /v1/* lives), not the
+ * admin dashboard. Resolution order:
+ *   1. NEXT_PUBLIC_SIBERGATE_PUBLIC_URL — pinned at build/runtime for production
+ *      (e.g. https://gate.idsiber.com). Set this in packages/admin/.env.local so
+ *      the value is inlined into the bundle and shown to operators.
+ *   2. The admin's own origin + the default gateway port — only sensible in local
+ *      dev where admin (:3000/:8010) and gateway (:8787) share a host. We swap
+ *      the port rather than the whole URL so http/https is preserved.
+ *   3. localhost:8787 as a last-resort default.
+ */
 export function detectBaseUrl(): string {
+  const pinned = process.env.NEXT_PUBLIC_SIBERGATE_PUBLIC_URL;
+  if (pinned) return pinned.replace(/\/+$/, '');
   if (typeof window === 'undefined') return 'http://localhost:8787';
+  // Dev fallback: assume the gateway runs alongside the admin on the default port.
   return `${window.location.protocol}//${window.location.hostname}:8787`;
 }
 

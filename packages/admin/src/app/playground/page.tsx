@@ -40,11 +40,11 @@ export default function PlaygroundPage() {
   }, [messages]);
 
   const send = async () => {
-    if (!input.trim() || !route || !apiKey) {
-      toast.error('Set route, API key, and message first');
+    if (!input.trim() || !route) {
+      toast.error('Set route and message first');
       return;
     }
-    localStorage.setItem('sibergate_client_key', apiKey);
+    if (apiKey) localStorage.setItem('sibergate_client_key', apiKey);
     const userMsg: Msg = { role: 'user', content: input };
     const assistantMsg: Msg = { role: 'assistant', content: '', meta: {} };
     setMessages((m) => [...m, userMsg, assistantMsg]);
@@ -55,9 +55,13 @@ export default function PlaygroundPage() {
     abortRef.current = controller;
     const start = performance.now();
     try {
-      const res = await fetch(`${window.location.origin}/v1/chat/completions`, {
+      // Route through /api/v1/* so the request works with or without a client
+      // key: the proxy injects the admin key when no Authorization is supplied.
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const res = await fetch(`${window.location.origin}/api/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify({ model: route, messages: [...messages, userMsg].map((m) => ({ role: m.role, content: m.content })), stream }),
         signal: controller.signal,
       });
@@ -168,9 +172,9 @@ export default function PlaygroundPage() {
               </select>
             </div>
             <div className="space-y-1.5">
-              <Label>Client API key</Label>
-              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sg_live_…" className="text-[12px]" />
-              <p className="text-[10px] text-muted-foreground">Stored in your browser only.</p>
+              <Label>Client API key <span className="text-muted-foreground">(optional)</span></Label>
+              <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="blank = use admin key" className="text-[12px]" />
+              <p className="text-[10px] text-muted-foreground">Leave blank to run as the logged-in admin. Stored in your browser only.</p>
             </div>
             <label className="flex items-center gap-2 text-[12px]">
               <input type="checkbox" checked={stream} onChange={(e) => setStream(e.target.checked)} />

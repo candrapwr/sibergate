@@ -27,7 +27,9 @@ export function RouteCodeDialog({ route }: { route: Route }) {
 
   const langs = languagesForModality(route.modality);
   const [lang, setLang] = useState<Language>('curl');
-  const isTranscribe = route.modality === 'transcribe';
+  // Prompt input is meaningless for non-LLM modalities: transcribe sends a file,
+  // generic REST APIs have no "prompt" concept (their body is arbitrary JSON).
+  const hidePrompt = route.modality === 'transcribe' || route.modality === 'generic';
 
   const code = generateSample(lang, { routeId: route.id, modality: route.modality, baseUrl, apiKey, prompt });
 
@@ -70,7 +72,7 @@ export function RouteCodeDialog({ route }: { route: Route }) {
             <Input id="curl-key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="text-[12px]" />
           </div>
         </div>
-        {!isTranscribe && (
+        {!hidePrompt && (
           <div className="space-y-1.5">
             <Label htmlFor="curl-prompt">{route.modality === 'embed' ? 'Input text' : 'Prompt'}</Label>
             <Input id="curl-prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="text-[12px]" />

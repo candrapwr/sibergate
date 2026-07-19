@@ -92,12 +92,13 @@ function ImageGen({ routes, apiKey }: { routes: string[]; apiKey: string }) {
   useEffect(() => { if (routes.length && !routes.includes(route)) setRoute(routes[0]); }, [routes, route]);
 
   const run = async () => {
-    if (!apiKey) return toast.error('Set client API key first');
     setLoading(true); setImg(null);
     try {
-      const res = await fetch('/v1/images/generations', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const res = await fetch('/api/v1/images/generations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify({ model: route, prompt, size, n: 1 }),
       });
       const json = await res.json();
@@ -155,12 +156,13 @@ function SpeechGen({ routes, apiKey }: { routes: string[]; apiKey: string }) {
   useEffect(() => { if (routes.length && !routes.includes(route)) setRoute(routes[0]); }, [routes, route]);
 
   const run = async () => {
-    if (!apiKey) return toast.error('Set client API key first');
     setLoading(true); setAudio(null);
     try {
-      const res = await fetch('/v1/audio/speech', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const res = await fetch('/api/v1/audio/speech', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify({ model: route, input: text, voice, response_format: 'mp3' }),
       });
       if (!res.ok) { const j = await res.json().catch(() => null); throw new Error(j?.error?.message ?? `Error ${res.status}`); }
@@ -209,12 +211,13 @@ function MusicGen({ routes, apiKey }: { routes: string[]; apiKey: string }) {
   useEffect(() => { if (routes.length && !routes.includes(route)) setRoute(routes[0]); }, [routes, route]);
 
   const run = async () => {
-    if (!apiKey) return toast.error('Set client API key first');
     setLoading(true); setAudio(null);
     try {
-      const res = await fetch('/v1/music/generations', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+      const res = await fetch('/api/v1/music/generations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        headers,
         body: JSON.stringify({ model: route, prompt }),
       });
       const json = await res.json();
