@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2 } from 'lucide-react';
+import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2, Eraser, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useImportProviders, useResetAll, useSystem } from '@/lib/queries';
+import { useImportProviders, useResetAll, useClearLogs, useResetStats, useSystem } from '@/lib/queries';
 import { api } from '@/lib/api-client';
 import { KNOWN_STATS } from '@/lib/known-providers-client';
 import { PageHeader } from '@/components/layout/page-header';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { ConfirmDialog } from '@/components/confirm-dialog';
 
 export default function SettingsPage() {
   const { data: system } = useSystem();
@@ -39,6 +40,9 @@ export default function SettingsPage() {
 
       {/* Backup & Restore */}
       <BackupRestoreSection />
+
+      {/* Maintenance: clear logs / reset stats (light-weight destructive) */}
+      <MaintenanceSection />
 
       {/* Danger zone */}
       <Card className="border-destructive/40">
@@ -114,6 +118,79 @@ function ImportButton() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function MaintenanceSection() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Eraser size={15} /> Maintenance
+        </CardTitle>
+        <CardDescription>
+          Bersihkan log request dan reset statistik (latency EMA + usage). Master data (providers, models,
+          routes, API keys) tidak tersentuh.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <ClearLogsButton />
+        <ResetStatsButton />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ClearLogsButton() {
+  const clear = useClearLogs();
+  const run = async () => {
+    const r = await clear.mutateAsync();
+    toast.success(`Cleared ${r.removed.logs} request log(s)`);
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+      <div className="space-y-0.5">
+        <div className="text-[13px] font-medium">Clear request logs</div>
+        <div className="text-[11px] text-muted-foreground">
+          Hapus semua baris di tabel requests. Usage/stats jadi kosong karena dihitung dari log ini.
+        </div>
+      </div>
+      <ConfirmDialog
+        trigger={<Button variant="outline" size="sm"><Trash2 size={14} /> Clear logs</Button>}
+        title="Clear request logs?"
+        description="Semua histori request (latency, token, cost, error) akan dihapus permanen. Master data aman. Tidak bisa di-undo."
+        confirmLabel="Clear logs"
+        pending={clear.isPending}
+        onConfirm={run}
+      />
+    </div>
+  );
+}
+
+function ResetStatsButton() {
+  const reset = useResetStats();
+  const run = async () => {
+    const r = await reset.mutateAsync();
+    toast.success(`Reset stats: ${r.removed.logs} logs cleared, ${r.removed.latencyEntries} latency entries reset`);
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+      <div className="space-y-0.5">
+        <div className="text-[13px] font-medium">Reset statistics</div>
+        <div className="text-[11px] text-muted-foreground">
+          Clear logs + reset tracker latency in-memory (EMA). Berguna setelah ganti provider/migrasi besar
+          supaya strategi &lsquo;fastest&rsquo; tidak pakai data lama.
+        </div>
+      </div>
+      <ConfirmDialog
+        trigger={<Button variant="outline" size="sm"><BarChart3 size={14} /> Reset stats</Button>}
+        title="Reset statistics?"
+        description="Semua request log dihapus DAN latency tracker direset ke kosong. Strategi 'fastest' akan belajar ulang dari nol. Master data aman."
+        confirmLabel="Reset stats"
+        pending={reset.isPending}
+        onConfirm={run}
+      />
     </div>
   );
 }

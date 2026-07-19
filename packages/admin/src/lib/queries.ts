@@ -322,3 +322,33 @@ export function useResetAll() {
     onSuccess: () => qc.invalidateQueries(),
   });
 }
+
+/** Hapus semua baris di tabel requests (request log). Master data aman. */
+export function useClearLogs() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ ok: boolean; removed: { logs: number } }>('logs/clear'),
+    onSuccess: () => {
+      // Hanya invalidate query yg membaca requests/logs/stats — bukan semua cache.
+      qc.invalidateQueries({ queryKey: ['logs'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+      qc.invalidateQueries({ queryKey: ['usage'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+/** Reset stats = clear logs + reset latency EMA. Master data aman. */
+export function useResetStats() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; removed: { logs: number; latencyEntries: number } }>('stats/reset'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['logs'] });
+      qc.invalidateQueries({ queryKey: ['stats'] });
+      qc.invalidateQueries({ queryKey: ['usage'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}

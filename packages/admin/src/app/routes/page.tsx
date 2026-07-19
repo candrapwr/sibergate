@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight, GripVertical, ChevronUp, ChevronDown } from 'lucide-react';
+import { Plus, Trash2, Pencil, Route as RouteIcon, X, ArrowRight, GripVertical, ChevronUp, ChevronDown, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRoutes, useProviders, useModels, useUpsertRoute, useDeleteRoute, useToggleRoute, useUpsertModel } from '@/lib/queries';
 import type { Route } from '@/lib/types';
@@ -39,9 +39,20 @@ export default function RoutesPage() {
   const { data, isLoading } = useRoutes();
   const allRoutes = data?.data ?? [];
   const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
-  const routes = statusFilter === 'all'
-    ? allRoutes
-    : allRoutes.filter((r) => (statusFilter === 'enabled' ? r.enabled : !r.enabled));
+  const [q, setQ] = useState('');
+  // Gabung filter status + pencarian teks. Search mencari di id, name, dan
+  // target (provider:model) sekaligus — supaya user bisa cari route baik dari
+  // nama virtual maupun dari model/providernya (mis. ketik 'deepseek' utk
+  // lihat semua route yg menargetkan model deepseek).
+  const routes = allRoutes.filter((r) => {
+    if (statusFilter !== 'all' && (statusFilter === 'enabled' ? !r.enabled : r.enabled)) return false;
+    if (q.trim()) {
+      const hay = `${r.id} ${r.name ?? ''} ${r.targets.map((t) => `${t.provider}:${t.model}`).join(' ')}`.toLowerCase();
+      if (!hay.includes(q.trim().toLowerCase())) return false;
+    }
+    return true;
+  });
+  const hasFilters = statusFilter !== 'all' || q.trim() !== '';
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const paged = routes.slice(page * pageSize, page * pageSize + pageSize);
@@ -54,9 +65,25 @@ export default function RoutesPage() {
         <EmptyState icon={RouteIcon} title="No routes yet" hint="Create a route to expose a virtual model." />
       ) : (
         <>
-        <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+          <div className="relative">
+            <Search size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setPage(0); }}
+              placeholder="Search id, name, or target…"
+              className="h-9 w-64 pl-7 text-[12px]"
+            />
+          </div>
+          {hasFilters ? (
+            <span className="text-[11px] text-muted-foreground">
+              {routes.length} of {allRoutes.length}
+            </span>
+          ) : null}
+        </div>
         {routes.length === 0 ? (
-          <EmptyState icon={RouteIcon} title="No routes match" hint={`No ${statusFilter} routes. Switch the filter.`} />
+          <EmptyState icon={RouteIcon} title="No routes match" hint={`No routes match your filter. Adjust search or status.`} />
         ) : (
         <>
         <Table>
