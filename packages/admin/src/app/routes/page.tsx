@@ -36,6 +36,22 @@ const MODALITIES = [
   { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/generic/:id) — non-LLM' },
 ] as const;
 
+/**
+ * Modality mana yg boleh jadi pilihan override per-target, diberikan modality
+ * route. Hanya route chat yg boleh mix: target bisa 'chat' (default) atau
+ * 'responses' (varian chat-style, format bisa di-convert dua arah). Route
+ * modality lain (image, audio, embed, generic) tidak bisa di-override krn
+ * formatnya berbeda total — target wajib ikut route.modality.
+ */
+function targetModalityChoices(routeModality: string): { id: string; label: string }[] {
+  if (routeModality === 'chat') {
+    return [
+      { id: 'responses', label: 'responses' },
+    ];
+  }
+  return []; // route non-chat: tidak ada pilihan override
+}
+
 export default function RoutesPage() {
   const { data, isLoading } = useRoutes();
   const allRoutes = data?.data ?? [];
@@ -396,15 +412,17 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                       <Input type="number" min={1} value={t.weight} onChange={(e) => updateTarget(i, { weight: Number(e.target.value) })} className="h-7 w-14 px-2 text-[12px]" />
                     </label>
                   )}
-                  <select
-                    value={t.modality}
-                    onChange={(e) => updateTarget(i, { modality: e.target.value })}
-                    className="h-7 rounded-md border border-border bg-background px-1.5 text-[11px]"
-                    title="Override modality for this target (default: route modality)"
-                  >
-                    <option value="">route default ({form.modality})</option>
-                    {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-                  </select>
+                  {targetModalityChoices(form.modality).length > 0 && (
+                    <select
+                      value={t.modality}
+                      onChange={(e) => updateTarget(i, { modality: e.target.value })}
+                      className="h-7 rounded-md border border-border bg-background px-1.5 text-[11px]"
+                      title={`Modality target — default: ${form.modality}`}
+                    >
+                      <option value="">default ({form.modality})</option>
+                      {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    </select>
+                  )}
                   <div className="flex shrink-0 flex-col">
                     <button type="button" onClick={() => moveTarget(i, i - 1)} disabled={i === 0} className="leading-none text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up">
                       <ChevronUp size={14} />
@@ -426,15 +444,17 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                 <option value="">model…</option>
                 {availableModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
-              <select
-                value={newTarget.modality}
-                onChange={(e) => setNewTarget({ ...newTarget, modality: e.target.value })}
-                className="h-9 w-32 rounded-md border border-border bg-background px-2 text-[11px]"
-                title="Override modality for this target (default: route modality)"
-              >
-                <option value="">route default ({form.modality})</option>
-                {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.id}</option>)}
-              </select>
+              {targetModalityChoices(form.modality).length > 0 && (
+                <select
+                  value={newTarget.modality}
+                  onChange={(e) => setNewTarget({ ...newTarget, modality: e.target.value })}
+                  className="h-9 w-32 rounded-md border border-border bg-background px-2 text-[11px]"
+                  title={`Modality target — default: ${form.modality}`}
+                >
+                  <option value="">default ({form.modality})</option>
+                  {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              )}
               <Button type="button" variant="outline" size="sm" onClick={addTarget}><Plus size={14} /></Button>
             </div>
             {isGeneric && newTarget.provider && !providerHasModels && (
