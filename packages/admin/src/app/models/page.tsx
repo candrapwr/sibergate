@@ -40,12 +40,14 @@ export default function ModelsPage() {
     [models],
   );
 
-  const [filter, setFilter] = useState({ provider: '', modality: '', q: '' });
+  const [filter, setFilter] = useState({ provider: '', modality: '', q: '', status: '' as '' | 'enabled' | 'disabled' });
 
   const filtered = useMemo(() => {
     return models.filter((m) => {
       if (filter.provider && m.provider !== filter.provider) return false;
       if (filter.modality && !m.modalities.includes(filter.modality)) return false;
+      if (filter.status === 'enabled' && !m.enabled) return false;
+      if (filter.status === 'disabled' && m.enabled) return false;
       if (filter.q) {
         const hay = `${m.id} ${m.displayName} ${m.provider} ${m.modalities.join(' ')}`.toLowerCase();
         if (!hay.includes(filter.q.toLowerCase())) return false;
@@ -54,7 +56,7 @@ export default function ModelsPage() {
     });
   }, [models, filter]);
 
-  const hasFilters = filter.provider || filter.modality || filter.q;
+  const hasFilters = filter.provider || filter.modality || filter.q || filter.status;
 
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
@@ -63,7 +65,7 @@ export default function ModelsPage() {
   const filteredLen = filtered.length;
   useEffect(() => {
     setPage(0);
-  }, [filter.provider, filter.modality, filter.q, filteredLen]);
+  }, [filter.provider, filter.modality, filter.q, filter.status, filteredLen]);
 
   return (
     <div className="space-y-6">
@@ -91,6 +93,15 @@ export default function ModelsPage() {
             {presentModalities.map((md) => (
               <option key={md} value={md}>{md}</option>
             ))}
+          </select>
+          <select
+            value={filter.status}
+            onChange={(e) => setFilter({ ...filter, status: e.target.value as '' | 'enabled' | 'disabled' })}
+            className="h-9 rounded-md border border-border bg-background px-2 text-[12px]"
+          >
+            <option value="">all status</option>
+            <option value="enabled">enabled only</option>
+            <option value="disabled">disabled only</option>
           </select>
           <Input
             value={filter.q}

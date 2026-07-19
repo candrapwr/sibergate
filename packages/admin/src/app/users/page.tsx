@@ -16,6 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/empty-state';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Pagination } from '@/components/pagination';
+import { StatusFilter } from '@/components/status-filter';
 import { formatTs } from '@/lib/utils';
 
 const ROLES = ['owner', 'admin', 'viewer'] as const;
@@ -23,7 +24,13 @@ const ROLES = ['owner', 'admin', 'viewer'] as const;
 export default function UsersPage() {
   const { data, isLoading } = useUsers();
   const { data: me } = useUser();
-  const users = data?.data ?? [];
+  const allUsers = data?.data ?? [];
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
+  // Users use a `status` field ('active' | 'disabled') rather than a boolean.
+  // Map the shared filter vocabulary: enabled = active.
+  const users = statusFilter === 'all'
+    ? allUsers
+    : allUsers.filter((u) => (statusFilter === 'enabled' ? u.status === 'active' : u.status === 'disabled'));
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const paged = users.slice(page * pageSize, page * pageSize + pageSize);
@@ -33,9 +40,14 @@ export default function UsersPage() {
       <PageHeader title="Users" subtitle="Admin panel access" actions={<CreateButton />} />
       {isLoading ? (
         <div className="space-y-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-md bg-secondary/40" />)}</div>
-      ) : users.length === 0 ? (
+      ) : allUsers.length === 0 ? (
         <EmptyState icon={UsersIcon} title="No users yet" hint="Create one to grant admin panel access." />
       ) : (
+        <>
+        <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+        {users.length === 0 ? (
+          <EmptyState icon={UsersIcon} title="No users match" hint={`No ${statusFilter} users. Switch the filter.`} />
+        ) : (
         <>
         <Table>
           <TableHeader>
@@ -62,6 +74,8 @@ export default function UsersPage() {
           onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
           itemName="users"
         />
+        </>
+        )}
         </>
       )}
     </div>

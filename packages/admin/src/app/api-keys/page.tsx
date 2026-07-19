@@ -15,11 +15,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/empty-state';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Pagination } from '@/components/pagination';
+import { StatusFilter } from '@/components/status-filter';
 import { formatTs } from '@/lib/utils';
 
 export default function ApiKeysPage() {
   const { data, isLoading } = useApiKeys();
-  const keys = data?.data ?? [];
+  const allKeys = data?.data ?? [];
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
+  const keys = statusFilter === 'all'
+    ? allKeys
+    : allKeys.filter((k) => (statusFilter === 'enabled' ? k.enabled : !k.enabled));
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const paged = keys.slice(page * pageSize, page * pageSize + pageSize);
@@ -28,9 +33,14 @@ export default function ApiKeysPage() {
       <PageHeader title="API Keys" subtitle="Client keys for calling /v1/* (sha256-hashed)" actions={<CreateButton />} />
       {isLoading ? (
         <div className="space-y-2">{Array.from({ length: 2 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-md bg-secondary/40" />)}</div>
-      ) : keys.length === 0 ? (
+      ) : allKeys.length === 0 ? (
         <EmptyState icon={KeyRound} title="No API keys yet" hint="Create one for clients to authenticate." />
       ) : (
+        <>
+        <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+        {keys.length === 0 ? (
+          <EmptyState icon={KeyRound} title="No keys match" hint={`No ${statusFilter} keys. Switch the filter.`} />
+        ) : (
         <>
         <Table>
           <TableHeader>
@@ -44,7 +54,7 @@ export default function ApiKeysPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {keys.map((k) => <KeyRow key={k.id} apiKey={k} />)}
+            {paged.map((k) => <KeyRow key={k.id} apiKey={k} />)}
           </TableBody>
         </Table>
         <Pagination
@@ -55,6 +65,8 @@ export default function ApiKeysPage() {
           onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
           itemName="keys"
         />
+        </>
+        )}
         </>
       )}
     </div>

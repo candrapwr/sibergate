@@ -28,10 +28,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { EmptyState } from '@/components/empty-state';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Pagination } from '@/components/pagination';
+import { StatusFilter } from '@/components/status-filter';
 
 export default function ProvidersPage() {
   const { data, isLoading } = useProviders();
-  const providers = data?.data ?? [];
+  const allProviders = data?.data ?? [];
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'disabled'>('all');
+  const providers = statusFilter === 'all'
+    ? allProviders
+    : allProviders.filter((p) => (statusFilter === 'enabled' ? p.enabled : !p.enabled));
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState(25);
   const paged = providers.slice(page * pageSize, page * pageSize + pageSize);
@@ -45,9 +50,14 @@ export default function ProvidersPage() {
       />
       {isLoading ? (
         <LoadingSkeleton />
-      ) : providers.length === 0 ? (
+      ) : allProviders.length === 0 ? (
         <EmptyState icon={Boxes} title="No providers yet" hint="Add one to start routing requests." />
       ) : (
+        <>
+        <StatusFilter value={statusFilter} onChange={(v) => { setStatusFilter(v); setPage(0); }} />
+        {providers.length === 0 ? (
+          <EmptyState icon={Boxes} title="No providers match" hint={`No ${statusFilter} providers. Switch the filter.`} />
+        ) : (
         <>
         <Table>
           <TableHeader>
@@ -75,6 +85,8 @@ export default function ProvidersPage() {
           onPageSizeChange={(s) => { setPageSize(s); setPage(0); }}
           itemName="providers"
         />
+        </>
+        )}
         </>
       )}
     </div>
