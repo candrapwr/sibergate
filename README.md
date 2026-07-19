@@ -63,8 +63,8 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 
 - **🔌 Satu endpoint, semua provider** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, dan 10+ lainnya, disatukan di balik API OpenAI yang sudah Anda pakai.
 - **🧠 Routing cerdas** — `fallback` (failover otomatis), `fastest` (pilih latency terendah), `weighted` (load balancing). Strategi berlaku untuk semua modalitas.
-- **🎨 Enam modalitas AI + passthrough REST** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama.
-- **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/:routeId/*`, SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
+- **🎨 Enam modalitas AI + passthrough REST + Responses API** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama. Ada juga modality **responses** untuk provider OpenAI-compat Responses API — klien tetap format chat/completions, gateway yang auto-convert dua arah (termasuk streaming SSE).
+- **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log.
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model, dashboard live dengan grafik.
@@ -245,8 +245,19 @@ mengikuti envelope OpenAI: `{ "error": { message, type, param, code } }`.
 > **Modality `generic`** memilih route dari path (`/v1/generic/:routeId`), bukan
 > dari field `model` di body. Method, header, dan body klien diteruskan apa
 > adanya ke upstream; status code & response upstream dikembalikan verbatim.
-> Cocok untuk mem-proxy REST API, webhook, atau microservice internal dengan
-> routing + failover yang sama.
+> Route id boleh multi-segment (`team/prod/chat`) — di-resolve via longest-prefix
+> match. Cocok untuk mem-proxy REST API, webhook, atau microservice internal
+> dengan routing + failover yang sama.
+
+> **Modality `responses`** — klien tetap POST `/v1/chat/completions` dgn format
+> chat/completions biasa. Jika route target punya modality ini, gateway
+> meng-convert dua arah ke/dari OpenAI Responses API (`/v1/responses`):
+> `messages` ↔ `input`, `system` → `instructions`, `max_tokens` →
+> `max_output_tokens`, `output_items.output_text` → `choices[].message.content`,
+> `input_tokens`/`output_tokens` → `prompt_tokens`/`completion_tokens`.
+> Streaming SSE juga di-convert (`response.output_text.delta` → chat delta
+> chunk). Klien tidak perlu tahu backend pakai Responses API — cukup pilih route
+> yg modality-nya `responses`. Hanya provider OpenAI-compat Responses.
 
 ---
 

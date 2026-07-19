@@ -37,7 +37,7 @@ export interface Provider {
 }
 
 /** The KIND of gateway request / route (which adapter handles it). */
-export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
+export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses';
 
 /** What a model can do (capabilities). JSON array stored in DB. */
 export type ModelModality =

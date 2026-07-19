@@ -32,6 +32,7 @@ const MODALITIES = [
   { id: 'transcribe', label: 'Transcribe', desc: 'Audio→text (/v1/audio/transcriptions)' },
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
   { id: 'music', label: 'Music', desc: 'Text-to-music (/v1/music/generations)' },
+  { id: 'responses', label: 'Responses', desc: 'OpenAI Responses API (auto-convert from chat format) — /v1/chat/completions client, upstream /v1/responses' },
   { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/generic/:id) — non-LLM' },
 ] as const;
 

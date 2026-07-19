@@ -6,10 +6,11 @@ import {
   executeRoute,
   getRoute,
   logRequest,
+  convertResponsesToChat,
   type RouteModality,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
-import { proxySSEStream } from './stream.js';
+import { proxySSEStream, proxyResponsesSSEStream } from './stream.js';
 import { errorResponse } from './errors.js';
 
 /**
@@ -89,8 +90,19 @@ export function createApp(configStore: ConfigStore) {
     try {
       const { response, servedBy, latencyMs, trail } = await executeRoute(config, route, body, controller.signal);
 
+      // Route modality 'responses': upstream menerima/mengembalikan format Responses
+      // API, tapi client tetap format chat/completions. Convert di gateway.
+      const isResponsesModality = (route.modality ?? 'chat') === 'responses';
+      // Model id upstream = strip prefix provider (sama dgn yg dikirim adapter).
+      const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
+        ? servedBy.modelId.slice(servedBy.providerId.length + 1)
+        : servedBy.modelId;
+
       if (body.stream === true) {
-        const { response: streamRes, done } = proxySSEStream(c, response);
+        // Streaming: pakai SSE converter bila responses modality, verbatim lainnya.
+        const { response: streamRes, done } = isResponsesModality
+          ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
+          : proxySSEStream(c, response);
         done.then((res) => {
           const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
           const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
@@ -112,7 +124,31 @@ export function createApp(configStore: ConfigStore) {
         return streamRes;
       }
 
-      // Non-streaming: passthrough JSON, extract usage.
+      // Non-streaming.
+      if (isResponsesModality) {
+        // Responses API: convert JSON → format chat/completions sebelum return.
+        const responsesJson = (await response.json()) as Record<string, unknown>;
+        const chatJson = convertResponsesToChat(responsesJson);
+        const promptTokens = chatJson.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
+        const completionTokens = chatJson.usage?.completion_tokens ?? 0;
+        const totalTokens = chatJson.usage?.total_tokens ?? promptTokens + completionTokens;
+        const model = config.models.find((m) => m.id === servedBy.modelId);
+        const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        logRequest({
+          ...baseLog,
+          provider: servedBy.providerId,
+          model: servedBy.modelId,
+          latencyMs,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          costUsd,
+          metadata: { trail },
+        });
+        return c.json(chatJson);
+      }
+
+      // Non-streaming chat default: passthrough JSON, extract usage.
       const json = (await response.json()) as {
         usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
       };
