@@ -86,6 +86,8 @@ export function loadConfigFromDb(db?: DB): SiberGateConfig {
         priority: t.priority,
         weight: t.weight,
         enabled: t.enabled === 1,
+        // modality override per-target; null = pakai route.modality (default).
+        modality: (t.modality as RouteTarget['modality']) ?? null,
       })),
   }));
 

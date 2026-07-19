@@ -129,6 +129,9 @@ function migrate(db: DB): void {
     -- Dynamic Mapping: route -> ordered (provider, model) targets.
     -- FK composite ke models: referensi (provider_id, id) karena model identity
     -- kini composite — model_id saja tidak unik lintas provider.
+    -- Kolom modality opsional utk override route.modality per-target — bila
+    -- NULL, target memakai route.modality. Memungkinkan route campur target
+    -- chat + responses (OpenAI Responses API) dgn failover antar modality.
     CREATE TABLE IF NOT EXISTS route_targets (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       route_id      TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
@@ -137,6 +140,7 @@ function migrate(db: DB): void {
       priority      INTEGER NOT NULL DEFAULT 0,  -- lower = tried first (fallback)
       weight        INTEGER NOT NULL DEFAULT 1,  -- relative (weighted strategy)
       enabled       INTEGER NOT NULL DEFAULT 1,
+      modality      TEXT,  -- nullable: bila NULL → pakai route.modality (default)
       FOREIGN KEY (provider_id, model_id) REFERENCES models(provider_id, id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_route_targets_route ON route_targets(route_id);
@@ -224,6 +228,12 @@ function migrate(db: DB): void {
   // krn trailing slash ambigu. Cleanup ini menjalankan DELETE langsung. Aman
   // dijalankan berkali-kali (idempoten): jika tdk ada baris korup, no-op.
   cleanupCorruptModelIds(db);
+
+  // ── migrasi: kolom modality di route_targets (per-target modality) ───
+  // Memungkinkan override route.modality per target — mis. route chat biasa
+  // tapi salah satu target (OpenAI) diakses via modality 'responses'. Bila NULL,
+  // target memakai route.modality (behavior lama, backward compatible).
+  addColumnIfMissing(db, 'route_targets', 'modality', 'TEXT');
 }
 
 /**

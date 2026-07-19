@@ -37,6 +37,8 @@ export interface RouteTarget {
   priority: number;
   weight: number;
   enabled: boolean;
+  /** Override modality per-target. null/undefined = pakai route.modality. */
+  modality?: string | null;
 }
 
 export interface Route {
