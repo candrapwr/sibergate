@@ -3,6 +3,7 @@ import { getDb, type DB } from './db.js';
 import { encryptJSON, decryptJSON, type EncryptedBlob } from './crypto.js';
 import { generateApiKey } from './api-key.js';
 import { providerEndpoints } from './known-providers.js';
+import { resetLatency } from './latency.js';
 
 /**
  * Admin repository — CRUD operations over the master-data tables.
@@ -648,6 +649,35 @@ export function clearAllData(): { providers: number; models: number; routes: num
     db.exec('DELETE FROM api_keys');
   })();
   return before;
+}
+
+/**
+ * Hapus semua baris di tabel `requests` (request log). Tidak menyentuh master
+ * data (providers/models/routes/api_keys). Dipakai tombol "Clear logs" di
+ * Settings. Master data tetap, tapi usage/stats (yg dihitung dari requests
+ * saat runtime) otomatis ikut kosong.
+ */
+export function clearLogs(): { logs: number } {
+  const db = getDb();
+  const before = (db.prepare('SELECT COUNT(*) as c FROM requests').get() as { c: number }).c;
+  db.exec('DELETE FROM requests');
+  // Reset autoincrement counter supaya log baru mulai dari id 1 lagi (cosmetic,
+  // dan menjaga id tetap kecil setelah purge besar).
+  db.exec("DELETE FROM sqlite_sequence WHERE name = 'requests'");
+  return { logs: before };
+}
+
+/**
+ * Reset stats: kombinasi clearLogs() + reset latency EMA in-memory (dipakai
+ * strategi 'fastest'). Karena stats/usage di SiberGate tidak punya tabel
+ * tersendiri (dihitung dari requests saat runtime), reset stats = bersihkan
+ * requests + kosongkan latency tracker. Konfigurasi (providers/dll) tidak
+ * tersentuh.
+ */
+export function resetStats(): { logs: number; latencyEntries: number } {
+  const logs = clearLogs();
+  const latency = resetLatency();
+  return { logs: logs.logs, latencyEntries: latency.cleared };
 }
 
 export interface ImportResult {

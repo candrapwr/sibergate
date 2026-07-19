@@ -332,6 +332,19 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json({ ok: true, removed });
   });
 
+  // Hanya hapus request log (tabel requests). Master data aman.
+  app.post('/logs/clear', (c) => {
+    const removed = admin.clearLogs();
+    return c.json({ ok: true, removed });
+  });
+
+  // Reset stats = clear logs + reset latency EMA in-memory. Karena usage di
+  // SiberGate dihitung dari requests, ini mengosongkan semua stat agregat.
+  app.post('/stats/reset', (c) => {
+    const removed = admin.resetStats();
+    return c.json({ ok: true, removed });
+  });
+
   /* ─────────────────────────── /admin/backup & restore ─────────────────── */
   // Download a full backup (DB + master key) as a JSON file.
   app.get('/backup', (c) => {

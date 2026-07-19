@@ -40,6 +40,20 @@ export function getLatency(provider: string, model: string): number {
   return ema.get(`${provider}:${model}`) ?? 999_999;
 }
 
+/**
+ * Reset semua estimasi latency in-memory (EMA + sample count). Dipakai oleh
+ * tombol "Reset stats" di Settings — berguna setelah perubahan besar (mis.
+ * ganti provider, migrasi) supaya strategi 'fastest' tidak memakai data lama
+ * yg tidak lagi relevan. Window reset juga terjadi otomatis saat restart.
+ */
+export function resetLatency(): { cleared: number } {
+  const cleared = ema.size;
+  ema.clear();
+  samples.clear();
+  lastDecay = Date.now();
+  return { cleared };
+}
+
 /** Slowly decay estimates so old data doesn't dominate. */
 function maybeDecay(): void {
   const now = Date.now();
