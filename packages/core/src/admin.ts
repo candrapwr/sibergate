@@ -409,6 +409,24 @@ export function toggleApiKey(id: string, enabled: boolean): boolean {
   );
 }
 
+/**
+ * Rotate the secret of an existing API key (same id/name/enabled, new secret).
+ *
+ * The old plaintext can't be recovered (sha256 is one-way), so regenerate mints
+ * a brand-new secret and overwrites key_hash + key_prefix. The old secret stops
+ * authenticating immediately. Returns the new plaintext ONCE (like createApiKey).
+ */
+export function regenerateApiKey(id: string): CreatedKey | null {
+  const db = getDb();
+  if (!getApiKey(id)) return null;
+  const gen = generateApiKey();
+  const changed = db
+    .prepare('UPDATE api_keys SET key_hash = ?, key_prefix = ? WHERE id = ?')
+    .run(gen.hash, gen.prefix, id).changes > 0;
+  if (!changed) return null;
+  return { apiKey: getApiKey(id)!, plaintext: gen.plaintext };
+}
+
 /* ─────────────────────────── LOGS / STATS ─────────────────────────── */
 
 export function recentRequests(limit = 50): Record<string, unknown>[] {

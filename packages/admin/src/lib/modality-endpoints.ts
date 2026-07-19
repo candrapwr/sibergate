@@ -22,7 +22,7 @@ const MAP: Record<string, ModalityEndpoint> = {
   music: { path: '/v1/music/generations', proxyPath: '/v1/music/generations', label: 'Music' },
   // Generic passthrough: the route id is a path param, not a body field. Callers
   // (code-samples, route-tester) substitute the actual route id into the path.
-  generic: { path: '/v1/proxy/{routeId}', proxyPath: '/v1/proxy/{routeId}', label: 'Generic' },
+  generic: { path: '/v1/generic/{routeId}', proxyPath: '/v1/generic/{routeId}', label: 'Generic' },
 };
 
 export function modalityEndpoint(modality?: string): ModalityEndpoint {

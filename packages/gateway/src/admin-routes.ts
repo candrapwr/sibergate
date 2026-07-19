@@ -217,6 +217,15 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json({ ok: true });
   });
 
+  // Rotate the secret of an existing key (same id/name, new secret). Returns the
+  // new plaintext ONCE, like POST /api-keys. The old secret 401s immediately.
+  app.post('/api-keys/:id/regenerate', (c) => {
+    const result = admin.regenerateApiKey(c.req.param('id'));
+    if (!result) return c.json(notFound('api_key'), 404);
+    reload();
+    return c.json({ ...result.apiKey, plaintext: result.plaintext }, 201);
+  });
+
   /* ─────────────────────────── /admin/logs & stats ───────────────────── */
   app.get('/logs', (c) => {
     const limit = Math.min(Number(c.req.query('limit') ?? 50), 500);

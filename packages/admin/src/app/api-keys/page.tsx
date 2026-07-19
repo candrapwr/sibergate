@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Trash2, KeyRound, Copy, Check } from 'lucide-react';
+import { Plus, Trash2, KeyRound, Copy, Check, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApiKeys, useCreateApiKey, useToggleApiKey, useDeleteApiKey } from '@/lib/queries';
+import { useApiKeys, useCreateApiKey, useToggleApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/queries';
 import type { ApiKey } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
@@ -88,24 +88,86 @@ function KeyRow({ apiKey }: { apiKey: ApiKey }) {
         </button>
       </TableCell>
       <TableCell className="text-right">
-        <ConfirmDialog
-          trigger={
-            <Button variant="ghost" size="icon">
-              <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
-            </Button>
-          }
-          title={`Delete API key "${apiKey.name}"?`}
-          description={`This permanently revokes the ${apiKey.keyPrefix}… key. Any client still using it will immediately start receiving 401 Unauthorized.`}
-          pending={del.isPending}
-          onConfirm={() =>
-            del
-              .mutateAsync(apiKey.id)
-              .then(() => toast.success('API key deleted'))
-              .catch((e) => toast.error(e.message))
-          }
-        />
+        <div className="flex justify-end gap-1">
+          <RegenerateButton apiKey={apiKey} />
+          <ConfirmDialog
+            trigger={
+              <Button variant="ghost" size="icon">
+                <Trash2 size={14} className="text-muted-foreground hover:text-destructive" />
+              </Button>
+            }
+            title={`Delete API key "${apiKey.name}"?`}
+            description={`This permanently revokes the ${apiKey.keyPrefix}… key. Any client still using it will immediately start receiving 401 Unauthorized.`}
+            pending={del.isPending}
+            onConfirm={() =>
+              del
+                .mutateAsync(apiKey.id)
+                .then(() => toast.success('API key deleted'))
+                .catch((e) => toast.error(e.message))
+            }
+          />
+        </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+/** Regenerate (rotate) an API key's secret. Mints a new secret and shows the
+ *  new plaintext once (like create), wrapped in a confirm step because the old
+ *  secret stops authenticating immediately. */
+function RegenerateButton({ apiKey }: { apiKey: ApiKey }) {
+  const [open, setOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const regen = useRegenerateApiKey();
+
+  const doRegen = async () => {
+    try {
+      const res = await regen.mutateAsync(apiKey.id);
+      setConfirmOpen(false);
+      setOpen(true);
+      setNewKey(res.plaintext ?? null);
+      toast.success('Key regenerated — copy the new secret now');
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
+  const copy = () => {
+    if (!newKey) return;
+    navigator.clipboard.writeText(newKey);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <>
+      <ConfirmDialog
+        trigger={
+          <Button variant="ghost" size="icon" title="Regenerate key">
+            <RefreshCw size={14} className="text-muted-foreground hover:text-primary" />
+          </Button>
+        }
+        title={`Regenerate key "${apiKey.name}"?`}
+        description={`This rotates the secret. The old ${apiKey.keyPrefix}… key stops working immediately (clients using it get 401). The new plaintext is shown only once.`}
+        confirmLabel="Regenerate"
+        pending={regen.isPending}
+        onConfirm={doRegen}
+      />
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Key regenerated — copy now</DialogTitle></DialogHeader>
+          <p className="text-[13px] text-muted-foreground">This plaintext is shown only once. The old key has been revoked.</p>
+          <div className="flex items-center gap-2 rounded-md border border-border bg-background p-2">
+            <code className="flex-1 break-all font-mono text-[12px]">{newKey}</code>
+            <Button variant="outline" size="icon" onClick={copy}>
+              {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+            </Button>
+          </div>
+          <DialogFooter><Button onClick={() => setOpen(false)}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

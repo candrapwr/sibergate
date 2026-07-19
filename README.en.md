@@ -54,7 +54,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔌 One endpoint, all providers** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, and 10+ more, unified behind the OpenAI API you already use.
 - **🧠 Smart routing** — `fallback` (auto-failover), `fastest` (lowest-latency pick), `weighted` (load balancing). Strategies apply to every modality.
 - **🎨 Six AI modalities + REST passthrough** — chat, image generation, text-to-speech, transcription, embeddings, and **text-to-music** (DeepInfra ACE-Step), plus a **generic** modality that proxies any non-LLM API (GET/POST/PUT/DELETE) with the same routing + failover.
-- **🌐 A gateway for plain APIs too** — via `/v1/proxy/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
+- **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
 - **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys are encrypted at rest, decrypted transiently at request time, and never logged.
 - **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model, live dashboard with charts.
@@ -229,13 +229,13 @@ browser. The playground uses a separate client key (`sg_live_*`).
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Text embeddings |
 | `POST` | `/v1/music/generations` | Text-to-music (SiberGate extension) |
-| `ANY` | `/v1/proxy/:routeId/*` | **Generic REST passthrough** — proxy any non-LLM API (GET/POST/PUT/PATCH/DELETE); body & response forwarded verbatim (SiberGate extension) |
+| `ANY` | `/v1/generic/:routeId/*` | **Generic REST passthrough** — proxy any non-LLM API (GET/POST/PUT/PATCH/DELETE); body & response forwarded verbatim (SiberGate extension) |
 
 `model` is always a **route id** (e.g. `smart`), not a vendor model id. Errors
 follow the OpenAI envelope: `{ "error": { message, type, param, code } }`.
 
 > **The `generic` modality** selects its route from the path
-> (`/v1/proxy/:routeId`) instead of a `model` body field. The client's method,
+> (`/v1/generic/:routeId`) instead of a `model` body field. The client's method,
 > headers, and body are forwarded as-is to the upstream; the upstream status code
 > and response are returned verbatim. Ideal for proxying REST APIs, webhooks, or
 > internal microservices with the same routing + failover.

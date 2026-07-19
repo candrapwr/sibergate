@@ -220,6 +220,15 @@ export function useCreateApiKey() {
   });
 }
 
+/** Rotate an existing key's secret; returns the new plaintext once. */
+export function useRegenerateApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<ApiKey>(`api-keys/${id}/regenerate`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
+  });
+}
+
 export function useToggleApiKey() {
   const qc = useQueryClient();
   return useMutation({

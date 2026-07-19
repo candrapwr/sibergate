@@ -172,8 +172,8 @@ export function createApp(configStore: ConfigStore) {
   // forwards the original HTTP method + headers + body verbatim, and returns
   // the upstream response (status, headers, body) untouched. Lets SiberGate
   // proxy non-LLM APIs with the same routing/failover as LLM routes.
-  app.all('/v1/proxy/:routeId/*', (c) => genericHandler(c, configStore));
-  app.all('/v1/proxy/:routeId', (c) => genericHandler(c, configStore));
+  app.all('/v1/generic/:routeId/*', (c) => genericHandler(c, configStore));
+  app.all('/v1/generic/:routeId', (c) => genericHandler(c, configStore));
 
   return app;
 }
@@ -332,11 +332,11 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
     return errorResponse(c, 404, `Route id missing from path.`, 'invalid_request_error', 'model_not_found', 'model');
   }
 
-  // Path suffix after /v1/proxy/:routeId (may be empty) — spliced into {path}.
+  // Path suffix after /v1/generic/:routeId (may be empty) — spliced into {path}.
   // Parse it straight from the URL pathname so we don't depend on Hono's
   // internal route-pattern representation, which varies between `:routeId` and
   // `:routeId/*` matchers.
-  const prefix = `/v1/proxy/${routeId}`;
+  const prefix = `/v1/generic/${routeId}`;
   const pathname = new URL(c.req.url).pathname;
   const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : '';
 
@@ -378,7 +378,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   const baseLog = {
     requestId,
     method: c.req.method,
-    path: `/v1/proxy/${routeId}${suffix}`,
+    path: `/v1/generic/${routeId}${suffix}`,
     route: route.id,
     strategy: route.strategy,
     modality: 'generic' as RouteModality,
