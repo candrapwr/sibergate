@@ -34,6 +34,24 @@ export function getDb(dbPath: string = process.env.SIBERGATE_DB ?? 'sibergate.db
   return db;
 }
 
+/**
+ * Close the current DB connection and null the singleton so the next `getDb()`
+ * re-opens against the (possibly overwritten) file. Used by `restoreBackup`,
+ * which overwrites sibergate.db on disk: the old connection points at a stale
+ * file and would crash on any query. After this, `getDb()` returns a fresh
+ * connection to the restored DB. Safe to call when no instance exists.
+ */
+export function resetDb(): void {
+  if (dbInstance) {
+    try {
+      dbInstance.close();
+    } catch {
+      /* may already be closed */
+    }
+    dbInstance = null;
+  }
+}
+
 function migrate(db: DB): void {
   db.exec(`
     -- ════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { getDb } from './db.js';
+import { getDb, resetDb } from './db.js';
 
 /**
  * Backup & restore the entire SiberGate state for server migration.
@@ -68,13 +68,10 @@ export function restoreBackup(payload: BackupPayload): void {
   const keyDir = resolve(process.cwd(), '.sibergate');
   const keyPath = KEY_PATH();
 
-  // Close the current DB connection so we can overwrite the file safely.
-  // (The caller should restart the process after restore.)
-  try {
-    getDb().close();
-  } catch {
-    /* may already be closed */
-  }
+  // Close the current DB connection and null the singleton so we can overwrite
+  // the file safely. resetDb() handles both the close and the null-out — leaving
+  // the singleton pointing at a closed DB would crash every subsequent query.
+  resetDb();
 
   // Write the DB file.
   const dbBuffer = Buffer.from(payload.db, 'base64');
@@ -83,6 +80,11 @@ export function restoreBackup(payload: BackupPayload): void {
   // Write the master key.
   mkdirSync(keyDir, { recursive: true });
   writeFileSync(keyPath, payload.masterKey, { mode: 0o600 });
+
+  // Re-open the DB against the restored file so the process keeps serving
+  // immediately (no restart needed). The caller should still configStore.reload()
+  // to refresh the cached config from the new DB.
+  getDb();
 }
 
 /** Serialize a backup to a JSON string (for file download). */

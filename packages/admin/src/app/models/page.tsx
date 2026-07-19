@@ -16,7 +16,7 @@ import { EmptyState } from '@/components/empty-state';
 import { ConfirmDialog } from '@/components/confirm-dialog';
 import { Pagination } from '@/components/pagination';
 
-const MODALITIES = ['text-to-text', 'vision', 'image-generation', 'video-generation', 'audio', 'audio-transcription', 'embeddings'];
+const MODALITIES = ['text-to-text', 'vision', 'image-generation', 'video-generation', 'audio', 'audio-transcription', 'embeddings', 'api'];
 
 export default function ModelsPage() {
   const { data, isLoading } = useModels();

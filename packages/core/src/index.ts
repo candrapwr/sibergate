@@ -1,5 +1,5 @@
 export * from './types.js';
-export { getDb, type DB } from './db.js';
+export { getDb, resetDb, type DB } from './db.js';
 export { loadConfigFromDb, getRoute } from './config.js';
 export { loadDotEnv } from './env.js';
 export { encryptJSON, decryptJSON, sha256Hex, type EncryptedBlob } from './crypto.js';

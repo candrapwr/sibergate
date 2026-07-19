@@ -296,6 +296,13 @@ async function modalityHandler(
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length',
+  // content-encoding MUST be stripped: Node's fetch() auto-decompresses the
+  // upstream body (gzip/br/deflate), so response.arrayBuffer() returns plain
+  // bytes. If we forward the original "content-encoding: gzip" header with the
+  // already-decompressed body, the client tries to gunzip plain JSON and fails
+  // with "incorrect header check" / Z_DATA_ERROR. Drop the header so the bytes
+  // are treated as-is.
+  'content-encoding',
 ]);
 
 /**
