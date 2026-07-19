@@ -89,6 +89,22 @@ export function createAdminRouter(configStore: ConfigStore) {
 
   app.post('/models', async (c) => {
     const body = await c.req.json();
+    // Normalisasi: pastikan id selalu namespaced '{provider}/...' supaya unik
+    // global (konvensi). id yg sudah diawali '{provider}/' dibiarkan; selain itu
+    // diprefik. Mencegah ambigu di URL /admin/models/{id} bila ada nama sama di
+    // provider lain. Lihat juga migrateModelsCompositePk di db.ts.
+    if (body.id && body.provider && !body.id.startsWith(`${body.provider}/`)) {
+      body.id = `${body.provider}/${body.id}`;
+    }
+    // Cegah duplikat: kombinasi (provider, id) sudah ada → tolak dgn 409.
+    // Tanpa cek ini, ON CONFLICT di upsertModel akan diam-diam meng-update baris
+    // lama dan API balas 201 — inilah bug lama yg menimpa model provider lain.
+    if (body.id && body.provider) {
+      const dup = admin.findModel(body.provider, body.id);
+      if (dup) {
+        return c.json({ error: 'model_exists', message: `Model '${body.id}' already exists for provider '${body.provider}'.` }, 409);
+      }
+    }
     const created = admin.upsertModel(body);
     reload();
     return c.json(created, 201);

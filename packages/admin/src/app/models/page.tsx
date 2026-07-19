@@ -238,6 +238,19 @@ function ModelForm({ title, submitLabel, model, onSubmit }: { title: string; sub
   const toggleModality = (m: string) =>
     setForm((f) => ({ ...f, modalities: f.modalities.includes(m) ? f.modalities.filter((x) => x !== m) : [...f.modalities, m] }));
 
+  // Saat Add Model: begitu user pilih provider, otomatis prefik field ID dgn
+  // '{provider}/' (konvensi namespaced) supaya id tetap globally unik dan URL
+  // admin /admin/models/{id} tidak ambigu antar provider. Hanya ganti prefix
+  // provider lama (jika ada) — biarkan user bebas mengedit sisinya.
+  const onProviderChange = (providerId: string) => {
+    setForm((f) => {
+      if (isEdit) return { ...f, provider: providerId };
+      const slashIdx = f.id.indexOf('/');
+      const tail = slashIdx >= 0 ? f.id.slice(slashIdx + 1) : f.id;
+      return { ...f, provider: providerId, id: providerId ? `${providerId}/${tail}` : tail };
+    });
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const payload: Record<string, unknown> = {
@@ -266,11 +279,16 @@ function ModelForm({ title, submitLabel, model, onSubmit }: { title: string; sub
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="mid">ID</Label>
-            <Input id="mid" value={form.id} disabled={isEdit} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="gpt-4o-mini" required />
+            <Input id="mid" value={form.id} disabled={isEdit} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="openai/gpt-4o-mini" required />
+            {!isEdit && (
+              <p className="text-[11px] text-muted-foreground">
+                Otomatis berprefik <code>{form.provider ? `${form.provider}/` : '{provider}/'}</code> agar unik antar provider. Bisa diedit.
+              </p>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="mprovider">Provider</Label>
-            <select id="mprovider" value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]" required>
+            <select id="mprovider" value={form.provider} onChange={(e) => onProviderChange(e.target.value)} className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]" required>
               <option value="">Select…</option>
               {providers?.data.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
