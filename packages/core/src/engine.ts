@@ -72,8 +72,15 @@ export async function executeRoute(
     const provider = config.providers.find((p) => p.id === target.providerId)!;
     lastTarget = target;
     const start = Date.now();
+    // target.modelId adalah id internal namespaced ('{provider}/{name}'). Upstream
+    // provider hanya mengenal nama asli, jadi strip prefix '{providerId}/' sebelum
+    // dikirim ke adapter (body.model + URL {model}). Tanpa ini, DeepInfra mis.
+    // menerima 'deepinfra/deepseek-ai/...' dan membalas 404 model not found.
+    const upstreamModel = target.modelId.startsWith(`${target.providerId}/`)
+      ? target.modelId.slice(target.providerId.length + 1)
+      : target.modelId;
     try {
-      const response = await callProvider({ provider, model: target.modelId, body, signal, modality });
+      const response = await callProvider({ provider, model: upstreamModel, body, signal, modality });
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
       trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs });

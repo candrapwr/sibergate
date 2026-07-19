@@ -127,14 +127,17 @@ function migrate(db: DB): void {
     );
 
     -- Dynamic Mapping: route -> ordered (provider, model) targets.
+    -- FK composite ke models: referensi (provider_id, id) karena model identity
+    -- kini composite — model_id saja tidak unik lintas provider.
     CREATE TABLE IF NOT EXISTS route_targets (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       route_id      TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
       provider_id   TEXT NOT NULL REFERENCES providers(id),
-      model_id      TEXT NOT NULL REFERENCES models(id),
+      model_id      TEXT NOT NULL,
       priority      INTEGER NOT NULL DEFAULT 0,  -- lower = tried first (fallback)
       weight        INTEGER NOT NULL DEFAULT 1,  -- relative (weighted strategy)
-      enabled       INTEGER NOT NULL DEFAULT 1
+      enabled       INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (provider_id, model_id) REFERENCES models(provider_id, id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_route_targets_route ON route_targets(route_id);
 
@@ -205,6 +208,15 @@ function migrate(db: DB): void {
   // azure/gpt-4o-mini di provider inference lain) justru menimpa baris lama.
   // Skema baru menetapkan PK = (provider_id, id) supaya kombinasi tsb unik.
   migrateModelsCompositePk(db);
+
+  // ── migrasi: composite FK route_targets → models ─────────────────────
+  // Sebagai konsekuensi composite PK di models, FK lama route_targets
+  // 'model_id REFERENCES models(id)' menjadi invalid (models.id tidak unik
+  // sendiri). Rebuild route_targets dgn composite FK (provider_id, model_id).
+  // Berjalan terpisah dari migrateModelsCompositePk supaya server production
+  // yg SUDAH migrasi model (tapi route_targets FK-nya masih lama) juga ikut
+  // ter-fix. Idempoten: jika FK sudah composite, skip.
+  migrateRouteTargetsCompositeFk(db);
 }
 
 /**
@@ -279,6 +291,25 @@ function migrateModelsCompositePk(db: DB): void {
       DROP TABLE models;
       ALTER TABLE models_new RENAME TO models;
       CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
+
+      -- Rebuild route_targets: FK lama 'model_id REFERENCES models(id)' tidak
+      -- valid lagi krn models.id tidak unik sendiri (PK composite). Buat ulang
+      -- dgn composite FK (provider_id, model_id) → models(provider_id, id).
+      CREATE TABLE route_targets_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        route_id      TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+        provider_id   TEXT NOT NULL REFERENCES providers(id),
+        model_id      TEXT NOT NULL,
+        priority      INTEGER NOT NULL DEFAULT 0,
+        weight        INTEGER NOT NULL DEFAULT 1,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (provider_id, model_id) REFERENCES models(provider_id, id) ON DELETE CASCADE
+      );
+      INSERT INTO route_targets_new (id, route_id, provider_id, model_id, priority, weight, enabled)
+      SELECT id, route_id, provider_id, model_id, priority, weight, enabled FROM route_targets;
+      DROP TABLE route_targets;
+      ALTER TABLE route_targets_new RENAME TO route_targets;
+      CREATE INDEX IF NOT EXISTS idx_route_targets_route ON route_targets(route_id);
     `);
 
     // Validasi integritas pasca-migrasi (FK sudah OFF, cek manual). Jika ada
@@ -291,6 +322,66 @@ function migrateModelsCompositePk(db: DB): void {
     `).get() as { c: number };
     if (orphanCheck.c > 0) {
       throw new Error(`migration produced ${orphanCheck.c} orphan route_targets; aborting`);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
+}
+
+/**
+ * Pastikan tabel `route_targets` memakai composite FK (provider_id, model_id)
+ * → models(provider_id, id). Setelah models beralih ke composite PK, FK lama
+ * 'model_id REFERENCES models(id)' jadi invalid krn models.id tidak unik
+ * sendiri — insert/update route target akan gagal dgn "foreign key mismatch".
+ *
+ * Idempoten: deteksi via pragma_foreign_key_list. Skip bila FK composite sudah
+ * ada. Berjalan terpisah dari migrateModelsCompositePk supaya server production
+ * yg sudah migrasi model (tapi route_targets FK-nya belum di-rebuild) ikut
+ * ter-fix saat pull kode baru ini.
+ */
+function migrateRouteTargetsCompositeFk(db: DB): void {
+  const fks = db.prepare(`PRAGMA foreign_key_list('route_targets')`).all() as Array<{
+    table: string;
+    from: string;
+    to: string;
+  }>;
+  // FK composite ditandai dgn 2 baris (masing-masing kolom) utk tabel 'models'.
+  const modelFkCols = fks.filter((f) => f.table === 'models');
+  if (modelFkCols.length >= 2 && modelFkCols.some((f) => f.from === 'provider_id')) {
+    return; // sudah composite FK, selesai
+  }
+
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec(`
+      CREATE TABLE route_targets_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        route_id      TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+        provider_id   TEXT NOT NULL REFERENCES providers(id),
+        model_id      TEXT NOT NULL,
+        priority      INTEGER NOT NULL DEFAULT 0,
+        weight        INTEGER NOT NULL DEFAULT 1,
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (provider_id, model_id) REFERENCES models(provider_id, id) ON DELETE CASCADE
+      );
+
+      INSERT INTO route_targets_new (id, route_id, provider_id, model_id, priority, weight, enabled)
+      SELECT id, route_id, provider_id, model_id, priority, weight, enabled FROM route_targets;
+
+      DROP TABLE route_targets;
+      ALTER TABLE route_targets_new RENAME TO route_targets;
+      CREATE INDEX IF NOT EXISTS idx_route_targets_route ON route_targets(route_id);
+    `);
+
+    // Validasi integritas: tiap route_target harus punya pasangan model-nya.
+    const orphanCheck = db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM route_targets rt
+      LEFT JOIN models m ON m.id = rt.model_id AND m.provider_id = rt.provider_id
+      WHERE m.id IS NULL
+    `).get() as { c: number };
+    if (orphanCheck.c > 0) {
+      throw new Error(`route_targets FK rebuild left ${orphanCheck.c} orphans; aborting`);
     }
   } finally {
     db.pragma('foreign_keys = ON');
