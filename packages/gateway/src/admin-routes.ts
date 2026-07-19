@@ -89,21 +89,30 @@ export function createAdminRouter(configStore: ConfigStore) {
 
   app.post('/models', async (c) => {
     const body = await c.req.json();
-    // Normalisasi: pastikan id selalu namespaced '{provider}/...' supaya unik
-    // global (konvensi). id yg sudah diawali '{provider}/' dibiarkan; selain itu
-    // diprefik. Mencegah ambigu di URL /admin/models/{id} bila ada nama sama di
-    // provider lain. Lihat juga migrateModelsCompositePk di db.ts.
-    if (body.id && body.provider && !body.id.startsWith(`${body.provider}/`)) {
-      body.id = `${body.provider}/${body.id}`;
+    if (!body.provider) {
+      return c.json({ error: 'invalid_input', message: 'Provider is required.' }, 400);
     }
-    // Cegah duplikat: kombinasi (provider, id) sudah ada → tolak dgn 409.
+    // Ambil nama model: field 'id' bisa berisi nama polos ('gpt-4o-mini') atau
+    // sudah namespaced ('openai/gpt-4o-mini'). Strip prefix '{provider}/' bila
+    // ada agar kita selalu punya nama murni, lalu prefik ulang secara konsisten.
+    let name = typeof body.id === 'string' ? body.id.trim() : '';
+    if (name.startsWith(`${body.provider}/`)) {
+      name = name.slice(body.provider.length + 1);
+    }
+    // Tolak nama kosong — sebelumnya bug: nama kosong lolos krn `if (body.id)`
+    // cek truthiness, lalu tersimpan dgn id '' (string kosong) di DB, yg tidak
+    // bisa dihapus via URL /admin/models/ karena trailing slash hilang/ambigu.
+    if (!name) {
+      return c.json({ error: 'invalid_input', message: 'Model name must not be empty.' }, 400);
+    }
+    body.id = `${body.provider}/${name}`;
+
+    // Cegah duplikat: kombinasi (provider, id) sudah ada → tolang dgn 409.
     // Tanpa cek ini, ON CONFLICT di upsertModel akan diam-diam meng-update baris
     // lama dan API balas 201 — inilah bug lama yg menimpa model provider lain.
-    if (body.id && body.provider) {
-      const dup = admin.findModel(body.provider, body.id);
-      if (dup) {
-        return c.json({ error: 'model_exists', message: `Model '${body.id}' already exists for provider '${body.provider}'.` }, 409);
-      }
+    const dup = admin.findModel(body.provider, body.id);
+    if (dup) {
+      return c.json({ error: 'model_exists', message: `Model '${body.id}' already exists for provider '${body.provider}'.` }, 409);
     }
     const created = admin.upsertModel(body);
     reload();

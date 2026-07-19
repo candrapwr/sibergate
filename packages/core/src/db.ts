@@ -217,6 +217,13 @@ function migrate(db: DB): void {
   // yg SUDAH migrasi model (tapi route_targets FK-nya masih lama) juga ikut
   // ter-fix. Idempoten: jika FK sudah composite, skip.
   migrateRouteTargetsCompositeFk(db);
+
+  // ── cleanup: hapus model dgn id korup (kosong / trailing slash) ──────
+  // Bug normalisasi lama sempat menyimpan model dgn id '' atau 'exa_ai_1/'
+  // (nama kosong setelah prefik provider) yg tidak bisa dihapus via URL admin
+  // krn trailing slash ambigu. Cleanup ini menjalankan DELETE langsung. Aman
+  // dijalankan berkali-kali (idempoten): jika tdk ada baris korup, no-op.
+  cleanupCorruptModelIds(db);
 }
 
 /**
@@ -385,6 +392,25 @@ function migrateRouteTargetsCompositeFk(db: DB): void {
     }
   } finally {
     db.pragma('foreign_keys = ON');
+  }
+}
+
+/**
+ * Hapus baris model dgn id korup: string kosong ('') atau berakhir '/' (nama
+ * kosong setelah prefik provider). Bug normalisasi lama sempat membiarkan id
+ * tsb tersimpan, dan baris itu tidak bisa dihapus via URL /admin/models/ krn
+ * trailing slash ambigu (404). Cleanup ini menjalankan DELETE langsung.
+ *
+ * Idempoten: jika tidak ada baris korup, ini no-op. Aman dijalankan tiap boot.
+ */
+function cleanupCorruptModelIds(db: DB): void {
+  // Hapus juga route_targets yg mereferensi model korup (ON DELETE CASCADE
+  // seharusnya menangani ini, tapi FK enforcement bisa mati di kondisi tertentu).
+  const result = db.prepare(`DELETE FROM models WHERE id = '' OR id LIKE '%/'`).run();
+  if (result.changes > 0) {
+    // Log tanpa throw — cleanup boleh diam-diam. Bila ingin terlihat, operator
+    // bisa cek via `SELECT` sebelum dan sesudah start.
+    console.log(`[migrate] removed ${result.changes} corrupt model(s) with empty/trailing-slash id`);
   }
 }
 
