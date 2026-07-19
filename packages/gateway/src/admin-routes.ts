@@ -320,7 +320,10 @@ export function createAdminRouter(configStore: ConfigStore) {
     if (!body) return c.json({ error: { message: 'Invalid backup payload.', type: 'invalid_request_error' } }, 400);
     try {
       restoreBackup(parseBackup(JSON.stringify(body)));
-      return c.json({ ok: true, message: 'Restore complete. Restart the gateway to apply.' });
+      // restoreBackup closed + re-opened the DB; reload the cached config from
+      // the restored file so the change applies immediately (no restart needed).
+      reload();
+      return c.json({ ok: true, message: 'Restore complete — config reloaded.' });
     } catch (err) {
       return c.json({ error: { message: (err as Error).message, type: 'restore_error' } }, 500);
     }

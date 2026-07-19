@@ -265,7 +265,8 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
         id,
         provider: newTarget.provider,
         displayName: `${newTarget.provider} (default)`,
-        modalities: [],
+        // Tag generic-route placeholders as 'api' so they're clearly non-LLM.
+        modalities: form.modality === 'generic' ? ['api'] : [],
       } as any);
       setNewTarget({ ...newTarget, model: id });
       toast.success(`Created placeholder model '${id}'`);

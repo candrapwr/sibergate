@@ -47,7 +47,8 @@ export type ModelModality =
   | 'video-generation'
   | 'audio'
   | 'audio-transcription'
-  | 'embeddings';
+  | 'embeddings'
+  | 'api'; // non-LLM REST API target (search, webhook, microservice) — paired with the generic route modality
 
 /** A model definition from the directory. */
 export interface Model {
