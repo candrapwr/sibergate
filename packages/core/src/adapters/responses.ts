@@ -44,28 +44,63 @@ function contentToString(content: unknown): string {
 /**
  * Convert body chat/completions → body Responses API. Pure function.
  * Tidak mengubah input; mengembalikan object baru.
+ *
+ * Termasuk multi-turn tool calling:
+ *   - assistant message dgn `tool_calls` → Responses output item tipe
+ *     'function_call' (dengan call_id dari tool_call.id).
+ *   - tool message (hasil eksekusi, role='tool', content, tool_call_id) →
+ *     Responses input item tipe 'function_call_output' (call_id + output).
  */
 export function convertChatRequestToResponses(body: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const messages = Array.isArray(body.messages) ? body.messages : [];
 
-  // Pisahkan system messages → instructions. Sisa role (user/assistant/tool)
-  // masuk ke input. Bila ada beberapa system message, gabung dgn newline.
+  // Pisahkan system messages → instructions. Sisa role masuk ke input items.
+  // Bila ada beberapa system message, gabung dgn newline.
   const systemTexts: string[] = [];
   const input: Array<Record<string, unknown>> = [];
   for (const msg of messages) {
     const m = msg as Record<string, unknown>;
     const role = m.role as string;
     const text = contentToString(m.content);
+
     if (role === 'system') {
       if (text) systemTexts.push(text);
-    } else if (role === 'user' || role === 'assistant') {
-      input.push({ role, content: text });
-    } else if (role === 'tool') {
-      // Hasil function call → masuk sebagai role 'user' dgn content (best-effort).
-      // Responses API tidak punya role 'tool' seperti chat; ini perkiraan.
-      input.push({ role: 'user', content: text });
+      continue;
     }
+    if (role === 'user') {
+      input.push({ role: 'user', content: text });
+      continue;
+    }
+    if (role === 'assistant') {
+      // Assistant bisa punya text content, tool_calls, atau keduanya.
+      const toolCalls = Array.isArray(m.tool_calls) ? m.tool_calls : [];
+      if (text) input.push({ role: 'assistant', content: text });
+      // Tiap tool_call chat → function_call Responses output item. Disisipkan
+      // ke input sbg item tipe 'function_call' (Responses menerima itu di input
+      // utk reconstruct conversation history).
+      for (const tc of toolCalls as any[]) {
+        if (tc?.type === 'function' && tc.function) {
+          input.push({
+            type: 'function_call',
+            call_id: tc.id ?? `call_${Math.random().toString(36).slice(2, 10)}`,
+            name: tc.function.name,
+            arguments: typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments ?? {}),
+          });
+        }
+      }
+      continue;
+    }
+    if (role === 'tool') {
+      // Hasil eksekusi tool → function_call_output Responses.
+      input.push({
+        type: 'function_call_output',
+        call_id: typeof m.tool_call_id === 'string' ? m.tool_call_id : `call_${Math.random().toString(36).slice(2, 10)}`,
+        output: text,
+      });
+      continue;
+    }
+    // Role lain (developer, function) → skip best-effort.
   }
   if (systemTexts.length) out.instructions = systemTexts.join('\n\n');
   out.input = input;
@@ -101,10 +136,18 @@ export function convertChatRequestToResponses(body: Record<string, unknown>): Re
 
 /**
  * Convert response JSON Responses API → format chat/completions. Pure function.
- * Handle output items tipe 'message' dgn content tipe 'output_text'.
- * Function_call / tool yg muncul di output diabaikan di scope awal (diteruskan
- * apa adanya di dalam message.content sebagai teks, best-effort).
+ *
+ * Output items diperlaku-flex:
+ *   - type 'message' dgn content 'output_text' → message.content (text).
+ *   - type 'function_call' → message.tool_calls[i] {id: call_id, type:'function',
+ *     function:{name, arguments}}. Bila ada minimal satu function_call,
+ *     finish_reason = 'tool_calls' (OpenAI convention).
  */
+export interface ChatToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
 export interface ChatCompletionResponse {
   id: string;
   object: 'chat.completion';
@@ -112,7 +155,7 @@ export interface ChatCompletionResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: 'assistant'; content: string };
+    message: { role: 'assistant'; content: string | null; tool_calls?: ChatToolCall[] };
     finish_reason: string;
   }>;
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
@@ -122,36 +165,54 @@ export function convertResponsesToChat(json: Record<string, unknown>): ChatCompl
   // output items array berisi pesan asisten + (mungkin) function_call.
   const output = Array.isArray(json.output) ? (json.output as any[]) : [];
   const textParts: string[] = [];
+  const toolCalls: ChatToolCall[] = [];
   for (const item of output) {
-    if (item?.type === 'message' && Array.isArray(item.content)) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.type === 'message' && Array.isArray(item.content)) {
       for (const c of item.content) {
         if (c?.type === 'output_text' && typeof c.text === 'string') textParts.push(c.text);
       }
+    } else if (item.type === 'function_call') {
+      // Responses function_call → chat tool_call. arguments adalah string JSON
+      // di Responses (sudah serialized) — teruskan apa adanya sesuai spec OpenAI.
+      toolCalls.push({
+        id: typeof item.call_id === 'string' ? item.call_id : `call_${Math.random().toString(36).slice(2, 10)}`,
+        type: 'function',
+        function: {
+          name: typeof item.name === 'string' ? item.name : '',
+          arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments ?? {}),
+        },
+      });
     }
   }
-  const content = textParts.join('');
+  const content = textParts.length ? textParts.join('') : (toolCalls.length ? '' : '');
+  // OpenAI: bila ada tool_calls, content boleh null. Kalau hanya text, content string.
+  const messageContent: string | null = content || (toolCalls.length ? null : '');
 
   // usage: input_tokens/output_tokens → prompt/completion.
   const u = (json.usage ?? {}) as Record<string, number>;
   const promptTokens = u.input_tokens ?? 0;
   const completionTokens = u.output_tokens ?? 0;
 
-  // status: 'completed' → finish_reason 'stop'. Bila output ada function_call,
-  // idealnya 'tool_calls', tapi scope awal tetap 'stop'.
-  const finishReason = json.status === 'incomplete' ? 'length' : 'stop';
+  // finish_reason: 'tool_calls' bila function_call dipanggil, 'length' bila
+  // status incomplete, selain itu 'stop'.
+  let finishReason: string;
+  if (toolCalls.length > 0) finishReason = 'tool_calls';
+  else if (json.status === 'incomplete') finishReason = 'length';
+  else finishReason = 'stop';
+
+  const message: ChatCompletionResponse['choices'][number]['message'] = {
+    role: 'assistant',
+    content: messageContent,
+  };
+  if (toolCalls.length) message.tool_calls = toolCalls;
 
   return {
     id: typeof json.id === 'string' ? json.id : 'resp_unknown',
     object: 'chat.completion',
     created: typeof json.created_at === 'number' ? json.created_at : Math.floor(Date.now() / 1000),
     model: typeof json.model === 'string' ? json.model : '',
-    choices: [
-      {
-        index: 0,
-        message: { role: 'assistant', content },
-        finish_reason: finishReason,
-      },
-    ],
+    choices: [{ index: 0, message, finish_reason: finishReason }],
     usage: {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
@@ -161,20 +222,17 @@ export function convertResponsesToChat(json: Record<string, unknown>): ChatCompl
 }
 
 /**
- * Convert satu event stream Responses API → 0 atau 1 chunk SSE chat/completions.
- * Mengembalikan:
- *   - {chunk}: kirim chunk chat ke client.
- *   - {chunk, usage}: chunk terakhir + usage utk log.
- *   - null: event di-skip (tidak relevan dgn format chat).
+ * Stateful converter utk streaming Responses API → chat/completions SSE chunks.
  *
- * Format event Responses (lihat SSE: `event: <type>\ndata: {...}\n\n`):
- *   - response.created           → skip (info)
- *   - response.in_progress       → skip
- *   - response.output_item.added → skip
- *   - response.output_text.delta → delta text → chat delta chunk
- *   - response.output_text.done  → skip (konten sudah di-stream per delta)
- *   - response.completed         → final chunk dgn usage + finish_reason
- *   - lainnya                    → skip
+ * Kenapa stateful? OpenAI Responses streaming mengirim function_call arguments
+ * per-bagian dgn event `response.function_call_arguments.delta`, dan chat
+ * streaming butuh `delta.tool_calls[i].function.arguments` (incremental string)
+ * dgn `index` yg konsisten. Selain itu, `response.output_item.added` memberi
+ * sinyal mulainya tool_call baru (utk set index). Maka converter harus track
+ * output_index → tool_call index mapping sepanjang stream.
+ *
+ * Pakai: buat satu converter per stream (lihat gateway/stream.ts). Panggil
+ * `processEvent(eventType, payload)` utk tiap event block. Return ConvertedChunk.
  */
 export interface ConvertedChunk {
   /** Chunk SSE chat-completion utk dikirim ke client, atau null utk skip. */
@@ -183,53 +241,109 @@ export interface ConvertedChunk {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
-export function convertResponsesStreamEventToChatChunk(
-  eventType: string,
-  payload: Record<string, unknown>,
-  modelId: string,
-): ConvertedChunk {
-  // Helper utk bangun delta chunk standar.
-  const deltaChunk = (delta: Record<string, unknown>) => ({
-    id: typeof payload.response_id === 'string' ? payload.response_id : 'resp_stream',
-    object: 'chat.completion.chunk',
+export function createResponsesStreamConverter(modelId: string): {
+  processEvent: (eventType: string, payload: Record<string, unknown>) => ConvertedChunk;
+} {
+  // Mapping output_index → tool_call index (chat delta pakai array index).
+  const outputIndexToToolIndex = new Map<number, number>();
+  let nextToolIndex = 0;
+  // Akumulasi content text utk capture result.content (utk estimateTokens fallback).
+  // Penanda apakah output_item.added terakhir menandakan function_call (supaya
+  // event args.delta/args.done tahu tool index mana).
+  let pendingFunctionCallIndex = -1;
+
+  const baseChunk = (id: string, delta: Record<string, unknown>, finish_reason: string | null, usage?: ConvertedChunk['usage']) => ({
+    id,
+    object: 'chat.completion.chunk' as const,
     created: Math.floor(Date.now() / 1000),
     model: modelId,
-    choices: [{ index: 0, delta, finish_reason: null }],
+    choices: [{ index: 0, delta, finish_reason }],
+    ...(usage ? { usage } : {}),
   });
 
-  if (eventType === 'response.output_text.delta') {
-    const delta = (payload as any).delta;
-    if (typeof delta === 'string') return { chunk: deltaChunk({ content: delta }) };
+  function processEvent(eventType: string, payload: Record<string, unknown>): ConvertedChunk {
+    // ID respons dipakai utk identitas chunk. Ambil dari payload.response_id,
+    // payload.response.id, atau fallback default.
+    const respId =
+      (typeof (payload as any).response_id === 'string' && (payload as any).response_id) ||
+      (typeof (payload as any).response?.id === 'string' && (payload as any).response.id) ||
+      'resp_stream';
+
+    // ── output_item.added: item baru di output. Bila function_call → assign
+    //    tool_call index baru utk item ini, dan emit delta awal dgn nama.
+    if (eventType === 'response.output_item.added') {
+      const item = (payload as any).item;
+      const outputIndex = typeof (payload as any).output_index === 'number' ? (payload as any).output_index : -1;
+      if (item?.type === 'function_call') {
+        const idx = nextToolIndex++;
+        if (outputIndex >= 0) outputIndexToToolIndex.set(outputIndex, idx);
+        pendingFunctionCallIndex = idx;
+        return {
+          chunk: baseChunk(respId, {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: idx,
+                id: typeof item.call_id === 'string' ? item.call_id : `call_${Math.random().toString(36).slice(2, 10)}`,
+                type: 'function',
+                function: { name: item.name ?? '', arguments: '' },
+              },
+            ],
+          }, null),
+        };
+      }
+      return { chunk: null };
+    }
+
+    // ── function_call_arguments.delta: increment arguments string utk tool_call.
+    if (eventType === 'response.function_call_arguments.delta') {
+      const delta = (payload as any).delta;
+      const outputIndex = typeof (payload as any).output_index === 'number' ? (payload as any).output_index : -1;
+      const idx = outputIndex >= 0 ? outputIndexToToolIndex.get(outputIndex) : pendingFunctionCallIndex;
+      if (typeof delta !== 'string' || idx === undefined || idx < 0) return { chunk: null };
+      return {
+        chunk: baseChunk(respId, {
+          tool_calls: [{ index: idx, function: { arguments: delta } }],
+        }, null),
+      };
+    }
+
+    // ── function_call_arguments.done: skip (args sudah dikirim per delta).
+    if (eventType === 'response.function_call_arguments.done') {
+      return { chunk: null };
+    }
+
+    // ── output_text.delta: text content increment.
+    if (eventType === 'response.output_text.delta') {
+      const delta = (payload as any).delta;
+      if (typeof delta !== 'string') return { chunk: null };
+      return { chunk: baseChunk(respId, { content: delta }, null) };
+    }
+
+    // ── completed: terminal. Set finish_reason: 'tool_calls' bila ada tool_call,
+    //    else 'stop'. Sertakan usage dari payload.response.usage.
+    if (eventType === 'response.completed') {
+      const resp = (payload as any).response ?? {};
+      const u = resp.usage ?? {};
+      const promptTokens = u.input_tokens ?? 0;
+      const completionTokens = u.output_tokens ?? 0;
+      const usage = {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+      };
+      const finishReason = nextToolIndex > 0 ? 'tool_calls' : 'stop';
+      return {
+        chunk: baseChunk(respId, {}, finishReason, usage),
+        usage,
+      };
+    }
+
+    // Event lain (created, in_progress, output_text.done, dll) di-skip.
     return { chunk: null };
   }
 
-  if (eventType === 'response.completed') {
-    // Event terminal. Ambil usage dari payload.response.usage.
-    const resp = (payload as any).response ?? {};
-    const u = resp.usage ?? {};
-    const promptTokens = u.input_tokens ?? 0;
-    const completionTokens = u.output_tokens ?? 0;
-    const usage = {
-      prompt_tokens: promptTokens,
-      completion_tokens: completionTokens,
-      total_tokens: promptTokens + completionTokens,
-    };
-    return {
-      chunk: {
-        id: typeof resp.id === 'string' ? resp.id : 'resp_stream',
-        object: 'chat.completion.chunk',
-        created: Math.floor(Date.now() / 1000),
-        model: modelId,
-        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-        usage,
-      },
-      usage,
-    };
-  }
-
-  // Event lain (created, in_progress, output_item.added, output_text.done, dll)
-  // di-skip — tidak punya equivalent di chat SSE stream.
-  return { chunk: null };
+  return { processEvent };
 }
 
 /** Adapter call: convert + kirim ke upstream, return Response mentah. */

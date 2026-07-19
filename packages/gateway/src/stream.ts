@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { convertResponsesStreamEventToChatChunk } from '@sibergate/core';
+import { createResponsesStreamConverter } from '@sibergate/core';
 
 /**
  * Proxy an upstream SSE stream to the client VERBATIM while capturing usage.
@@ -136,6 +136,10 @@ export function proxyResponsesSSEStream(
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
 
+  // Converter stateful per-stream — track tool_call index mapping (lihat
+  // createResponsesStreamConverter utk alasan kenapa perlu state).
+  const converter = createResponsesStreamConverter(modelId);
+
   // SSE adalah baris-baris dipisah blank line. Satu "event block" punya
   // kemungkinan baris `event: <type>` + satu atau lebih `data: <json>`.
   // Data multi-baris digabung sebelum parse.
@@ -196,7 +200,7 @@ export function proxyResponsesSSEStream(
     } catch {
       return; // data non-JSON, skip.
     }
-    const { chunk, usage } = convertResponsesStreamEventToChatChunk(eventType, payload, modelId);
+    const { chunk, usage } = converter.processEvent(eventType, payload);
     if (chunk) {
       writeChunk(controller, chunk);
       // Akumulasi content utk result.content (dipakai estimateTokens fallback).
