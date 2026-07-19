@@ -65,6 +65,17 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     authScheme: 'bearer',
     apiKeyEnv: 'OPENAI_API_KEY',
     docsUrl: 'https://platform.openai.com/docs/pricing',
+    // OpenAI-compat default + Responses API (/v1/responses) yg hanya dimiliki
+    // OpenAI. Provider lain tidak declare 'responses' krn endpoint tsb tidak
+    // ada di server mereka.
+    endpoints: {
+      chat: '/v1/chat/completions',
+      image: '/v1/images/generations',
+      speech: '/v1/audio/speech',
+      transcribe: '/v1/audio/transcriptions',
+      embed: '/v1/embeddings',
+      responses: '/v1/responses',
+    },
     models: [
       // GPT-5.6 family (latest frontier)
       { id: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', modalities: ['text-to-text', 'vision'], contextWindow: 1050000, maxOutput: 128000, inputPricePer1m: 5, outputPricePer1m: 30, capabilities: { supports_streaming: true, supports_tools: true, supports_json: true } },

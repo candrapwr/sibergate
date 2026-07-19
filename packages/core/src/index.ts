@@ -6,6 +6,12 @@ export { encryptJSON, decryptJSON, sha256Hex, type EncryptedBlob } from './crypt
 export { generateApiKey, hashApiKey, extractBearer, type GeneratedKey } from './api-key.js';
 export { seed } from './seed.js';
 export { callProvider, GatewayCallError, isFailoverable } from './provider.js';
+export {
+  convertChatRequestToResponses,
+  convertResponsesToChat,
+  convertResponsesStreamEventToChatChunk,
+  type ChatCompletionResponse,
+} from './adapters/responses.js';
 export { executeRoute, type ExecuteResult, type FailoverStep } from './engine.js';
 export { recordLatency, recordFailure, getLatency, resetLatency } from './latency.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
