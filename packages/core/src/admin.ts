@@ -199,13 +199,17 @@ export interface ModelInput {
 
 export function upsertModel(input: ModelInput): Record<string, unknown> {
   const db = getDb();
+  // Konflik pada composite (provider_id, id) — sehingga model dgn nama yg sama
+  // di provider berbeda menjadi baris terpisah, bukan menimpa baris provider lain.
+  // Sebelumnya konflik pada `id` saja, yg diam-diam menimpa baris provider manapun
+  // yg kebetulan memakai id sama — inilah bug "model baru menimpa provider lain".
   db.prepare(
     `INSERT INTO models (id, provider_id, display_name, modalities, context_window, max_output,
        input_price_per_1m, output_price_per_1m, capabilities, enabled)
      VALUES (@id, @providerId, @displayName, @modalities, @contextWindow, @maxOutput,
        @inputPrice, @outputPrice, @capabilities, @enabled)
-     ON CONFLICT(id) DO UPDATE SET
-       provider_id=@providerId, display_name=@displayName, modalities=@modalities,
+     ON CONFLICT(provider_id, id) DO UPDATE SET
+       display_name=@displayName, modalities=@modalities,
        context_window=@contextWindow, max_output=@maxOutput, input_price_per_1m=@inputPrice,
        output_price_per_1m=@outputPrice, capabilities=@capabilities, enabled=@enabled,
        updated_at=datetime('now')`,
@@ -225,7 +229,27 @@ export function upsertModel(input: ModelInput): Record<string, unknown> {
 }
 
 export function getModel(id: string): Record<string, unknown> | null {
-  return redactModel(getDb().prepare('SELECT * FROM models WHERE id = ?').get(id) as any);
+  const db = getDb();
+  // 1. Exact match by id (konvensi namespaced 'provider/name' selalu unik).
+  const exact = db.prepare('SELECT * FROM models WHERE id = ?').get(id) as any;
+  if (exact) return redactModel(exact);
+  // 2. Fallback: id tanpa prefix (mis. 'gpt-4o-mini') — ambil baris pertama.
+  //    Backward-compat utk data/URL lama. Jika ada duplikat lintas provider, yg
+  //    dikembalikan tidak deterministik; konvensi namespaced tetap disarankan.
+  const byName = db.prepare('SELECT * FROM models WHERE id = ? OR id LIKE ? ORDER BY id LIMIT 1')
+    .get(id, `%/${id}`) as any;
+  return redactModel(byName);
+}
+
+/**
+ * Lookup eksplisit by composite key (provider_id, id). Tepat satu baris atau
+ * null — dipakai utk mengecek duplikat saat create, tanpa fallback ambigu.
+ */
+export function findModel(providerId: string, id: string): Record<string, unknown> | null {
+  const row = getDb()
+    .prepare('SELECT * FROM models WHERE provider_id = ? AND id = ?')
+    .get(providerId, id) as any;
+  return redactModel(row);
 }
 
 export function listModels(): Record<string, unknown>[] {
@@ -612,7 +636,9 @@ export function importKnownProviders(providers: import('./known-providers.js').K
   const result: ImportResult = { providersImported: 0, providersSkipped: 0, modelsImported: 0, modelsSkipped: 0 };
 
   const existingProvider = db.prepare('SELECT id FROM providers WHERE id = ?');
-  const existingModel = db.prepare('SELECT id FROM models WHERE id = ?');
+  // Cek duplikat by composite (provider_id, id) — bukan id global. Sehingga
+  // model dgn nama sama milik provider berbeda tetap diimpor sebagai baris baru.
+  const existingModel = db.prepare('SELECT id FROM models WHERE provider_id = ? AND id = ?');
   const insertProvider = db.prepare(
     `INSERT INTO providers (id, name, base_url, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
      VALUES (@id, @name, @baseUrl, @authScheme, @credentials, @endpoints, @headers, @timeoutMs, 0)`,
@@ -654,11 +680,17 @@ export function importKnownProviders(providers: import('./known-providers.js').K
         result.providersImported += 1;
       }
       for (const m of p.models) {
-        if (existingModel.get(m.id)) {
+        // Konvensi id namespaced '{provider}/{name}'. id dianggap sudah namespaced
+        // HANYA bila diawali persis '{provider_id}/'; sekadar mengandung '/' (mis.
+        // 'deepseek/deepseek-r1' milik provider 'novita', atau 'meta-llama/...'
+        // milik provider 'deepinfra') TIDAK cukup — harus diprefik ulang supaya
+        // unik antar provider (lihat juga migrateModelsCompositePk di db.ts).
+        const modelId = m.id.startsWith(`${p.id}/`) ? m.id : `${p.id}/${m.id}`;
+        if (existingModel.get(p.id, modelId)) {
           result.modelsSkipped += 1;
         } else {
           insertModel.run({
-            id: m.id,
+            id: modelId,
             providerId: p.id,
             displayName: m.displayName,
             modalities: json(m.modalities ?? ['text-to-text']),

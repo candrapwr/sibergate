@@ -74,8 +74,13 @@ function migrate(db: DB): void {
     );
 
     -- Model Directory: spec per provider, JSON modalities for future-proofing.
+    -- Identity is COMPOSITE (provider_id, id): the same model name (e.g.
+    -- 'gpt-4o-mini') may legitimately exist under multiple providers (openai vs
+    -- azure, or two inference providers). Convention: store id namespaced as
+    -- '{provider_id}/{name}' so it stays globally unique for URL lookups
+    -- (/admin/models/{id}), but the real uniqueness guarantee is composite.
     CREATE TABLE IF NOT EXISTS models (
-      id              TEXT PRIMARY KEY,          -- 'gpt-4o-mini'
+      id              TEXT NOT NULL,             -- conventionally '{provider}/{name}', e.g. 'openai/gpt-4o-mini'
       provider_id     TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
       display_name    TEXT NOT NULL,
       -- JSON array: ['text-to-text','vision','image-generation','audio','embeddings']
@@ -87,7 +92,8 @@ function migrate(db: DB): void {
       capabilities    TEXT NOT NULL DEFAULT '{}', -- {supports_streaming, supports_tools, ...}
       enabled         INTEGER NOT NULL DEFAULT 1,
       created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (provider_id, id)
     );
     CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
 
@@ -192,6 +198,103 @@ function migrate(db: DB): void {
 
   // Failover audit trail stored as JSON (array of {provider, model, outcome, error}).
   addColumnIfMissing(db, 'requests', 'metadata', "TEXT NOT NULL DEFAULT '{}'");
+
+  // ── migrasi: composite PK (provider_id, id) untuk models ──────────────
+  // Skema lama memakai `id TEXT PRIMARY KEY` global unik, sehingga menambah
+  // model dgn nama sama di provider berbeda (mis. openai/gpt-4o-mini vs
+  // azure/gpt-4o-mini di provider inference lain) justru menimpa baris lama.
+  // Skema baru menetapkan PK = (provider_id, id) supaya kombinasi tsb unik.
+  migrateModelsCompositePk(db);
+}
+
+/**
+ * Pastikan tabel `models` memakai composite PK (provider_id, id).
+ * Idempoten: jika PK sudah composite (berisi 'provider_id'), skip.
+ *
+ * SQLite tidak bisa mengubah PK tabel yg sudah ada secara inline, jadi kita
+ * rebuild: buat models_new dgn skema baru → copy baris lama (id di-namespaced
+ * '{provider}/{id_lama}' bila belum mengandung '/') → update route_targets →
+ * drop+rename. `foreign_keys` harus dimatikan DI LUAR transaksi karena pragma
+ * tsb diabaikan bila diubah di tengah transaksi aktif.
+ */
+function migrateModelsCompositePk(db: DB): void {
+  const pk = db
+    .prepare(`SELECT name FROM pragma_table_info('models') WHERE pk > 0 ORDER BY pk`)
+    .all() as Array<{ name: string }>;
+  const pkCols = pk.map((r) => r.name);
+  // 'id' selalu ada; jika 'provider_id' juga bagian PK → sudah composite, selesai.
+  if (pkCols.includes('provider_id')) return;
+
+  // pragma foreign_keys TIDAK boleh diubah di tengah transaksi aktif. Karena
+  // rebuild mengubah route_targets.model_id (yg di-FK ke models) sementara
+  // tabel models lama masih ada dgn id lama, FK check akan gagal. Matikan
+  // sebelum operasi, nyalakan lagi setelahnya.
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.exec(`
+      CREATE TABLE models_new (
+        id              TEXT NOT NULL,
+        provider_id     TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+        display_name    TEXT NOT NULL,
+        modalities      TEXT NOT NULL DEFAULT '["text-to-text"]',
+        context_window  INTEGER,
+        max_output      INTEGER,
+        input_price_per_1m  REAL,
+        output_price_per_1m REAL,
+        capabilities    TEXT NOT NULL DEFAULT '{}',
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (provider_id, id)
+      );
+
+      -- Copy baris lama. Konvensi id baru = '{provider}/{id_lama}'.
+      -- Catatan: id dianggap "sudah namespaced" HANYA bila diawali persis
+      -- '{provider_id}/'. Sekadar mengandung '/' (mis. 'deepseek/deepseek-v4-flash'
+      -- milik provider 'novita') BUKAN bukti namespacing — keduanya harus
+      -- diprefik ulang supaya tetap unik antar provider.
+      INSERT INTO models_new (id, provider_id, display_name, modalities, context_window,
+        max_output, input_price_per_1m, output_price_per_1m, capabilities, enabled,
+        created_at, updated_at)
+      SELECT
+        CASE
+          WHEN old_models.id LIKE provider_id || '/%' THEN old_models.id
+          ELSE provider_id || '/' || old_models.id
+        END,
+        provider_id, display_name, modalities, context_window, max_output,
+        input_price_per_1m, output_price_per_1m, capabilities, enabled,
+        created_at, updated_at
+      FROM models AS old_models;
+
+      -- Perbarui route_targets.model_id agar konsisten dgn id model baru.
+      -- route_targets punya kolom provider_id sendiri (target-level), jadi prefix
+      -- diambil dari baris route_target itu sendiri. Aturan sama: hanya dianggap
+      -- sudah namespaced bila diawali persis '{route_targets.provider_id}/'.
+      UPDATE route_targets
+      SET model_id = CASE
+        WHEN route_targets.model_id LIKE route_targets.provider_id || '/%' THEN route_targets.model_id
+        ELSE route_targets.provider_id || '/' || route_targets.model_id
+      END;
+
+      DROP TABLE models;
+      ALTER TABLE models_new RENAME TO models;
+      CREATE INDEX IF NOT EXISTS idx_models_provider ON models(provider_id);
+    `);
+
+    // Validasi integritas pasca-migrasi (FK sudah OFF, cek manual). Jika ada
+    // route_targets yg model_id-nya tidak cocok dgn models baru, lempar error.
+    const orphanCheck = db.prepare(`
+      SELECT COUNT(*) AS c
+      FROM route_targets rt
+      LEFT JOIN models m ON m.id = rt.model_id AND m.provider_id = rt.provider_id
+      WHERE m.id IS NULL
+    `).get() as { c: number };
+    if (orphanCheck.c > 0) {
+      throw new Error(`migration produced ${orphanCheck.c} orphan route_targets; aborting`);
+    }
+  } finally {
+    db.pragma('foreign_keys = ON');
+  }
 }
 
 /** Add a column only if it doesn't already exist (idempotent migration). */
