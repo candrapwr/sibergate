@@ -40,6 +40,11 @@ export function getLatency(provider: string, model: string): number {
   return ema.get(`${provider}:${model}`) ?? 999_999;
 }
 
+/** Whether this target has been observed before (success or failure). */
+export function hasLatencyEstimate(provider: string, model: string): boolean {
+  return ema.has(`${provider}:${model}`);
+}
+
 /**
  * Reset semua estimasi latency in-memory (EMA + sample count). Dipakai oleh
  * tombol "Reset stats" di Settings — berguna setelah perubahan besar (mis.

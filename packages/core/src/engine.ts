@@ -1,5 +1,5 @@
 import type { Provider, Route, RouteModality, RouteTarget, SiberGateConfig } from './types.js';
-import { getLatency, recordFailure, recordLatency } from './latency.js';
+import { getLatency, hasLatencyEstimate, recordFailure, recordLatency } from './latency.js';
 import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 
 /**
@@ -134,7 +134,12 @@ function orderTargets(strategy: Route['strategy'], targets: RouteTarget[]): Rout
   const copy = [...targets];
   switch (strategy) {
     case 'fastest':
-      return copy.sort((a, b) => getLatency(a.providerId, a.modelId) - getLatency(b.providerId, b.modelId));
+      return copy.sort((a, b) => {
+        const aKnown = hasLatencyEstimate(a.providerId, a.modelId);
+        const bKnown = hasLatencyEstimate(b.providerId, b.modelId);
+        if (aKnown !== bKnown) return aKnown ? 1 : -1;
+        return getLatency(a.providerId, a.modelId) - getLatency(b.providerId, b.modelId);
+      });
     case 'weighted':
       return [pickWeighted(copy)];
     case 'fallback':
