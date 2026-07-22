@@ -63,7 +63,10 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 
 - **🔌 Satu endpoint, semua provider** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, dan 10+ lainnya, disatukan di balik API OpenAI yang sudah Anda pakai.
 - **🧠 Routing cerdas** — `fallback` (failover otomatis), `fastest` (pilih latency terendah), `weighted` (load balancing). Strategi berlaku untuk semua modalitas.
-- **🎨 Enam modalitas AI + passthrough REST + Responses API** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama. Ada juga modality **responses** untuk provider OpenAI-compat Responses API — klien tetap format chat/completions, gateway yang auto-convert dua arah (termasuk streaming SSE).
+- **🎨 Enam modalitas AI + passthrough REST + Responses API** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama. Ada juga modality **responses** untuk provider OpenAI-compat Responses API — klien tetap format chat/completions, gateway yang auto-convert dua arah (termasuk streaming SSE dan tool/function calling).
+- **🛠️ Tool/function calling penuh di Responses** — definisi tools, `tool_calls` di response (streaming maupun non-streaming), `finish_reason: tool_calls`, dan multi-turn (role `tool` → `function_call_output`) — semuanya di-convert transparan dari/ke format chat/completions.
+- **🖼️ Image generation async (Kling/vd2 style)** — beberapa provider tidak langsung balas URL gambar, tapi kembalikan `task_id`. SiberGate otomatis poll endpoint status tiap 5 detik (maks 10×), lalu kembalikan format OpenAI `{created, data:[{url}]}` ke klien. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
+- **🔀 Modality per-target** — dalam satu route chat, tiap target boleh punya modality sendiri (mis. OpenAI via Responses, DeepSeek via chat). Failover antar-modality berfungsi penuh — gateway ganti converter di tengah jalan.
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log.
@@ -256,8 +259,28 @@ mengikuti envelope OpenAI: `{ "error": { message, type, param, code } }`.
 > `max_output_tokens`, `output_items.output_text` → `choices[].message.content`,
 > `input_tokens`/`output_tokens` → `prompt_tokens`/`completion_tokens`.
 > Streaming SSE juga di-convert (`response.output_text.delta` → chat delta
-> chunk). Klien tidak perlu tahu backend pakai Responses API — cukup pilih route
-> yg modality-nya `responses`. Hanya provider OpenAI-compat Responses.
+> chunk). **Tool/function calling didukung penuh**: definisi `tools`, `tool_calls`
+> di response (non-stream & streaming), `finish_reason: tool_calls`, serta
+> multi-turn (assistant `tool_calls` ↔ Responses `function_call`, role `tool` ↔
+> Responses `function_call_output`). Klien tidak perlu tahu backend pakai
+> Responses API — cukup pilih route yg modality-nya `responses`. Hanya provider
+> OpenAI-compat Responses.
+
+> **Per-target modality override** — route dgn modality `chat` boleh memiliki
+> target dgn modality berbeda. Di form Route, tiap baris target punya dropdown
+> modality (default: ikut route; opsi: `responses`). Memungkinkan satu route
+> campur target OpenAI (Responses) + DeepSeek (chat) dgn **failover antar-modality**
+> otomatis. Route modality selain `chat` tidak bisa override (format modalitas
+> lain berbeda total, mixing akan silent break).
+
+> **Image generation async (Kling/vd2 style)** — sebagian provider image tidak
+> langsung balas URL gambar; mereka kembalikan `data.task_id`. SiberGate
+> mendeteksi response tsb, lalu otomatis poll `GET {endpoints.image}/{task_id}`
+> tiap 5 detik (maks 10×) sampai `task_status: succeed`, lalu kembalikan format
+> OpenAI `{created, data:[{url}]}` ke klien. Bila gagal/error atau habis retry,
+> klien terima error OpenAI-compat (`image_task_failed`). Provider sync (DALL-E
+> dan lainnya yg langsung balas URL) tetap diteruskan verbatim — deteksi otomatis
+> lewat ada/tidaknya field `data.task_id`.
 
 ---
 
