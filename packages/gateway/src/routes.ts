@@ -12,6 +12,7 @@ import {
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { proxySSEStream, proxyResponsesSSEStream } from './stream.js';
 import { errorResponse } from './errors.js';
+import { isAsyncTaskResponse, buildPollUrl, pollTaskUntilDone, buildOpenAIImageResponse } from './image-task.js';
 
 /**
  * Build the public OpenAI-compatible app.
@@ -198,8 +199,13 @@ export function createApp(configStore: ConfigStore) {
    * Each is OpenAI-compatible (except music, a SiberGate extension). They share
    * one generic handler: resolve the route (filtered by that modality), execute,
    * then forward the upstream response — binary (audio/image) or JSON — verbatim.
+   *
+   * Pengecualian: /v1/images/generations punya handler khusus (imageHandler) yg
+   * menangani async task-based provider (mis. Kling AI). Provider tsb balas
+   * data.task_id alih-alih URL gambar, lalu gateway poll sampai sukses dan
+   * return format OpenAI. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
    */
-  app.post('/v1/images/generations', (c) => modalityHandler(c, configStore, 'image', '/v1/images/generations'));
+  app.post('/v1/images/generations', (c) => imageHandler(c, configStore));
   app.post('/v1/audio/speech', (c) => modalityHandler(c, configStore, 'speech', '/v1/audio/speech'));
   app.post('/v1/audio/transcriptions', (c) => modalityHandler(c, configStore, 'transcribe', '/v1/audio/transcriptions'));
   app.post('/v1/embeddings', (c) => modalityHandler(c, configStore, 'embed', '/v1/embeddings'));
@@ -325,6 +331,160 @@ async function modalityHandler(
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Image handler khusus /v1/images/generations. Mendukung dua jenis provider:
+ *
+ *  1. Provider sync (DALL-E, dll): response upstream sudah berisi URL gambar
+ *     dgn format OpenAI (`{created, data:[{url}]}`). Diteruskan verbatim.
+ *
+ *  2. Provider async/task-based (Kling AI, beberapa inference platform):
+ *     response upstream berisi `{data:{task_id, task_status:'submitted'}}`.
+ *     Gateway poll GET {endpoints.image}/{task_id} tiap 5 detik (max 10x)
+ *     sampai task_status='succeed', lalu ambil task_result.images[].url dan
+ *     return format OpenAI. Bila gagal/error, return error OpenAI-compat.
+ *
+ * Client tidak perlu tahu provider mana yg dipakai — gateway handle invisible.
+ * Failover engine tetap berlaku saat POST pertama gagal (provider down); polling
+ * hanya aktif setelah POST berhasil dan mengembalikan task_id.
+ */
+async function imageHandler(c: Context, configStore: ConfigStore) {
+  const config = configStore.get();
+  const requestId = c.get('requestId');
+  const startedAt = c.get('startedAt');
+  const path = '/v1/images/generations';
+
+  const parsed = await c.req.json().catch(() => null);
+  if (!parsed) return errorResponse(c, 400, 'Request body must be valid JSON.', 'invalid_request_error');
+
+  const body = parsed as Record<string, unknown>;
+  const routeId = String(body.model ?? '');
+  let route;
+  try {
+    route = getRoute(config, routeId);
+  } catch {
+    return errorResponse(c, 404, `Model/route '${routeId}' not found.`, 'invalid_request_error', 'model_not_found', 'model');
+  }
+  if ((route.modality ?? 'chat') !== 'image') {
+    return errorResponse(
+      c, 400,
+      `Route '${routeId}' is a ${route.modality ?? 'chat'} route, not an image route.`,
+      'invalid_request_error', 'modality_mismatch', 'model',
+    );
+  }
+
+  const controller = new AbortController();
+  // Timeout lebih panjang utk image async (polling butuh waktu). Beri buffer
+  // di atas max 10x5s polling = 50s.
+  const timeout = setTimeout(() => controller.abort(), (route.timeoutMs ?? 300_000));
+  c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+
+  const baseLog = {
+    requestId,
+    method: 'POST',
+    path,
+    route: route.id,
+    strategy: route.strategy,
+    modality: 'image' as RouteModality,
+    streamed: false,
+    status: 200,
+    latencyMs: 0,
+    clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+  };
+
+  try {
+    const { response, servedBy, latencyMs } = await executeRoute(config, route, body, controller.signal);
+    const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
+    const buf = Buffer.from(await response.arrayBuffer());
+
+    // Cek apakah response adalah async task (perlu polling).
+    let taskBody: unknown = null;
+    if (upstreamContentType.includes('application/json')) {
+      try {
+        taskBody = JSON.parse(buf.toString('utf8'));
+      } catch {
+        /* bukan JSON valid — anggap sync, teruskan verbatim */
+      }
+    }
+
+    if (isAsyncTaskResponse(taskBody)) {
+      // Async: poll sampai sukses atau gagal.
+      const provider = config.providers.find((p) => p.id === servedBy.providerId);
+      if (!provider) {
+        // Provider hilang di config (mis. baru di-disable). Teruskan apa adanya.
+        return new Response(buf, { status: 200, headers: { 'Content-Type': upstreamContentType } });
+      }
+      const taskId = taskBody.data.task_id;
+      const pollUrl = buildPollUrl(provider, taskId);
+      const outcome = await pollTaskUntilDone(provider, pollUrl, { signal: controller.signal });
+      const totalLatency = Math.round(performance.now() - startedAt);
+      const model = config.models.find((m) => m.id === servedBy.modelId);
+      const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
+
+      if (outcome.status === 'succeed') {
+        const openaiResp = buildOpenAIImageResponse(outcome.images);
+        logRequest({
+          ...baseLog,
+          provider: servedBy.providerId,
+          model: servedBy.modelId,
+          latencyMs: totalLatency,
+          costUsd,
+        });
+        return c.json(openaiResp);
+      }
+      // Gagal polling → return error OpenAI-compat.
+      logRequest({
+        ...baseLog,
+        status: 502,
+        latencyMs: totalLatency,
+        provider: servedBy.providerId,
+        model: servedBy.modelId,
+        errorCode: 'image_task_failed',
+        errorMessage: outcome.message?.slice(0, 300),
+        costUsd,
+      });
+      return errorResponse(
+        c, 502,
+        `Image task failed: ${outcome.message}`,
+        'upstream_error',
+        'image_task_failed',
+        'image_generation',
+      );
+    }
+
+    // Sync: teruskan verbatim (sama dgn modalityHandler default).
+    const model = config.models.find((m) => m.id === servedBy.modelId);
+    const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
+    logRequest({
+      ...baseLog,
+      provider: servedBy.providerId,
+      model: servedBy.modelId,
+      latencyMs,
+      costUsd,
+    });
+    return new Response(buf, {
+      status: 200,
+      headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
+    });
+  } catch (err) {
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string } };
+    const status = e.status ?? 502;
+    const latencyMs = Math.round(performance.now() - startedAt);
+    logRequest({
+      ...baseLog,
+      status,
+      latencyMs,
+      provider: e.servedBy?.provider ?? null,
+      model: e.servedBy?.model ?? null,
+      errorCode: e.code ?? null,
+      errorMessage: e.message?.slice(0, 300),
+    });
+    const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
+    return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null, 'image_generation');
   } finally {
     clearTimeout(timeout);
   }
