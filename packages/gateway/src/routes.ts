@@ -86,6 +86,7 @@ export function createApp(configStore: ConfigStore) {
       status: 200,
       latencyMs: 0,
       clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+      apiKeyId: c.get('apiKeyId') ?? null,
     };
 
     try {
@@ -292,6 +293,7 @@ async function modalityHandler(
     status: 200,
     latencyMs: 0,
     clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
   };
 
   try {
@@ -394,6 +396,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
     status: 200,
     latencyMs: 0,
     clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
   };
 
   try {
@@ -599,6 +602,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
     status: 200,
     latencyMs: 0,
     clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
   };
 
   try {

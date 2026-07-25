@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { BarChart3, Boxes, Cpu, Route as RouteIcon } from 'lucide-react';
+import { BarChart3, Boxes, Cpu, Route as RouteIcon, KeyRound } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -26,12 +26,13 @@ const GREEN = '#6abf6e';
 const YELLOW = '#d9b14a';
 const RED = '#e07070';
 
-type Dim = 'route' | 'provider' | 'model';
+type Dim = 'route' | 'provider' | 'model' | 'apiKey';
 
 const DIM_META: Record<Dim, { label: string; icon: typeof Boxes; color: string }> = {
   route: { label: 'Route', icon: RouteIcon, color: ACCENT },
   provider: { label: 'Provider', icon: Boxes, color: GREEN },
   model: { label: 'Model', icon: Cpu, color: YELLOW },
+  apiKey: { label: 'API key', icon: KeyRound, color: ACCENT },
 };
 
 export default function UsagePage() {
@@ -41,7 +42,7 @@ export default function UsagePage() {
   const [dim, setDim] = useState<Dim>('provider');
 
   const rows = useMemo(() => {
-    const list = dim === 'route' ? stats?.byRoute : dim === 'provider' ? stats?.byProvider : stats?.byModel;
+    const list = dim === 'route' ? stats?.byRoute : dim === 'provider' ? stats?.byProvider : dim === 'model' ? stats?.byModel : stats?.byApiKey;
     return (list ?? []).slice().sort((a, b) => b.totalTokens - a.totalTokens);
   }, [dim, stats]);
 

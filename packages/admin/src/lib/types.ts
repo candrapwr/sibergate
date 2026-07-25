@@ -120,6 +120,7 @@ export interface UsageStats {
   byRoute: UsageBreakdown[];
   byProvider: UsageBreakdown[];
   byModel: UsageBreakdown[];
+  byApiKey: UsageBreakdown[];
 }
 
 /** Aggregated usage for one dimension value (route / provider / model). */

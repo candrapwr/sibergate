@@ -23,6 +23,8 @@ export interface LogRequest {
   errorCode?: string | null;
   errorMessage?: string | null;
   clientIp?: string | null;
+  /** ID API key yg meng-autentikasi request ini (utk statistik per-key). Null bila auth-open. */
+  apiKeyId?: string | null;
   /** JSON-serializable metadata (e.g. failover trail). */
   metadata?: Record<string, unknown>;
 }
@@ -31,10 +33,10 @@ const insertStmt = `
   INSERT INTO requests
     (request_id, method, path, status, latency_ms, route, provider, model, strategy,
      streamed, prompt_tokens, completion_tokens, total_tokens, cost_usd, error_code,
-     error_message, client_ip, metadata)
+     error_message, client_ip, api_key_id, metadata)
   VALUES (@requestId, @method, @path, @status, @latencyMs, @route, @provider, @model,
           @strategy, @streamed, @promptTokens, @completionTokens, @totalTokens, @costUsd,
-          @errorCode, @errorMessage, @clientIp, @metadata)
+          @errorCode, @errorMessage, @clientIp, @apiKeyId, @metadata)
 `;
 
 export function logRequest(entry: LogRequest): void {
@@ -59,6 +61,7 @@ export function logRequest(entry: LogRequest): void {
         errorCode: entry.errorCode ?? null,
         errorMessage: entry.errorMessage ?? null,
         clientIp: entry.clientIp ?? null,
+        apiKeyId: entry.apiKeyId ?? null,
         metadata: JSON.stringify(entry.metadata ?? {}),
       });
   } catch (err) {

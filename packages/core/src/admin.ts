@@ -521,11 +521,12 @@ export interface UsageStats {
   byRoute: Array<UsageBreakdown>;
   byProvider: Array<UsageBreakdown>;
   byModel: Array<UsageBreakdown>;
+  byApiKey: Array<UsageBreakdown>;
 }
 
-/** Aggregated usage for one dimension value (a route / provider / model). */
+/** Aggregated usage for one dimension value (a route / provider / model / api key). */
 export interface UsageBreakdown {
-  /** Dimension key (route id, provider id, or model id). */
+  /** Dimension key (route id, provider id, model id, atau nama API key). */
   name: string;
   count: number;
   avgLatencyMs: number;
@@ -559,7 +560,54 @@ export function usageStats(): UsageStats {
     byRoute: breakdown(db, 'route'),
     byProvider: breakdown(db, 'provider'),
     byModel: breakdown(db, 'model'),
+    byApiKey: breakdownByApiKey(db),
   };
+}
+
+/**
+ * Breakdown usage per API key. JOIN ke api_keys utk dapat nama (lebih manusiawi
+ * drpd id internal). Request auth-open (api_key_id NULL) dikelompokkan di bawah
+ * nama '(auth-open)' supaya tetap terlihat di dashboard.
+ */
+function breakdownByApiKey(db: DB): UsageBreakdown[] {
+  // LEFT JOIN krn api_key_id mungkin NULL atau merujuk key yg sudah dihapus.
+  const rows = db
+    .prepare(
+      `SELECT
+         CASE
+           WHEN r.api_key_id IS NULL THEN '(auth-open)'
+           WHEN k.name IS NOT NULL THEN k.name
+           ELSE '(deleted)'
+         END AS name,
+         COUNT(*) AS count,
+         SUM(CASE WHEN r.status = 200 THEN 1 ELSE 0 END) AS successCount,
+         SUM(CASE WHEN r.status != 200 THEN 1 ELSE 0 END) AS errorCount,
+         COALESCE(CAST(AVG(r.latency_ms) AS INT), 0) AS avgLatencyMs,
+         COALESCE(SUM(r.prompt_tokens), 0) AS promptTokens,
+         COALESCE(SUM(r.completion_tokens), 0) AS completionTokens,
+         COALESCE(SUM(r.total_tokens), 0) AS totalTokens,
+         COALESCE(SUM(r.cost_usd), 0) AS costUsd
+       FROM requests r
+       LEFT JOIN api_keys k ON k.id = r.api_key_id
+       GROUP BY CASE
+           WHEN r.api_key_id IS NULL THEN '(auth-open)'
+           WHEN k.name IS NOT NULL THEN k.name
+           ELSE '(deleted)'
+         END
+       ORDER BY totalTokens DESC`,
+    )
+    .all() as any[];
+  return rows.map((r) => ({
+    name: r.name,
+    count: r.count ?? 0,
+    avgLatencyMs: r.avgLatencyMs ?? 0,
+    promptTokens: r.promptTokens ?? 0,
+    completionTokens: r.completionTokens ?? 0,
+    totalTokens: r.totalTokens ?? 0,
+    costUsd: r.costUsd ?? 0,
+    successCount: r.successCount ?? 0,
+    errorCount: r.errorCount ?? 0,
+  }));
 }
 
 /** Build a token/cost/latency breakdown grouped by one column. */

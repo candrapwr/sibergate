@@ -165,7 +165,8 @@ function migrate(db: DB): void {
       cost_usd          REAL,
       error_code        TEXT,
       error_message     TEXT,
-      client_ip         TEXT
+      client_ip         TEXT,
+      api_key_id        TEXT                     -- FK ke api_keys(id), nullable utk request auth-open
     );
     CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
   `);
@@ -234,6 +235,13 @@ function migrate(db: DB): void {
   // tapi salah satu target (OpenAI) diakses via modality 'responses'. Bila NULL,
   // target memakai route.modality (behavior lama, backward compatible).
   addColumnIfMissing(db, 'route_targets', 'modality', 'TEXT');
+
+  // ── migrasi: kolom api_key_id di requests (statistik per API key) ────
+  // Catat API key mana yg dipakai tiap request supaya usage bisa dikelompokkan
+  // per key (dashboard per-key). Nullable utk request auth-open (saat belum ada
+  // api_keys terdaftar). Index utk query GROUP BY api_key_id yg cepat.
+  addColumnIfMissing(db, 'requests', 'api_key_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_requests_api_key ON requests(api_key_id)');
 }
 
 /**
