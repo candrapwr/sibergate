@@ -7,6 +7,7 @@ import { embed } from './adapters/embed.js';
 import { music } from './adapters/music.js';
 import { generic } from './adapters/generic.js';
 import { responses } from './adapters/responses.js';
+import { toolsText } from './adapters/tools-text.js';
 
 /**
  * Polymorphic provider adapter.
@@ -37,6 +38,7 @@ const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> 
   music,
   generic,
   responses,
+  'tools-text': toolsText,
 };
 
 /**

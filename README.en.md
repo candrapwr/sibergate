@@ -56,6 +56,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🎨 Six AI modalities + REST passthrough** — chat, image generation, text-to-speech, transcription, embeddings, and **text-to-music** (DeepInfra ACE-Step), plus a **generic** modality that proxies any non-LLM API (GET/POST/PUT/DELETE) with the same routing + failover.
 - **🔑 Multiple API keys per provider** — one provider may own **several keys** (e.g. multiple OpenAI/Gemini accounts), each with a label. Every route target points to a specific key (`provider → model → key`) — handy for cross-account load balancing or quota isolation. One key is marked **default** (used when a target doesn't specify one). Stats are tracked **per upstream key**.
 - **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
+- **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
 - **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys (default and additional) are encrypted at rest (AES-256-GCM), decrypted transiently at request time, and never logged. Plaintext is never returned by the API — only the label + a redacted prefix.
@@ -248,6 +249,53 @@ transparently:
 ### 2. Model naming & deprecation
 
 Older Gemini models (e.g. `gemini-2.5-flash-lite`) are deprecated by Google and reply `404 "no longer available to new users"`. The SiberGate catalog ships current models (`gemini-3.5-flash`, etc.); if your route still points to an old one, switch to a newer model on the Routes page.
+
+---
+
+## 🪄 Tool calling via text/XML (`tools-text`)
+
+The `tools-text` modality is an alternative to native function calling with a different approach: the gateway strips OpenAI tool definitions, injects an XML-pattern system prompt, and lets the model do **text generation** (which streams token-by-token). The XML output text is re-parsed by the gateway into OpenAI `tool_calls` format — the client stays on the standard format and is unaware of the trick.
+
+### Why use it?
+
+**1. Partial argument chunking** — native function calling on Gemini sends arguments as one atomic chunk, so the client never sees arguments "typing" progressively. `tools-text` turns arguments into text generation → **streamed token-by-token** (much better UX, spinner resolves progressively).
+
+**2. Bypass provider quirks** — Gemini 3.x native function calling requires a `thought_signature` on every turn (missing it → 400), leaks `extra_content`, and sometimes emits `finish_reason:"stop"` even when there's a tool call. `tools-text` **bypasses all of that** — no signature, no extra_content, finish_reason controlled by the gateway.
+
+**3. ~50% token savings** — native tool definitions are heavy nested JSON schema (~50+ tokens/tool). `tools-text` turns them into a compact bullet list (`- read_file(path: string)`). DeepSeek benchmark:
+- Input: **−49%** (4 tools: 432 → 205 tokens)
+- Output: **−33%** (68 → 39 tokens)
+- Reasoning: −35%
+
+**4. Enables tool calling on models/providers without native support** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. This unlocks tool calling for completion-only models, local models (Ollama/vLLM without tool schema), or OpenAI-compat providers that haven't implemented native function calling.
+
+### How it works
+
+```
+CLIENT (OpenAI format)          GATEWAY                    LLM (text gen)
+──────────────────              ────────                   ─────────────
+messages[] + tools[]    ───▶   inject XML sys prompt  ───▶  generate text
+  system: persona              tool_calls history → XML      with <tool_call> tags
+  assistant.tool_calls         role:tool → [TOOL_RESULT]     (streamed token-by-token)
+                                    │
+                                    ▼
+                              re-parse XML          ◀───  stream text chunks
+                                    │
+                                    ▼
+CLIENT (OpenAI format)  ◀───  emit delta.tool_calls[]
+  delta.tool_calls[]            per index (PARTIAL CHUNKING!)
+  finish_reason: tool_calls
+```
+
+### How to use
+
+In **Admin → Routes → edit a chat route → add target → pick modality** `Tools (text/XML)` (alongside `responses`). Or set the route's default modality to `tools-text`. Works with any OpenAI-compat provider (DeepSeek, Gemini, OpenAI, Groq, etc.) — it reuses the chat endpoint.
+
+### Trade-offs
+
+- Tool selection is prompt-based (can pick wrong, but tested reliable — modern LLMs follow the XML pattern well)
+- Per-tool type validation is lost (the gateway parses JSON as-is; the client validates after execution)
+- For providers whose native path already chunks reliably (OpenAI, DeepSeek), the default `chat` modality remains the best option
 
 ---
 

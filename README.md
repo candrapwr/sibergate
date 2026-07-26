@@ -65,6 +65,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🧠 Routing cerdas** — `fallback` (failover otomatis), `fastest` (pilih latency terendah), `weighted` (load balancing). Strategi berlaku untuk semua modalitas.
 - **🎨 Enam modalitas AI + passthrough REST + Responses API** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama. Ada juga modality **responses** untuk provider OpenAI-compat Responses API — klien tetap format chat/completions, gateway yang auto-convert dua arah (termasuk streaming SSE dan tool/function calling).
 - **🛠️ Tool/function calling penuh di Responses** — definisi tools, `tool_calls` di response (streaming maupun non-streaming), `finish_reason: tool_calls`, dan multi-turn (role `tool` → `function_call_output`) — semuanya di-convert transparan dari/ke format chat/completions.
+- **🪄 Tool calling via text/XML (`tools-text`)** — modality paralel yg membungkam native function calling dgn alasan kuat: (1) **chunk parsial** argumen token-by-token (UX typing, vs native Gemini yg atomic); (2) **bypass quirk provider** — tidak ada `thought_signature`, `extra_content`, atau `finish_reason` salah di Gemini; (3) **hemat ~50% token** (input −49%, output −33%, krn tool definition compact vs JSON schema berat); (4) **enable tool calling di model/provider yg sebelumnya tidak support** native function calling — cukup mampu chat. Gateway inject system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, stream text di-reparse ke format OpenAI. Opt-in per route target. Lihat [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🖼️ Image generation async (Kling/vd2 style)** — beberapa provider tidak langsung balas URL gambar, tapi kembalikan `task_id`. SiberGate otomatis poll endpoint status tiap 5 detik (maks 10×), lalu kembalikan format OpenAI `{created, data:[{url}]}` ke klien. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
 - **🔀 Modality per-target** — dalam satu route chat, tiap target boleh punya modality sendiri (mis. OpenAI via Responses, DeepSeek via chat). Failover antar-modality berfungsi penuh — gateway ganti converter di tengah jalan.
 - **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
@@ -258,6 +259,53 @@ Karena field ini tidak ada di format OpenAI, SiberGate menanganinya transparan:
 ### 2. Penamaan model & deprecation
 
 Model Gemini lama (mis. `gemini-2.5-flash-lite`) sudah deprecated Google dan membalas `404 "no longer available to new users"`. Katalog SiberGate menyertakan model terbaru (`gemini-3.5-flash`, dll); kalau route Anda masih menunjuk model lama, ganti ke model baru via halaman Routes.
+
+---
+
+## 🪄 Tool calling via text/XML (`tools-text`)
+
+Modality `tools-text` adalah alternatif native function calling dgn pendekatan berbeda: gateway membungkam tool definitions OpenAI, meng-inject system prompt pattern XML, dan membiarkan model melakukan **text generation** (yg di-stream token-by-token). Output text XML di-reparse gateway ke format OpenAI `tool_calls` — klien tetap format standar, tidak sadar ada trik.
+
+### Kenapa pakai?
+
+**1. Chunk parsial argumen** — native function calling Gemini mengirim argumen utuh dalam 1 chunk (atomic), shg client tidak melihat argumen "mengetik" progresif. `tools-text` mengubah argumen menjadi text generation → **di-stream token-by-token** (UX jauh lebih baik, spinner resolve progresif).
+
+**2. Bypass quirk provider** — native function calling Gemini 3.x mengharuskan `thought_signature` di setiap turn (kalau hilang → 400), bocor `extra_content`, dan kadang `finish_reason:"stop"` padahal ada tool call. `tools-text` **bypass semua itu** — tidak ada signature, tidak ada extra_content, finish_reason dikontrol gateway.
+
+**3. Hemat token ~50%** — tool definition native = JSON schema nested berat (~50+ token/tool). `tools-text` mengubahnya jadi bullet list compact (`- read_file(path: string)`). Hasil benchmark DeepSeek:
+- Input: **−49%** (4 tools: 432 → 205 token)
+- Output: **−33%** (68 → 39 token)
+- Reasoning: −35%
+
+**4. Enable tool calling di model/provider tanpa native support** — selama model bisa chat + ikuti instruction, ia bisa "memanggil tool" via pattern XML. Ini membuka tool calling utk model completion-only, model lokal (Ollama/vLLM tanpa tool schema), atau provider OpenAI-compat yg belum implement native function calling.
+
+### Cara kerja
+
+```
+KLIEN (format OpenAI)            GATEWAY                    LLM (text gen)
+──────────────────              ────────                   ─────────────
+messages[] + tools[]    ───▶   inject XML sys prompt  ───▶  generate text
+  system: persona              tool_calls history → XML      dgn <tool_call> tags
+  assistant.tool_calls         role:tool → [TOOL_RESULT]     (stream token-by-token)
+                                    │
+                                    ▼
+                              re-parse XML          ◀───  stream text chunks
+                                    │
+                                    ▼
+KLIEN (format OpenAI)  ◀───  emit delta.tool_calls[]
+  delta.tool_calls[]            per index (CHUNK PARSIAL!)
+  finish_reason: tool_calls
+```
+
+### Cara pakai
+
+Di **Admin → Routes → edit route chat → add target → pilih modality** `Tools (text/XML)` (selevel dgn `responses`). Atau set modality route default ke `tools-text`. Berlaku utk semua provider OpenAI-compat (DeepSeek, Gemini, OpenAI, Groq, dll) — reuse endpoint chat.
+
+### Trade-off
+
+- Tool selection prompt-based (bisa salah pilih, tapi teruji reliable — model LLM modern ikuti XML pattern dgn baik)
+- Type validation per-tool hilang (gateway parse JSON apa adana; client validasi sendiri setelah eksekusi)
+- Utk provider yg native-nya sudah chunk + reliable (OpenAI, DeepSeek), modality `chat` default tetap opsi terbaik
 
 ---
 

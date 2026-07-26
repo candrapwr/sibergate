@@ -7,12 +7,13 @@ import {
   getRoute,
   logRequest,
   convertResponsesToChat,
+  convertToolsTextToChat,
   storeSignature,
   getSignature,
   type RouteModality,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
-import { proxySSEStream, proxyResponsesSSEStream } from './stream.js';
+import { proxySSEStream, proxyResponsesSSEStream, proxyToolsTextSSEStream } from './stream.js';
 import { errorResponse } from './errors.js';
 import { isAsyncTaskResponse, buildPollUrl, pollTaskUntilDone, buildOpenAIImageResponse } from './image-task.js';
 
@@ -192,16 +193,22 @@ export function createApp(configStore: ConfigStore) {
       // Ini krusial: jika target OpenAI responses sukses setelah failover, gateway
       // harus convert — walau route.modality mungkin 'chat'.
       const isResponsesModality = (servedBy.modality ?? route.modality ?? 'chat') === 'responses';
+      const isToolsTextModality = (servedBy.modality ?? route.modality ?? 'chat') === 'tools-text';
       // Model id upstream = strip prefix provider (sama dgn yg dikirim adapter).
       const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
         ? servedBy.modelId.slice(servedBy.providerId.length + 1)
         : servedBy.modelId;
 
       if (body.stream === true) {
-        // Streaming: pakai SSE converter bila responses modality, verbatim lainnya.
-        const { response: streamRes, done } = isResponsesModality
-          ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
-          : proxySSEStream(c, response, servedBy.providerId);
+        // Streaming: pilih SSE converter sesuai modality target.
+        //   tools-text → re-parse XML <tool_call> ke OpenAI tool_calls (chunk parsial)
+        //   responses  → convert Responses SSE events → chat SSE
+        //   lainnya    → verbatim (proxySSEStream, dgn Gemini transform inline)
+        const { response: streamRes, done } = isToolsTextModality
+          ? proxyToolsTextSSEStream(c, response, upstreamModelForLog)
+          : isResponsesModality
+            ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
+            : proxySSEStream(c, response, servedBy.providerId);
         done.then((res) => {
           const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
           const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
@@ -229,6 +236,31 @@ export function createApp(configStore: ConfigStore) {
         // Responses API: convert JSON → format chat/completions sebelum return.
         const responsesJson = (await response.json()) as Record<string, unknown>;
         const chatJson = convertResponsesToChat(responsesJson);
+        const promptTokens = chatJson.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
+        const completionTokens = chatJson.usage?.completion_tokens ?? 0;
+        const totalTokens = chatJson.usage?.total_tokens ?? promptTokens + completionTokens;
+        const model = config.models.find((m) => m.id === servedBy.modelId);
+        const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        logRequest({
+          ...baseLog,
+          provider: servedBy.providerId,
+          model: servedBy.modelId,
+          upstreamKeyId,
+          latencyMs,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          costUsd,
+          metadata: { trail },
+        });
+        return c.json(chatJson);
+      }
+
+      if (isToolsTextModality) {
+        // tools-text: response content mengandung <tool_call> XML → parse ke
+        // OpenAI tool_calls. Bila tidak ada tag, kirim sbg text biasa.
+        const ttJson = (await response.json()) as Record<string, unknown>;
+        const chatJson = convertToolsTextToChat(ttJson, upstreamModelForLog);
         const promptTokens = chatJson.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
         const completionTokens = chatJson.usage?.completion_tokens ?? 0;
         const totalTokens = chatJson.usage?.total_tokens ?? promptTokens + completionTokens;

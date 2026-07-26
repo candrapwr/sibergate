@@ -57,7 +57,10 @@ export async function executeRoute(
     const p = config.providers.find((x) => x.id === t.providerId && x.enabled);
     if (!p) return false;
     const em = effectiveModality(t);
-    if (!p.endpoints[em]) return false;
+    // Modality 'tools-text' reuse endpoint chat (tool calling via text generation,
+    // upstream tetap /v1/chat/completions). Anggap supported bila endpoint chat ada.
+    const endpointKey = em === 'tools-text' ? 'chat' : em;
+    if (!p.endpoints[endpointKey]) return false;
     const m = config.models.find((x) => x.id === t.modelId && x.enabled);
     if (!m) return false;
     if (t.keyId) {

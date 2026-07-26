@@ -33,20 +33,22 @@ const MODALITIES = [
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
   { id: 'music', label: 'Music', desc: 'Text-to-music (/v1/music/generations)' },
   { id: 'responses', label: 'Responses', desc: 'OpenAI Responses API (auto-convert from chat format) — /v1/chat/completions client, upstream /v1/responses' },
+  { id: 'tools-text', label: 'Tools (text/XML)', desc: 'Tool calling via XML text pattern — bypass native fn-calling (chunk parsial args, no signature issues) — client chat/completions, upstream chat/completions w/ <tool_call> XML' },
   { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/generic/:id) — non-LLM' },
 ] as const;
 
 /**
  * Modality mana yg boleh jadi pilihan override per-target, diberikan modality
- * route. Hanya route chat yg boleh mix: target bisa 'chat' (default) atau
- * 'responses' (varian chat-style, format bisa di-convert dua arah). Route
- * modality lain (image, audio, embed, generic) tidak bisa di-override krn
+ * route. Hanya route chat yg boleh mix: target bisa 'chat' (default),
+ * 'responses' (varian chat-style), atau 'tools-text' (tool call via XML text).
+ * Route modality lain (image, audio, embed, generic) tidak bisa di-override krn
  * formatnya berbeda total — target wajib ikut route.modality.
  */
 function targetModalityChoices(routeModality: string): { id: string; label: string }[] {
   if (routeModality === 'chat') {
     return [
       { id: 'responses', label: 'responses' },
+      { id: 'tools-text', label: 'tools-text' },
     ];
   }
   return []; // route non-chat: tidak ada pilihan override

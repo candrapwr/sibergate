@@ -14,6 +14,12 @@ export {
   type ChatToolCall,
 } from './adapters/responses.js';
 export { executeRoute, type ExecuteResult, type FailoverStep } from './engine.js';
+export {
+  convertChatRequestToToolsText,
+  convertToolsTextToChat,
+  createToolsTextStreamConverter,
+  type ChatToolCall as ToolsTextChatToolCall,
+} from './adapters/tools-text.js';
 export { recordLatency, recordFailure, getLatency, hasLatencyEstimate, resetLatency } from './latency.js';
 export {
   storeSignature,

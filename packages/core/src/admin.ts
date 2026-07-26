@@ -479,7 +479,7 @@ export interface RouteInput {
   id: string;
   name?: string;
   /** Which adapter handles this route. Defaults to 'chat'. */
-  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses';
+  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text';
   strategy?: 'fallback' | 'fastest' | 'weighted';
   timeoutMs?: number;
   maxRetries?: number;
@@ -495,7 +495,7 @@ export interface RouteInput {
     model: string;
     priority?: number;
     weight?: number;
-    modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | null;
+    modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | null;
   }>;
 }
 

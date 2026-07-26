@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { createResponsesStreamConverter, storeSignature } from '@sibergate/core';
+import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSignature } from '@sibergate/core';
 
 /**
  * Proxy an upstream SSE stream to the client while capturing usage.
@@ -330,6 +330,146 @@ export function proxyResponsesSSEStream(
       result.usage = usage;
     }
   }
+
+  const response = c.newResponse(readable, 200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  return { response, done };
+}
+
+/**
+ * Proxy upstream chat/completions SSE → client, sambil re-parse text content ke
+ * format OpenAI tool_calls via XML `<tool_call>` pattern. Dipakai saat route target
+ * modality='tools-text' (tool calling via text generation).
+ *
+ * Upstream stream = chat-completions SSE standar (data: JSON dgn delta.content).
+ * Tiap delta.content (text yg mungkin mengandung tag XML) di-feed ke stateful
+ * converter, yg emit chunk OpenAI ({content} atau {tool_calls[].function.arguments}).
+ *
+ * Mirip proxyResponsesSSEStream (struktur ReadableStream + block split + writeChunk),
+ * tapi upstream-nya chat SSE (no event: lines) dan transform-nya lewat XML state machine.
+ */
+export function proxyToolsTextSSEStream(
+  c: Context,
+  upstream: Response,
+  modelId: string,
+): { response: Response; done: Promise<ProxyResult> } {
+  const body = upstream.body;
+  if (!body) {
+    return {
+      response: c.json(
+        { error: { message: 'Upstream returned no stream body.', type: 'internal_error', param: null, code: null } },
+        502,
+      ),
+      done: Promise.resolve({ content: '', usage: null }),
+    };
+  }
+
+  const result: ProxyResult = { content: '', usage: null };
+  const reader = body.getReader();
+  let resolveDone!: () => void;
+  const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
+
+  const converter = createToolsTextStreamConverter(modelId);
+  const encoder = new TextEncoder();
+  let sawToolCall = false;
+
+  const writeChunk = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: Record<string, unknown>) => {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+  };
+
+  /** Proses satu block SSE chat-completions: extract delta.content, feed converter. */
+  const processBlock = (block: string, controller: ReadableStreamDefaultController<Uint8Array>) => {
+    let finishReason: string | null = null;
+    for (const line of block.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const chunk = JSON.parse(data);
+        const choice = chunk?.choices?.[0];
+        const delta = choice?.delta?.content;
+        if (typeof delta === 'string') {
+          // Feed text delta ke XML state machine converter.
+          const converted = converter.processChunk(delta);
+          for (const cc of converted) {
+            if (cc.chunk) {
+              writeChunk(controller, cc.chunk);
+              if ((cc.chunk as any).choices?.[0]?.delta?.tool_calls) sawToolCall = true;
+              const tc = (cc.chunk as any).choices?.[0]?.delta?.content;
+              if (typeof tc === 'string') result.content += tc;
+            }
+          }
+        }
+        // Capture usage bila ada di chunk (beberapa provider kirim di chunk terakhir).
+        if (chunk.usage) {
+          result.usage = {
+            prompt_tokens: chunk.usage.prompt_tokens ?? 0,
+            completion_tokens: chunk.usage.completion_tokens ?? 0,
+            total_tokens: chunk.usage.total_tokens ?? 0,
+          };
+        }
+        // Capture finish_reason upstream (STOP/MAX_TOKENS) — akan dikoreksi di akhir.
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+      } catch {
+        /* ignore non-JSON */
+      }
+    }
+    return finishReason;
+  };
+
+  const readable = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastFinishReason: string | null = null;
+      try {
+        while (true) {
+          const { done: rd, value } = await reader.read();
+          if (rd) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep: number;
+          while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const block = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const fr = processBlock(block, controller);
+            if (fr) lastFinishReason = fr;
+          }
+        }
+        // Flush sisa buffer.
+        if (buffer.trim()) {
+          const fr = processBlock(buffer, controller);
+          if (fr) lastFinishReason = fr;
+        }
+        // Terminal chunk: koreksi finish_reason. Bila ada tool_call → 'tool_calls'
+        // (OpenAI spec), walau upstream kirim 'stop'. Else pakai upstream reason.
+        const finalReason = sawToolCall ? 'tool_calls' : (lastFinishReason ?? 'stop');
+        writeChunk(controller, {
+          id: `tt_${Math.random().toString(36).slice(2, 12)}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: modelId,
+          choices: [{ index: 0, delta: {}, finish_reason: finalReason }],
+          ...(result.usage ? { usage: result.usage } : {}),
+        });
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'stream error';
+        writeChunk(controller, { error: { message: msg, type: 'upstream_error' } });
+      } finally {
+        reader.releaseLock?.();
+        controller.close();
+        resolveDone();
+      }
+    },
+    cancel() {
+      reader.cancel().catch(() => {});
+    },
+  });
 
   const response = c.newResponse(readable, 200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
