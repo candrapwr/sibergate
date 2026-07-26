@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSignature } from '@sibergate/core';
+import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSignature, estimateTokens } from '@sibergate/core';
 
 /**
  * Proxy an upstream SSE stream to the client while capturing usage.
@@ -377,6 +377,9 @@ export function proxyToolsTextSSEStream(
   const converter = createToolsTextStreamConverter(modelId);
   const encoder = new TextEncoder();
   let sawToolCall = false;
+  // Akumulasi semua output char (text content + tool args) utk estimateTokens
+  // fallback bila provider tdk kirim usage (mis. Gemini streaming).
+  let totalOutputChars = 0;
 
   const writeChunk = (controller: ReadableStreamDefaultController<Uint8Array>, chunk: Record<string, unknown>) => {
     controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
@@ -399,9 +402,14 @@ export function proxyToolsTextSSEStream(
           for (const cc of converted) {
             if (cc.chunk) {
               writeChunk(controller, cc.chunk);
-              if ((cc.chunk as any).choices?.[0]?.delta?.tool_calls) sawToolCall = true;
+              if ((cc.chunk as any).choices?.[0]?.delta?.tool_calls) {
+                sawToolCall = true;
+                // Akumulasi args utk estimateTokens fallback (usage tdk tersedia).
+                const args = (cc.chunk as any).choices?.[0]?.delta?.tool_calls?.[0]?.function?.arguments;
+                if (typeof args === 'string') totalOutputChars += args.length;
+              }
               const tc = (cc.chunk as any).choices?.[0]?.delta?.content;
-              if (typeof tc === 'string') result.content += tc;
+              if (typeof tc === 'string') { result.content += tc; totalOutputChars += tc.length; }
             }
           }
         }
@@ -448,13 +456,20 @@ export function proxyToolsTextSSEStream(
         // Terminal chunk: koreksi finish_reason. Bila ada tool_call → 'tool_calls'
         // (OpenAI spec), walau upstream kirim 'stop'. Else pakai upstream reason.
         const finalReason = sawToolCall ? 'tool_calls' : (lastFinishReason ?? 'stop');
+        // Usage: beberapa provider (mis. Gemini OpenAI-compat) tdk kirim usage di
+        // streaming chunks. Estimate dari total output (content + tool args).
+        const usage = result.usage ?? {
+          prompt_tokens: 0,
+          completion_tokens: estimateTokens(result.content + ' '.repeat(totalOutputChars)),
+          total_tokens: estimateTokens(result.content + ' '.repeat(totalOutputChars)),
+        };
         writeChunk(controller, {
           id: `tt_${Math.random().toString(36).slice(2, 12)}`,
           object: 'chat.completion.chunk',
           created: Math.floor(Date.now() / 1000),
           model: modelId,
           choices: [{ index: 0, delta: {}, finish_reason: finalReason }],
-          ...(result.usage ? { usage: result.usage } : {}),
+          usage,
         });
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
       } catch (err) {
