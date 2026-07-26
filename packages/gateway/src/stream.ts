@@ -2,16 +2,18 @@ import type { Context } from 'hono';
 import { createResponsesStreamConverter, storeSignature } from '@sibergate/core';
 
 /**
- * Proxy an upstream SSE stream to the client VERBATIM while capturing usage.
+ * Proxy an upstream SSE stream to the client while capturing usage.
  *
- * For streaming requests the upstream already returns a valid SSE byte stream,
- * so we forward it untouched (avoids re-encoding bugs with picky clients) and
- * only decode a copy to extract the final `usage` chunk for logging.
- *
- * Selain usage, juga CAPTURE Gemini thought_signature dari tool_call delta —
- * signature tsb WAJIB di-inject balik saat request multi-turn (lihat routes.ts).
- * Stream tetap verbatim (banyak client OpenAI ignore field `extra_content` yg
- * bocor; inject multi-turn yg krusial, bukan strip streaming).
+ * Dua mode (dipilih by providerId):
+ *   - **Non-Gemini (default)**: forward bytes VERBATIM (zero risk utk client
+ *     picky), decode copy utk extract `usage` utk logging.
+ *   - **Gemini/openrouter**: parse → transform → re-emit tiap block. Transform:
+ *     (1) capture + strip `extra_content.google.thought_signature` dari tool_call
+ *         delta (signature wajib utk multi-turn; client dapat format OpenAI murni),
+ *     (2) fix `finish_reason` — Gemini streaming tool call kadang kirim "stop"
+ *         padahal model memanggil tool; klien melihat "stop" & mengira selesai,
+ *         lalu tool call tidak dieksekusi (terlihat "stuck"). Koreksi jadi
+ *         "tool_calls" bila di stream ini ada tool_call.
  *
  * On client disconnect, we cancel the upstream reader so its fetch doesn't
  * linger (good hygiene; avoids leaking sockets).
@@ -42,34 +44,25 @@ export function proxySSEStream(
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
 
-  let buffer = '';
-  const inspect = (block: string) => {
+  // Gemini-via-OpenRouter juga emit field google.extra_content → perlakukan sama.
+  const isGemini = providerId === 'gemini' || providerId === 'openrouter';
+  // Track apakah di stream ini pernah muncul tool_call (utk fix finish_reason).
+  let sawToolCall = false;
+  const encoder = new TextEncoder();
+
+  /** Extract usage + content dari block (shared oleh kedua mode). */
+  const trackUsage = (block: string) => {
     for (const line of block.split('\n')) {
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
       if (!data || data === '[DONE]') continue;
       try {
         const chunk = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string; tool_calls?: Array<{ id?: string; extra_content?: { google?: { thought_signature?: string } } }> } }>;
+          choices?: Array<{ delta?: { content?: string } }>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         };
         const delta = chunk.choices?.[0]?.delta?.content;
         if (typeof delta === 'string') result.content += delta;
-        // Capture Gemini thought_signature dari tool_call delta utk inject balik
-        // di multi-turn. Guard ganda supaya provider non-Gemini tidak overhead:
-        // (1) providerId check (skip cepat), (2) field presence (cover Gemini-via-OR).
-        // Untuk non-Gemini, blok ini no-op — tidak iterasi tool_calls sama sekali.
-        if (providerId === 'gemini' || providerId === 'openrouter') {
-          const toolCalls = chunk.choices?.[0]?.delta?.tool_calls;
-          if (Array.isArray(toolCalls)) {
-            for (const tc of toolCalls) {
-              const sig = tc?.extra_content?.google?.thought_signature;
-              if (typeof sig === 'string' && sig && tc.id) {
-                storeSignature(tc.id, sig, providerId ?? 'unknown');
-              }
-            }
-          }
-        }
         if (chunk.usage) {
           result.usage = {
             prompt_tokens: chunk.usage.prompt_tokens ?? 0,
@@ -83,22 +76,97 @@ export function proxySSEStream(
     }
   };
 
+  /**
+   * Transform sebuah SSE block utk Gemini: capture+strip signature, fix
+   * finish_reason. Return block hasil (re-serialized bila diubah, apa adana bila
+   * tidak). Mutate terjadi pada parsed chunk (deep), jadi re-serialize utk kirim.
+   */
+  const transformGeminiBlock = (block: string): string => {
+    const lines = block.split('\n');
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      let chunk: any;
+      try {
+        chunk = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      // Track usage + content (sama dgn trackUsage, dijalankan di sini utk Gemini).
+      const delta = chunk.choices?.[0]?.delta;
+      const content = delta?.content;
+      if (typeof content === 'string') result.content += content;
+      if (chunk.usage) {
+        result.usage = {
+          prompt_tokens: chunk.usage.prompt_tokens ?? 0,
+          completion_tokens: chunk.usage.completion_tokens ?? 0,
+          total_tokens: chunk.usage.total_tokens ?? 0,
+        };
+      }
+      // Capture + strip thought_signature dari tool_call delta.
+      const toolCalls = delta?.tool_calls;
+      if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+        sawToolCall = true;
+        for (const tc of toolCalls) {
+          const sig = tc?.extra_content?.google?.thought_signature;
+          if (typeof sig === 'string' && sig && tc.id) {
+            storeSignature(tc.id, sig, providerId ?? 'unknown');
+          }
+          if (tc?.extra_content) {
+            delete tc.extra_content;
+            changed = true;
+          }
+        }
+      }
+      // Fix finish_reason: Gemini streaming tool call kadang kirim "stop" padahal
+      // ada tool_call → klien mengira selesai & tool tidak dieksekusi (stuck).
+      // OpenAI spec: bila ada tool_call, finish_reason HARUS "tool_calls".
+      const choice = chunk.choices?.[0];
+      if (choice && choice.finish_reason === 'stop' && sawToolCall) {
+        choice.finish_reason = 'tool_calls';
+        changed = true;
+      }
+      if (changed) lines[i] = `data: ${JSON.stringify(chunk)}`;
+    }
+    return changed ? lines.join('\n') : block;
+  };
+
   const readable = new ReadableStream<Uint8Array>({
     async start(controller) {
       const decoder = new TextDecoder();
+      let buffer = '';
       try {
         while (true) {
           const { done: rd, value } = await reader.read();
           if (rd) break;
-          controller.enqueue(value);
-          buffer += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buffer.indexOf('\n\n')) !== -1) {
-            inspect(buffer.slice(0, sep));
-            buffer = buffer.slice(sep + 2);
+          if (isGemini) {
+            // Mode transform: decode → proses per block → re-emit.
+            buffer += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buffer.indexOf('\n\n')) !== -1) {
+              const block = buffer.slice(0, sep);
+              buffer = buffer.slice(sep + 2);
+              controller.enqueue(encoder.encode(transformGeminiBlock(block) + '\n\n'));
+            }
+          } else {
+            // Mode verbatim: forward bytes apa adanya, inspect copy utk usage.
+            controller.enqueue(value);
+            buffer += decoder.decode(value, { stream: true });
+            let sep: number;
+            while ((sep = buffer.indexOf('\n\n')) !== -1) {
+              trackUsage(buffer.slice(0, sep));
+              buffer = buffer.slice(sep + 2);
+            }
           }
         }
-        if (buffer.trim()) inspect(buffer);
+        // Flush sisa buffer (block terakhir tanpa trailing \n\n).
+        if (buffer.trim()) {
+          if (isGemini) controller.enqueue(encoder.encode(transformGeminiBlock(buffer) + '\n\n'));
+          else trackUsage(buffer);
+        }
       } finally {
         reader.releaseLock?.();
         controller.close();
