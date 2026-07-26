@@ -75,11 +75,12 @@ export function upstreamUrl(
   // Handle templates that are absolute vs relative to baseUrl.
   if (/^https?:\/\//.test(ep)) return ep;
   const base = provider.baseUrl.replace(/\/+$/, '');
-  // Avoid doubling the /v1 segment when baseUrl already ends with /v1 and the
-  // endpoint template also starts with /v1 (common for OpenAI-compat providers
-  // whose baseUrl includes the version).
-  if (/(\/v\d+)$/.test(base) && ep.startsWith('/v1/')) {
-    return `${base}${ep.slice(3)}`; // drop the leading "/v1" from the endpoint
+  // Avoid doubling a version segment when baseUrl already ends with one (e.g.
+  // "/v1", "/v1beta") and the endpoint template starts with the same segment.
+  // The previous /v1-only check left Gemini ("/v1beta") doubled → upstream 404.
+  const baseVersion = base.match(/\/v\d+[A-Za-z]*$/)?.[0];
+  if (baseVersion && ep.startsWith(baseVersion + '/')) {
+    return `${base}${ep.slice(baseVersion.length)}`; // drop the duplicated version
   }
   return `${base}${ep.startsWith('/') ? '' : '/'}${ep}`;
 }
