@@ -165,8 +165,36 @@ function randomCallId(): string {
 }
 
 /**
+ * Escape control characters (newline, tab, cr, dll) supaya valid sbg JSON string
+ * value. Native function calling provider escape otomatis args JSON; tools-text
+ * kita yg parse text XML harus escape sendiri. Tanpa ini, args berisi multiline
+ * code/text → client error "Bad control character in string literal".
+ *
+ * Hanya escape control chars JSON-spec (line separator \u2028/\u2029 juga krn
+ * beberapa parser JS reject). Quote & backslash SUDAH di-escape model saat
+ * generate JSON di <args>, jadi jangan dobel-escape.
+ */
+function escapeArgsJson(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x0a) out += '\\n';        // \n
+    else if (c === 0x0d) out += '\\r';   // \r
+    else if (c === 0x09) out += '\\t';   // \t
+    else if (c === 0x08) out += '\\b';   // \b
+    else if (c === 0x0c) out += '\\f';   // \f
+    else if (c < 0x20) out += '\\u' + c.toString(16).padStart(4, '0'); // other ctrl
+    else if (c === 0x2028) out += '\\u2028'; // JS line separator (parser strict reject)
+    else if (c === 0x2029) out += '\\u2029'; // JS paragraph separator
+    else out += s[i]!;
+  }
+  return out;
+}
+
+/**
  * Parse text content (yg mungkin mengandung <tool_call> XML) → tool_calls[] OpenAI.
  * Return {toolCalls, text} — text = bagian di luar tag (mungkin kosong).
+ * Arguments di-escape control chars (newline literal → \\n) supaya JSON valid.
  */
 function parseToolCallText(content: string): { toolCalls: ChatToolCall[]; text: string } {
   const toolCalls: ChatToolCall[] = [];
@@ -179,7 +207,7 @@ function parseToolCallText(content: string): { toolCalls: ChatToolCall[]; text: 
     toolCalls.push({
       id: randomCallId(),
       type: 'function',
-      function: { name: (m[1] ?? '').trim(), arguments: (m[2] ?? '').trim() },
+      function: { name: (m[1] ?? '').trim(), arguments: escapeArgsJson((m[2] ?? '').trim()) },
     });
     lastIdx = m.index + m[0].length;
   }
@@ -388,12 +416,12 @@ export function createToolsTextStreamConverter(modelId: string): {
         if (phase === 'inside_args') {
           const end = buffer.indexOf('</args>');
           if (end >= 0) {
-            // Emit sisa args sebelum </args>.
+            // Emit sisa args sebelum </args>. Escape control chars supaya valid JSON.
             const tail = buffer.slice(0, end);
             if (tail) {
               out.push({
                 chunk: baseChunk({
-                  tool_calls: [{ index: currentToolIndex, function: { arguments: tail } }],
+                  tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(tail) } }],
                 }, null),
               });
             }
@@ -410,16 +438,16 @@ export function createToolsTextStreamConverter(modelId: string): {
             if (emit) {
               out.push({
                 chunk: baseChunk({
-                  tool_calls: [{ index: currentToolIndex, function: { arguments: emit } }],
+                  tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(emit) } }],
                 }, null),
               });
             }
             buffer = buffer.slice(buffer.length - inc);
           } else if (inc === 0 && buffer.length > 0) {
-            // Emit seluruh buffer (tdk ada prefix tag).
+            // Emit seluruh buffer (tdk ada prefix tag). Escape control chars.
             out.push({
               chunk: baseChunk({
-                tool_calls: [{ index: currentToolIndex, function: { arguments: buffer } }],
+                tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(buffer) } }],
               }, null),
             });
             buffer = '';
