@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { ScrollText, X, ArrowRight, CheckCircle2, XCircle } from 'lucide-react';
 import { useLogs, useProviders, useRoutes } from '@/lib/queries';
-import type { RequestLog, TrailStep } from '@/lib/types';
+import type { RequestLog, TrailStep, UpstreamDiagnostics } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -173,6 +173,8 @@ function DetailDrawer({ log, onClose }: { log: RequestLog; onClose: () => void }
           )}
           {/* Failover trail — shows every target tried + why it moved */}
           <FailoverTrail metadata={log.metadata} />
+          {/* Upstream response — URL + status + body of the failing call */}
+          <UpstreamResponse metadata={log.metadata} />
         </div>
       </div>
     </div>
@@ -244,6 +246,52 @@ function FailoverTrail({ metadata }: { metadata: string | null }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Renders the upstream response diagnostics (URL, status, response body) when
+ * present in the metadata. Shows up for failed upstream calls so operators can
+ * see exactly what the provider replied — e.g. a Gemini 404 with the message
+ * "model X is no longer available".
+ */
+function UpstreamResponse({ metadata }: { metadata: string | null }) {
+  if (!metadata) return null;
+  let up: UpstreamDiagnostics | undefined;
+  try {
+    const parsed = JSON.parse(metadata);
+    up = parsed.upstream;
+  } catch {
+    return null;
+  }
+  if (!up || (!up.url && !up.body && up.status === undefined)) return null;
+
+  return (
+    <div className="pt-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+        <XCircle size={13} className="shrink-0 text-destructive" />
+        Upstream response
+        {up.status !== undefined && (
+          <span className="rounded bg-destructive/10 px-1.5 py-0.5 font-mono text-[10px] text-destructive">
+            HTTP {up.status}
+          </span>
+        )}
+      </div>
+      {up.url && (
+        <div className="mb-1.5 rounded-md border border-border/50 bg-background px-2 py-1">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground/60">URL</div>
+          <div className="break-all font-mono text-[11px]">{up.url}</div>
+        </div>
+      )}
+      {up.body && (
+        <div className="rounded-md border border-border/50 bg-background px-2 py-1">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground/60">Response body</div>
+          <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-destructive">
+            {up.body}
+          </pre>
+        </div>
+      )}
     </div>
   );
 }

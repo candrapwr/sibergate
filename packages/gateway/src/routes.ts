@@ -15,6 +15,23 @@ import { errorResponse } from './errors.js';
 import { isAsyncTaskResponse, buildPollUrl, pollTaskUntilDone, buildOpenAIImageResponse } from './image-task.js';
 
 /**
+ * Build audit-log metadata for an upstream failure, merging the failover trail
+ * with the failing upstream diagnostics (URL/status/body) when present.
+ */
+function errorMetadata(
+  e: Error & { trail?: import('@sibergate/core').FailoverStep[]; upstream?: { url?: string; status?: number; body?: string | null } },
+): Record<string, unknown> | undefined {
+  const trail = e.trail;
+  const up = e.upstream;
+  if (!trail && !up) return undefined;
+  const meta: Record<string, unknown> = {};
+  if (trail) meta.trail = trail;
+  if (up) meta.upstream = up;
+  return meta;
+}
+
+
+/**
  * Build the public OpenAI-compatible app.
  * Receives the ConfigStore so every handler reads the LIVE config — admin
  * mutations (hot-reload) are reflected without a restart.
@@ -186,7 +203,7 @@ export function createApp(configStore: ConfigStore) {
         model: e.servedBy?.model ?? null,
         errorCode: e.code ?? null,
         errorMessage: (e.message ?? String(e)).slice(0, 500),
-        metadata: e.trail ? { trail: e.trail } : undefined,
+        metadata: errorMetadata(e),
       });
       const type =
         e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';

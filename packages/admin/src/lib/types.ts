@@ -103,6 +103,13 @@ export interface TrailStep {
   latencyMs: number;
 }
 
+/** Diagnostics from the failing upstream call (URL, status, response body). */
+export interface UpstreamDiagnostics {
+  url?: string;
+  status?: number;
+  body?: string | null;
+}
+
 export interface SystemInfo {
   configVersion: number;
   providers: number;

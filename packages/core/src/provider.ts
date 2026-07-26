@@ -135,22 +135,35 @@ export async function sendUpstream(opts: {
 
   if (!res.ok) {
     let detail = '';
+    let rawBody = '';
     try {
       const ct = res.headers.get('content-type') ?? '';
       if (ct.includes('application/json')) {
         const errBody = (await res.clone().json()) as { error?: { message?: string } | string };
         detail = typeof errBody.error === 'string' ? errBody.error : errBody.error?.message ?? '';
+        rawBody = JSON.stringify(errBody).slice(0, 1000);
       } else {
-        detail = (await res.clone().text()).slice(0, 200);
+        rawBody = (await res.clone().text()).slice(0, 1000);
+        detail = rawBody.slice(0, 200);
       }
     } catch {
       /* ignore */
     }
+    // Surface the failing URL + response so operators can diagnose 404/400 from
+    // the upstream (e.g. doubled /v1beta path). Logged to console AND attached
+    // to the thrown error so it lands in the `requests.metadata` audit log.
+    const redactedUrl = url.replace(/(api_key|key|token|access_token)=[^&]+/gi, '$1=***');
+    console.warn(
+      `[sibergate] upstream ${provider.id} ${res.status} ${res.statusText}\n` +
+        `  URL: ${redactedUrl}\n` +
+        `  body: ${rawBody || '(empty)'}`,
+    );
     const code = res.status === 429 ? 'rate_limited' : res.status >= 500 ? 'server_error' : 'client_error';
     throw new GatewayCallError(
       code,
       `${provider.id} returned ${res.status}${detail ? `: ${detail}` : ''}`.slice(0, 400),
       res.status,
+      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null },
     );
   }
   return res;
@@ -170,11 +183,25 @@ export class GatewayCallError extends Error {
   servedBy?: { provider: string; model: string };
   /** Failover trail accumulated before this error was thrown (for audit logging). */
   trail?: import('./engine.js').FailoverStep[];
-  constructor(code: string, message: string, status?: number) {
+  /** Diagnostics from the failing upstream call (URL, status, response body). */
+  upstream?: { url?: string; status?: number; body?: string | null };
+  constructor(
+    code: string,
+    message: string,
+    status?: number,
+    upstream?: { upstreamUrl?: string; upstreamStatus?: number; upstreamBody?: string | null },
+  ) {
     super(message);
     this.name = 'GatewayCallError';
     this.code = code;
     this.status = status;
+    if (upstream) {
+      this.upstream = {
+        url: upstream.upstreamUrl,
+        status: upstream.upstreamStatus,
+        body: upstream.upstreamBody,
+      };
+    }
   }
 }
 
