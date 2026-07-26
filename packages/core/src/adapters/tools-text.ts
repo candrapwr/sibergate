@@ -83,7 +83,11 @@ Rules:
 - Put ONLY valid JSON in <args>. Match the tool's parameter names exactly.
 - You may call multiple tools by emitting multiple <tool_call> blocks.
 - If NO tool is needed, respond normally as text (without any <tool_call> tags).
-- Do not wrap <tool_call> in code fences or quotes.`;
+- Do not wrap <tool_call> in code fences or quotes.
+- CRITICAL JSON escaping inside <args>: every double-quote inside a string value
+  MUST be written as \\" (backslash-quote), every backslash as \\\\ (double
+  backslash), every newline as \\n (backslash-n, NEVER a literal line break).
+  Example: <args>{"content":"<div class=\\"box\\">line1\\nline2</div>"}</args>`;
 }
 
 /** Flatten OpenAI multimodal content (array of {type,text} / {type,image_url}) ke string utk history. */
@@ -192,6 +196,60 @@ function escapeArgsJson(s: string): string {
 }
 
 /**
+ * Best-effort repair args JSON yg invalid krn model lupa escape quote/backslash
+ * di dalam string value (common pd text generation, krn model tdk enforce JSON
+ * syntax seketat native function calling). Dipakai di akhir assemble (stream
+ * terminal / non-stream) — BUKAN per-chunk (tidak mungkin repair parsial).
+ *
+ * Strategi: walk char-by-char tracking apakah di dalam string value. Quote mentah
+ * (") di dalam string (bukan escape valid) → escape jadi \". Ini conservative:
+ * hanya fire bila JSON.parse awal gagal, supaya tidak corrupt JSON valid.
+ *
+ * Note: tidak 100% perfect (kasus ambigu), tapi menangkap mayoritas model-emit
+ * bug. Kalau masih invalid, args dikirim apa adana — client validate sendiri.
+ */
+function repairArgsJson(args: string): string {
+  // Cepat: kalau sudah valid, return apa adana.
+  try { JSON.parse(args); return args; } catch { /* lanjut repair */ }
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i]!;
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true; // masuk string value
+      continue;
+    }
+    // Di dalam string.
+    if (ch === '\\') {
+      // Backslash escape sequence — copy 2 char (backslash + next).
+      out += ch;
+      if (i + 1 < args.length) { out += args[i + 1]!; i++; }
+      continue;
+    }
+    if (ch === '"') {
+      // Kandidat: closing quote ATAU raw quote di tengah. Heuristik: kalau char
+      // setelahnya (skip whitespace) adalah `,` `}` `]` atau end → closing quote;
+      // selain itu (mis. huruf, `<`, dll) → raw quote, escape.
+      let j = i + 1;
+      while (j < args.length && (args[j] === ' ' || args[j] === '\t' || args[j] === '\n' || args[j] === '\r')) j++;
+      const after = args[j];
+      if (after === ',' || after === '}' || after === ']' || after === ':' || after === undefined) {
+        // Closing quote.
+        out += '"';
+        inString = false;
+      } else {
+        // Raw quote di tengah string → escape.
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  try { JSON.parse(out); return out; } catch { return args; /* repair gagal, return asli */ }
+}
+
+/**
  * Parse text content (yg mungkin mengandung <tool_call> XML) → tool_calls[] OpenAI.
  * Return {toolCalls, text} — text = bagian di luar tag (mungkin kosong).
  * Arguments di-escape control chars (newline literal → \\n) supaya JSON valid.
@@ -207,7 +265,7 @@ function parseToolCallText(content: string): { toolCalls: ChatToolCall[]; text: 
     toolCalls.push({
       id: randomCallId(),
       type: 'function',
-      function: { name: (m[1] ?? '').trim(), arguments: escapeArgsJson((m[2] ?? '').trim()) },
+      function: { name: (m[1] ?? '').trim(), arguments: repairArgsJson(escapeArgsJson((m[2] ?? '').trim())) },
     });
     lastIdx = m.index + m[0].length;
   }
