@@ -110,6 +110,13 @@ export function proxySSEStream(
           total_tokens: chunk.usage.total_tokens ?? 0,
         };
       }
+      // Strip extra_content.google dari delta level (Gemini menempel signature
+      // tidak hanya di tool_calls, tapi juga di delta/message content biasa utk
+      // model reasoning). Field ini non-OpenAI — bocor ke client bila tidak dihapus.
+      if (delta?.extra_content) {
+        delete delta.extra_content;
+        changed = true;
+      }
       // Capture + strip thought_signature dari tool_call delta, DAN inject field
       // `index` (OpenAI streaming spec WAJIB utk aggregate argumen parsial).
       // Gemini tidak sertakan `index` di delta streaming → client yg match by

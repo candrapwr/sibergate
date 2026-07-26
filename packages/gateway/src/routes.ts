@@ -91,6 +91,18 @@ function captureAndStripToolCalls(toolCalls: ToolCall[] | undefined, providerId:
   }
 }
 
+/**
+ * Strip extra_content dari message level (response non-stream). Gemini menempel
+ * extra_content.google.thought_signature tidak hanya di tool_calls, tapi juga di
+ * top-level message (model reasoning). Field non-OpenAI → strip supaya client
+ * dapat format murni. Signature di sini hanya utk tracking reasoning internal
+ * Google, TIDAK wajib di-inject balik multi-turn (beda dgn signature tool_call),
+ * jadi cukup hapus, tidak perlu capture.
+ */
+function stripMessageExtraContent(message: { extra_content?: unknown } | undefined | null): void {
+  if (message?.extra_content) delete message.extra_content;
+}
+
 
 /**
  * Build the public OpenAI-compatible app.
@@ -240,12 +252,14 @@ export function createApp(configStore: ConfigStore) {
       // Non-streaming chat default: passthrough JSON, extract usage.
       const json = (await response.json()) as {
         usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-        choices?: Array<{ message?: { tool_calls?: ToolCall[] } }>;
+        choices?: Array<{ message?: { tool_calls?: ToolCall[]; extra_content?: unknown } }>;
       };
       // Capture + strip Gemini thought_signature dari tool_calls response (sebelum
       // kirim ke client). Supaya multi-turn jalan & client dapat format OpenAI murni.
       for (const choice of json.choices ?? []) {
         captureAndStripToolCalls(choice?.message?.tool_calls, servedBy.providerId);
+        // Strip extra_content di top-level message juga (Gemini reasoning signature).
+        stripMessageExtraContent(choice?.message);
       }
       const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
       const completionTokens = json.usage?.completion_tokens ?? 0;
