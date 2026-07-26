@@ -7,6 +7,8 @@ import {
   getRoute,
   logRequest,
   convertResponsesToChat,
+  storeSignature,
+  getSignature,
   type RouteModality,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
@@ -28,6 +30,65 @@ function errorMetadata(
   if (trail) meta.trail = trail;
   if (up) meta.upstream = up;
   return meta;
+}
+
+/* ─── Gemini thought_signature preservation ───────────────────────────────
+ * Gemini 3.x menyertakan `extra_content.google.thought_signature` di setiap
+ * tool_call (response) & WAJIB dikirim balik di multi-turn. Gateway CAPTURE dari
+ * response, STRIP supaya client dapat format OpenAI murni, INJECT balik saat
+ * request multi-turn datang. Deteksi by field presence (cover Gemini-via-OR).
+ */
+
+type ToolCall = {
+  id?: string;
+  extra_content?: { google?: { thought_signature?: string } } & Record<string, unknown>;
+  [k: string]: unknown;
+};
+
+/** Extract thought_signature dari sebuah tool_call. Return null bila tidak ada. */
+function extractSignature(tc: ToolCall | undefined): string | null {
+  const sig = tc?.extra_content?.google?.thought_signature;
+  return typeof sig === 'string' && sig ? sig : null;
+}
+
+/** Strip extra_content dari sebuah tool_call (in-place). Aman bila tidak ada. */
+function stripSignature(tc: ToolCall | undefined): void {
+  if (tc?.extra_content) delete tc.extra_content;
+}
+
+/**
+ * Inject thought_signature balik ke body.messages utk multi-turn. Walk setiap
+ * assistant message dgn tool_calls, lookup signature by tool_call.id di cache,
+ * set extra_content bila ada. Body pass-by-reference sampai adapter → sampai
+ * upstream. No-op utk provider non-Gemini (cache kosong utk id mereka).
+ */
+function injectSignaturesIntoMessages(messages: unknown): void {
+  if (!Array.isArray(messages)) return;
+  for (const m of messages) {
+    const msg = m as { role?: string; tool_calls?: ToolCall[] };
+    if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+    for (const tc of msg.tool_calls) {
+      if (!tc?.id) continue;
+      const sig = getSignature(tc.id);
+      if (sig) {
+        // Pertahankan extra_content lain bila ada; set path google.thought_signature.
+        tc.extra_content = { ...(tc.extra_content ?? {}), google: { thought_signature: sig } };
+      }
+    }
+  }
+}
+
+/**
+ * Capture + strip signature dari sebuah tool_call list (response non-stream).
+ * Simpan ke cache, hapus extra_content supaya client dapat format murni.
+ */
+function captureAndStripToolCalls(toolCalls: ToolCall[] | undefined, providerId: string): void {
+  if (!Array.isArray(toolCalls)) return;
+  for (const tc of toolCalls) {
+    const sig = extractSignature(tc);
+    if (sig && tc.id) storeSignature(tc.id, sig, providerId);
+    stripSignature(tc);
+  }
 }
 
 
@@ -107,7 +168,11 @@ export function createApp(configStore: ConfigStore) {
     };
 
     try {
-      const { response, servedBy, latencyMs, trail } = await executeRoute(config, route, body, controller.signal);
+      // Inject Gemini thought_signature balik ke body.messages utk multi-turn
+      // tool calling. No-op bila cache kosong (provider non-Gemini / turn pertama).
+      injectSignaturesIntoMessages(body.messages);
+      const { response, servedBy, latencyMs, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+      const upstreamKeyId = servedByKeyId ?? null;
 
       // Route/target modality 'responses': upstream menerima/mengembalikan format
       // Responses API, tapi client tetap format chat/completions. Convert di gateway.
@@ -124,7 +189,7 @@ export function createApp(configStore: ConfigStore) {
         // Streaming: pakai SSE converter bila responses modality, verbatim lainnya.
         const { response: streamRes, done } = isResponsesModality
           ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
-          : proxySSEStream(c, response);
+          : proxySSEStream(c, response, servedBy.providerId);
         done.then((res) => {
           const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
           const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
@@ -135,6 +200,7 @@ export function createApp(configStore: ConfigStore) {
             ...baseLog,
             provider: servedBy.providerId,
             model: servedBy.modelId,
+            upstreamKeyId,
             latencyMs: Math.round(performance.now() - startedAt),
             promptTokens,
             completionTokens,
@@ -160,6 +226,7 @@ export function createApp(configStore: ConfigStore) {
           ...baseLog,
           provider: servedBy.providerId,
           model: servedBy.modelId,
+          upstreamKeyId,
           latencyMs,
           promptTokens,
           completionTokens,
@@ -173,7 +240,13 @@ export function createApp(configStore: ConfigStore) {
       // Non-streaming chat default: passthrough JSON, extract usage.
       const json = (await response.json()) as {
         usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+        choices?: Array<{ message?: { tool_calls?: ToolCall[] } }>;
       };
+      // Capture + strip Gemini thought_signature dari tool_calls response (sebelum
+      // kirim ke client). Supaya multi-turn jalan & client dapat format OpenAI murni.
+      for (const choice of json.choices ?? []) {
+        captureAndStripToolCalls(choice?.message?.tool_calls, servedBy.providerId);
+      }
       const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
       const completionTokens = json.usage?.completion_tokens ?? 0;
       const totalTokens = json.usage?.total_tokens ?? promptTokens + completionTokens;
@@ -192,7 +265,7 @@ export function createApp(configStore: ConfigStore) {
       });
       return c.json(json);
     } catch (err) {
-      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string }; trail?: import('@sibergate/core').FailoverStep[] };
+      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
       const status = e.status ?? 502;
       const latencyMs = Math.round(performance.now() - startedAt);
       logRequest({
@@ -201,6 +274,7 @@ export function createApp(configStore: ConfigStore) {
         latencyMs,
         provider: e.servedBy?.provider ?? null,
         model: e.servedBy?.model ?? null,
+        upstreamKeyId: e.servedBy?.keyId ?? null,
         errorCode: e.code ?? null,
         errorMessage: (e.message ?? String(e)).slice(0, 500),
         metadata: errorMetadata(e),
@@ -314,7 +388,7 @@ async function modalityHandler(
   };
 
   try {
-    const { response, servedBy, latencyMs } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
 
     // Forward the body verbatim with the upstream Content-Type (binary or JSON).
@@ -328,6 +402,7 @@ async function modalityHandler(
       ...baseLog,
       provider: servedBy.providerId,
       model: servedBy.modelId,
+      upstreamKeyId: servedByKeyId ?? null,
       latencyMs,
       costUsd,
     });
@@ -336,7 +411,7 @@ async function modalityHandler(
       headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
     const status = e.status ?? 502;
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
@@ -345,6 +420,7 @@ async function modalityHandler(
       latencyMs,
       provider: e.servedBy?.provider ?? null,
       model: e.servedBy?.model ?? null,
+      upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: (e.message ?? String(e)).slice(0, 500),
     });
@@ -417,7 +493,8 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+    const upstreamKeyId = servedByKeyId ?? null;
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
     const buf = Buffer.from(await response.arrayBuffer());
 
@@ -432,12 +509,17 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
     }
 
     if (isAsyncTaskResponse(taskBody)) {
-      // Async: poll sampai sukses atau gagal.
-      const provider = config.providers.find((p) => p.id === servedBy.providerId);
-      if (!provider) {
+      // Async: poll sampai sukses atau gagal. Provider harus dipakai dgn key yg
+      // sama dgn request awal (servedBy.keyId) — clone utk polling bila perlu.
+      const baseProvider = config.providers.find((p) => p.id === servedBy.providerId);
+      if (!baseProvider) {
         // Provider hilang di config (mis. baru di-disable). Teruskan apa adanya.
         return new Response(buf, { status: 200, headers: { 'Content-Type': upstreamContentType } });
       }
+      const key = servedBy.keyId
+        ? config.providerKeys.find((k) => k.id === servedBy.keyId && k.enabled)
+        : null;
+      const provider = key ? { ...baseProvider, apiKey: key.value } : baseProvider;
       const taskId = taskBody.data.task_id;
       const pollUrl = buildPollUrl(provider, taskId);
       const outcome = await pollTaskUntilDone(provider, pollUrl, { signal: controller.signal });
@@ -451,6 +533,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
           ...baseLog,
           provider: servedBy.providerId,
           model: servedBy.modelId,
+          upstreamKeyId,
           latencyMs: totalLatency,
           costUsd,
         });
@@ -463,6 +546,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
         latencyMs: totalLatency,
         provider: servedBy.providerId,
         model: servedBy.modelId,
+        upstreamKeyId,
         errorCode: 'image_task_failed',
         errorMessage: outcome.message?.slice(0, 300),
         costUsd,
@@ -483,6 +567,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       ...baseLog,
       provider: servedBy.providerId,
       model: servedBy.modelId,
+      upstreamKeyId,
       latencyMs,
       costUsd,
     });
@@ -491,7 +576,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
     const status = e.status ?? 502;
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
@@ -500,6 +585,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       latencyMs,
       provider: e.servedBy?.provider ?? null,
       model: e.servedBy?.model ?? null,
+      upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: e.message?.slice(0, 300),
     });
@@ -623,7 +709,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
 
     // Forward the upstream response verbatim: status, headers (minus hop-by-hop
     // and the auth the adapter added), and the raw body bytes (binary-safe).
@@ -641,6 +727,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       status: response.status,
       provider: servedBy.providerId,
       model: servedBy.modelId,
+      upstreamKeyId: servedByKeyId ?? null,
       latencyMs,
       costUsd,
     });
@@ -649,7 +736,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       headers: respHeaders,
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
     const status = e.status ?? 502;
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
@@ -658,6 +745,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       latencyMs,
       provider: e.servedBy?.provider ?? null,
       model: e.servedBy?.model ?? null,
+      upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: (e.message ?? String(e)).slice(0, 500),
     });

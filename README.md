@@ -67,10 +67,12 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🛠️ Tool/function calling penuh di Responses** — definisi tools, `tool_calls` di response (streaming maupun non-streaming), `finish_reason: tool_calls`, dan multi-turn (role `tool` → `function_call_output`) — semuanya di-convert transparan dari/ke format chat/completions.
 - **🖼️ Image generation async (Kling/vd2 style)** — beberapa provider tidak langsung balas URL gambar, tapi kembalikan `task_id`. SiberGate otomatis poll endpoint status tiap 5 detik (maks 10×), lalu kembalikan format OpenAI `{created, data:[{url}]}` ke klien. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
 - **🔀 Modality per-target** — dalam satu route chat, tiap target boleh punya modality sendiri (mis. OpenAI via Responses, DeepSeek via chat). Failover antar-modality berfungsi penuh — gateway ganti converter di tengah jalan.
+- **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
+- **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
-- **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log.
-- **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model, dashboard live dengan grafik.
+- **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli (default maupun tambahan) di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log. Plaintext tidak pernah dikembalikan API — hanya label + prefix redacted.
+- **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
@@ -136,14 +138,16 @@ Atau buka **http://localhost:3000** (atau port `SIBERGATE_ADMIN_PORT` yang Anda 
 
 ### 1. Master Data (SQLite — sumber kebenaran tunggal)
 - **Provider** — endpoint vendor + template URL per-modalitas + **kredensial ter-encrypt AES-256-GCM**
+- **Provider keys** — **multi-account**: satu provider boleh punya banyak key upstream (masing-masing berlabel + prefix redacted); tepat satu ditandai **default** (dipakai saat route target tidak specify key)
 - **Model** — spesifikasi dengan **modalitas JSON** (`text-to-text`, `vision`, `image-generation`, `audio`, `embeddings`, …) sehingga menambah tipe kapabilitas baru hanya ubah data, bukan ubah kode
 - **API key** — key klien (sha256-hash; plaintext ditampilkan sekali saat pembuatan)
 
 ### 2. Routing Engine (operasional)
 - **Route** — endpoint virtual untuk klien (`smart`, `chat`, `image-fast`, …) diberi tag modalitas
-- **Route target** — pemetaan `(provider, model, weight)` berurutan; difilter ke provider yang benar-benar support modalitas route tersebut
+- **Route target** — pemetaan `(provider, model, weight, key)` berurutan; difilter ke provider yang benar-benar support modalitas route tersebut; `key` opsional menunjuk key spesifik di provider (multi-account)
 - **Strategi** — `fallback`, `fastest` (EMA latency), `weighted`
-- **Request** — log per-request (latency, token, biaya, error, served-by)
+- **Signature cache** — in-memory cache `thought_signature` Gemini (per `tool_call.id`) utk multi-turn tool calling; TTL 1 jam, cap 5000, auto-evict
+- **Request** — log per-request (latency, token, biaya, error, served-by, **key upstream mana yg melayani**)
 
 **Adapter provider polymorphic** mengirim setiap request ke handler modalitas
 yang tepat (chat / image / speech / transcribe / embed / music / generic), jadi
@@ -215,16 +219,45 @@ Dashboard bertema gelap (Next.js + shadcn/ui) di `http://localhost:3000`:
 ### Fitur
 
 - **Dashboard** — statistik live (request, success rate, token, spend) + grafik per route/provider/model
-- **Usage** — monitoring token & biaya lintas provider, model, dan route; matriks provider×model
-- **Providers / Models / Routes / API Keys** — CRUD penuh dengan form inline; form route memfilter model berdasarkan modalitas terpilih
-- **Logs** — tabel request terfilter + drawer detail
+- **Usage** — monitoring token & biaya lintas provider, model, route, **client API key**, dan **upstream key**; matriks provider×model
+- **Providers / Models / Routes / API Keys** — CRUD penuh dengan form inline; form route memfilter model berdasarkan modalitas terpilih. Provider punya section **API keys** (multi-account) — tambah/hapus/set-default per key
+- **Logs** — tabel request terfilter + drawer detail; tiap error upstream menampilkan panel **URL + response body** lengkap + trail failover (termasuk key upstream mana yg dipakai/gagal)
 - **Chat Playground** — uji route dengan streaming SSE live
 - **Media Lab** — generate & pratinjau gambar, suara, dan musik secara inline
 - **Route testing** — probe route apa pun dan visualisasi path failover
+- **Settings → Maintenance** — clear logs, reset stats, dan **clear signature cache** (Gemini `thought_signature`) manual
 - **Code snippets** — kode klien gaya Postman dalam cURL / Node / Python / PHP / Go
 
 Key admin di-inject server-side lewat route proxy — tidak pernah sampai browser.
 Playground memakai key klien terpisah (`sg_live_*`).
+
+---
+
+## 🔧 Kompatibilitas khusus Gemini
+
+Google Gemini 3.x punya beberapa kekhasan yang SiberGate tangani otomatis
+sehingga klien tetap bisa pakai format OpenAI standar tanpa modifikasi:
+
+### 1. Multi-turn tool/function calling (`thought_signature`)
+
+Saat Gemini membalas tool call, ia menyertakan `thought_signature` (token
+internal Google untuk tracking reasoning). Signature ini **wajib dikirim balik**
+di pesan assistant pada turn berikutnya — kalau hilang, Gemini balas
+`400 Function call is missing a thought_signature`.
+
+Karena field ini tidak ada di format OpenAI, SiberGate menanganinya transparan:
+
+1. **Capture** signature dari response Gemini → simpan di cache in-memory (key: `tool_call.id`)
+2. **Strip** `extra_content` dari response → klien menerima format OpenAI murni
+3. **Inject** signature balik ke `body.messages` saat request multi-turn datang → Gemini menerima payload lengkap
+
+**Klien tidak perlu ubah apa pun** — kirim ulang assistant message dgn format OpenAI standar, gateway sisipkan signature otomatis.
+
+**Spesifik & minim overhead** — hanya provider Gemini (langsung atau via OpenRouter) yg diproses; provider lain (DeepSeek, OpenAI, dll) skip otomatis. Cache: TTL 1 jam, cap 5000 entry, lazy eviction. Monitoring & clear manual ada di **Settings → Maintenance → Signature cache**.
+
+### 2. Penamaan model & deprecation
+
+Model Gemini lama (mis. `gemini-2.5-flash-lite`) sudah deprecated Google dan membalas `404 "no longer available to new users"`. Katalog SiberGate menyertakan model terbaru (`gemini-3.5-flash`, dll); kalau route Anda masih menunjuk model lama, ganti ke model baru via halaman Routes.
 
 ---
 

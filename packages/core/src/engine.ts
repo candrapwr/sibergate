@@ -21,6 +21,8 @@ export interface FailoverStep {
   errorCode?: string;
   errorMessage?: string;
   latencyMs: number;
+  /** Upstream key id yg dipakai/langkah ini gagal (provider_keys.id), bila ada. */
+  keyId?: string | null;
 }
 
 export interface ExecuteResult {
@@ -29,6 +31,8 @@ export interface ExecuteResult {
   latencyMs: number;
   /** Ordered list of every target tried, with outcome — the failover audit trail. */
   trail: FailoverStep[];
+  /** Upstream key id yg melayani request (provider_keys.id); null = default key. */
+  servedByKeyId?: string | null;
 }
 
 export async function executeRoute(
@@ -46,7 +50,8 @@ export async function executeRoute(
 
   // Filter targets: enabled + provider enabled + provider supports modality
   // efektif target tsb + model enabled. Provider "supports" modality ketika
-  // endpoints map-nya punya key utk modality itu.
+  // endpoints map-nya punya key utk modality itu. Bila target.keyId di-set tapi
+  // key tsb disabled/tidak ditemukan → skip (anggap gak usable, biar failover).
   const usable = route.targets.filter((t) => {
     if (!t.enabled) return false;
     const p = config.providers.find((x) => x.id === t.providerId && x.enabled);
@@ -54,7 +59,12 @@ export async function executeRoute(
     const em = effectiveModality(t);
     if (!p.endpoints[em]) return false;
     const m = config.models.find((x) => x.id === t.modelId && x.enabled);
-    return !!m;
+    if (!m) return false;
+    if (t.keyId) {
+      const k = config.providerKeys.find((x) => x.id === t.keyId && x.enabled && x.providerId === t.providerId);
+      if (!k) return false;
+    }
+    return true;
   });
 
   if (usable.length === 0) {
@@ -75,7 +85,14 @@ export async function executeRoute(
   const trail: FailoverStep[] = [];
 
   for (const target of attempts) {
-    const provider = config.providers.find((p) => p.id === target.providerId)!;
+    const baseProvider = config.providers.find((p) => p.id === target.providerId)!;
+    // Resolve upstream key: bila target.keyId di-set & key enabled ada, clone
+    // provider dgn value key tsb; bila tidak, pakai provider.apiKey default.
+    // Clone (bukan mutate) supaya config shared gak terkontaminasi antar iterasi.
+    const key = target.keyId
+      ? config.providerKeys.find((k) => k.id === target.keyId && k.enabled && k.providerId === target.providerId)
+      : null;
+    const provider = key ? { ...baseProvider, apiKey: key.value } : baseProvider;
     lastTarget = target;
     // Modality target ini (override atau route default). Dipakai utk pilih
     // adapter saat dispatch. servedBy (RouteTarget) juga membawa modality ini
@@ -93,8 +110,8 @@ export async function executeRoute(
       const response = await callProvider({ provider, model: upstreamModel, body, signal, modality });
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
-      trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs });
-      return { response, servedBy: target, latencyMs, trail };
+      trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs, keyId: key?.id ?? null });
+      return { response, servedBy: target, latencyMs, trail, servedByKeyId: key?.id ?? null };
     } catch (err) {
       const latencyMs = Date.now() - start;
       recordFailure(target.providerId, target.modelId);
@@ -107,11 +124,12 @@ export async function executeRoute(
         errorCode: ge.code,
         errorMessage: ge.message?.slice(0, 300),
         latencyMs,
+        keyId: key?.id ?? null,
       });
       lastErr = err;
       if (!isFailoverable(err)) {
         if (err instanceof GatewayCallError)
-          err.servedBy = { provider: target.providerId, model: target.modelId };
+          err.servedBy = { provider: target.providerId, model: target.modelId, keyId: key?.id ?? null };
         throw err;
       }
       // else: loop to next target (failover) — target berikutnya mungkin punya
@@ -121,7 +139,7 @@ export async function executeRoute(
   }
 
   if (lastErr instanceof GatewayCallError && lastTarget) {
-    lastErr.servedBy = { provider: lastTarget.providerId, model: lastTarget.modelId };
+    lastErr.servedBy = { provider: lastTarget.providerId, model: lastTarget.modelId, keyId: lastTarget.keyId ?? null };
     lastErr.trail = trail;
     throw lastErr;
   }

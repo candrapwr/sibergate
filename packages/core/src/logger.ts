@@ -25,6 +25,8 @@ export interface LogRequest {
   clientIp?: string | null;
   /** ID API key yg meng-autentikasi request ini (utk statistik per-key). Null bila auth-open. */
   apiKeyId?: string | null;
+  /** ID upstream key (provider_keys.id) yg melayani request ini (multi-account). Null = default key. */
+  upstreamKeyId?: string | null;
   /** JSON-serializable metadata (e.g. failover trail). */
   metadata?: Record<string, unknown>;
 }
@@ -33,10 +35,10 @@ const insertStmt = `
   INSERT INTO requests
     (request_id, method, path, status, latency_ms, route, provider, model, strategy,
      streamed, prompt_tokens, completion_tokens, total_tokens, cost_usd, error_code,
-     error_message, client_ip, api_key_id, metadata)
+     error_message, client_ip, api_key_id, upstream_key_id, metadata)
   VALUES (@requestId, @method, @path, @status, @latencyMs, @route, @provider, @model,
           @strategy, @streamed, @promptTokens, @completionTokens, @totalTokens, @costUsd,
-          @errorCode, @errorMessage, @clientIp, @apiKeyId, @metadata)
+          @errorCode, @errorMessage, @clientIp, @apiKeyId, @upstreamKeyId, @metadata)
 `;
 
 export function logRequest(entry: LogRequest): void {
@@ -62,6 +64,7 @@ export function logRequest(entry: LogRequest): void {
         errorMessage: entry.errorMessage ?? null,
         clientIp: entry.clientIp ?? null,
         apiKeyId: entry.apiKeyId ?? null,
+        upstreamKeyId: entry.upstreamKeyId ?? null,
         metadata: JSON.stringify(entry.metadata ?? {}),
       });
   } catch (err) {

@@ -4,6 +4,7 @@ import { encryptJSON, decryptJSON, type EncryptedBlob } from './crypto.js';
 import { generateApiKey } from './api-key.js';
 import { providerEndpoints } from './known-providers.js';
 import { resetLatency } from './latency.js';
+import { listSignatures as listSigs, resetSignatures as resetSigs, type SignatureList } from './signatures.js';
 
 /**
  * Admin repository — CRUD operations over the master-data tables.
@@ -117,13 +118,16 @@ export function updateProvider(id: string, input: Partial<ProviderInput>): Recor
 function upsertProvider(input: ProviderInput): Record<string, unknown> {
   assertValidPathId('Provider', input.id);
   const db = getDb();
-  // Only re-encrypt if a fresh apiKey is provided; otherwise keep existing creds.
+  // Credentials default (providers.credentials) kini opsional — key utama dikelola
+  // via provider_keys (UI satu tempat). Backward-compat: bila apiKey di-set (mis.
+  // API lama / import), tetap tulis ke credentials. Bila tidak, pakai blob kosong.
   let credentials = input.credentials;
   if (input.apiKey !== undefined) {
     credentials = json(encryptJSON({ apiKey: input.apiKey }));
-  }
-  if (credentials === undefined) {
-    throw new Error('Provider apiKey is required on create.');
+  } else if (credentials === undefined) {
+    // Create tanpa key sama sekali — provider bisa di-add dulu, key di-set
+    // kemudian via POST /providers/:id/keys. Pakai blob kosong (NOT NULL constraint).
+    credentials = json(encryptJSON({ apiKey: '' }));
   }
   db.prepare(
     `INSERT INTO providers (id, name, base_url, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
@@ -167,6 +171,151 @@ export function deleteProvider(id: string): boolean {
   }
 }
 
+/* ───────────────────────── PROVIDER KEYS (multi-account) ─────────────────────────
+ * Upstream API keys per provider. Satu provider boleh punya beberapa key (mis.
+ * beberapa akun OpenAI); masing-masing di-assign ke route target via
+ * target.keyId supaya engine bisa pilih akun spesifik per target.
+ * Plaintext value TIDAK PERNAH di-return API — hanya label + prefix (redacted).
+ */
+
+export interface ProviderKeyInput {
+  label: string;
+  /** Plaintext API key — encrypted here, never returned, never logged. */
+  apiKey: string;
+}
+
+export interface ProviderKeyView {
+  id: string;
+  providerId: string;
+  label: string;
+  /** Redacted prefix untuk display, e.g. "sk-ab12…". */
+  keyPrefix: string;
+  /** True bila ini adalah key default provider (dipakai saat target.keyId NULL). */
+  isDefault: boolean;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function redactProviderKey(row: any): ProviderKeyView {
+  return {
+    id: row.id,
+    providerId: row.provider_id,
+    label: row.label,
+    keyPrefix: row.key_prefix,
+    isDefault: row.is_default === 1,
+    enabled: row.enabled === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function makeKeyPrefix(value: string): string {
+  // Ambil 8 char pertama (atau semua bila kurang) + elipsis, utk display.
+  const head = value.slice(0, 8);
+  return value.length > 8 ? `${head}…` : head;
+}
+
+export function listProviderKeys(providerId: string): ProviderKeyView[] {
+  // Urutkan: default key duluan (supaya UI menampilkannya paling atas).
+  return (getDb()
+    .prepare('SELECT * FROM provider_keys WHERE provider_id = ? ORDER BY is_default DESC, created_at')
+    .all(providerId) as any[]).map(redactProviderKey);
+}
+
+export function createProviderKey(providerId: string, input: ProviderKeyInput): ProviderKeyView {
+  const db = getDb();
+  // Pastikan provider ada.
+  const exists = db.prepare('SELECT 1 FROM providers WHERE id = ?').get(providerId);
+  if (!exists) throw new ValidationError(`Provider '${providerId}' not found.`);
+  const label = input.label?.trim();
+  if (!label) throw new ValidationError('Key label must not be empty.');
+  if (!input.apiKey) throw new ValidationError('API key value must not be empty.');
+  const id = randomUUID();
+  const credentials = json(encryptJSON({ apiKey: input.apiKey }));
+  // Key pertama utk provider ini otomatis jadi default (invarian: tepat 1 default
+  // per provider). Key berikutnya bukan default kecuali user set manual.
+  const hasDefault = (
+    db
+      .prepare('SELECT COUNT(*) AS c FROM provider_keys WHERE provider_id = ? AND is_default = 1')
+      .get(providerId) as { c: number }
+  ).c;
+  const isDefault = hasDefault === 0 ? 1 : 0;
+  db.prepare(
+    `INSERT INTO provider_keys (id, provider_id, label, credentials, key_prefix, is_default, enabled)
+     VALUES (?, ?, ?, ?, ?, ?, 1)`,
+  ).run(id, providerId, label, credentials, makeKeyPrefix(input.apiKey), isDefault);
+  return getProviderKey(id)!;
+}
+
+/** Tandai sebuah key sebagai default provider-nya (clear flag default lainnya).
+ *  Invarian: tepat satu key default per provider. */
+export function setDefaultProviderKey(id: string): ProviderKeyView | null {
+  const db = getDb();
+  const key = db.prepare('SELECT provider_id FROM provider_keys WHERE id = ?').get(id) as
+    | { provider_id: string }
+    | undefined;
+  if (!key) return null;
+  db.transaction(() => {
+    db.prepare('UPDATE provider_keys SET is_default = 0 WHERE provider_id = ?').run(key.provider_id);
+    db.prepare('UPDATE provider_keys SET is_default = 1, updated_at = datetime(\'now\') WHERE id = ?').run(id);
+  })();
+  return getProviderKey(id)!;
+}
+
+export function getProviderKey(id: string): ProviderKeyView | null {
+  const row = getDb().prepare('SELECT * FROM provider_keys WHERE id = ?').get(id) as any;
+  return row ? redactProviderKey(row) : null;
+}
+
+export function updateProviderKey(
+  id: string,
+  patch: { label?: string; enabled?: boolean; apiKey?: string; isDefault?: boolean },
+): ProviderKeyView | null {
+  const db = getDb();
+  const existing = db.prepare('SELECT * FROM provider_keys WHERE id = ?').get(id) as any;
+  if (!existing) return null;
+  const label = patch.label !== undefined ? patch.label.trim() : existing.label;
+  if (!label) throw new ValidationError('Key label must not be empty.');
+  // Rotate value hanya bila apiKey baru diberikan; selain itu pertahankan blob lama.
+  const credentials =
+    patch.apiKey !== undefined ? json(encryptJSON({ apiKey: patch.apiKey })) : existing.credentials;
+  const keyPrefix =
+    patch.apiKey !== undefined ? makeKeyPrefix(patch.apiKey) : existing.key_prefix;
+  const enabled = patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled;
+  db.prepare(
+    `UPDATE provider_keys SET label = ?, credentials = ?, key_prefix = ?, enabled = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(label, credentials, keyPrefix, enabled, id);
+  // Set default ditangani terpisah (perlu clear flag lain) — bila patch.isDefault
+  // true, delegasikan ke setDefaultProviderKey utk jaga invarian.
+  if (patch.isDefault) return setDefaultProviderKey(id);
+  return getProviderKey(id)!;
+}
+
+export function deleteProviderKey(id: string): boolean {
+  const db = getDb();
+  // route_targets.key_id ON DELETE SET NULL (FK) → target yg menunjuk key ini
+  // otomatis jatuh kembali ke provider.apiKey default.
+  const key = db.prepare('SELECT provider_id, is_default FROM provider_keys WHERE id = ?').get(id) as
+    | { provider_id: string; is_default: number }
+    | undefined;
+  if (!key) return false;
+  const removed = db.prepare('DELETE FROM provider_keys WHERE id = ?').run(id).changes > 0;
+  // Bila key default dihapus, promosikan key lain (yg masih ada) jadi default
+  // supaya invarian "tepat 1 default per provider" tetap terjaga (selama masih
+  // ada key tersisa). Pilih key enabled pertama by created_at.
+  if (removed && key.is_default === 1) {
+    const next = db
+      .prepare('SELECT id FROM provider_keys WHERE provider_id = ? ORDER BY enabled DESC, created_at LIMIT 1')
+      .get(key.provider_id) as { id: string } | undefined;
+    if (next) {
+      db.prepare('UPDATE provider_keys SET is_default = 1 WHERE id = ?').run(next.id);
+    }
+  }
+  return removed;
+}
+
 function redactProvider(row: any): Record<string, unknown> | null {
   if (!row) return null;
   // Decrypt to check whether a real (non-empty) key is configured — imported
@@ -181,12 +330,21 @@ function redactProvider(row: any): Record<string, unknown> | null {
       hasCredentials = false;
     }
   }
+  // Jumlah upstream key tambahan di tabel provider_keys (multi-account). Bila
+  // ada ≥1 key di sana, provider dianggap punya kredensial meski credentials
+  // default kosong — key-key tsb yg dipakai target dgn target.keyId.
+  const keyCount = (
+    getDb().prepare('SELECT COUNT(*) AS c FROM provider_keys WHERE provider_id = ?').get(row.id) as {
+      c: number;
+    }
+  ).c;
   return {
     id: row.id,
     name: row.name,
     baseUrl: row.base_url,
     authScheme: row.auth_scheme,
-    hasCredentials,
+    hasCredentials: hasCredentials || keyCount > 0,
+    keyCount,
     endpoints: safeParse(row.endpoints ?? '{}', {}),
     // Convenience: which modalities this provider can serve (endpoint keys).
     modalities: Object.keys(safeParse(row.endpoints ?? '{}', {})),
@@ -381,6 +539,9 @@ export function getRouteRow(id: string): Record<string, unknown> | null {
     enabled: t.enabled === 1,
     // modality null = pakai route.modality (default behavior, backward compat).
     modality: t.modality ?? null,
+    // key_id null = pakai provider.apiKey default; bila di-set, merujuk ke
+    // provider_keys.id (assign upstream key spesifik ke target ini).
+    key: t.key_id ?? null,
   }));
   return {
     id: route.id,
@@ -415,19 +576,22 @@ function replaceTargets(
     priority?: number;
     weight?: number;
     modality?: string | null;
+    key?: string | null;
   }>,
 ): void {
   const db = getDb();
   db.transaction(() => {
     db.prepare('DELETE FROM route_targets WHERE route_id = ?').run(routeId);
     const stmt = db.prepare(
-      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled, modality)
-       VALUES (?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled, modality, key_id)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
     );
     for (const t of targets) {
       // modality NULL = pakai route.modality (default). String kosong dianggap NULL.
       const mod = t.modality && t.modality.trim() ? t.modality.trim() : null;
-      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1, mod);
+      // key NULL = pakai provider.apiKey default. String kosong dianggap NULL.
+      const keyId = t.key && t.key.trim() ? t.key.trim() : null;
+      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1, mod, keyId);
     }
   })();
 }
@@ -522,6 +686,7 @@ export interface UsageStats {
   byProvider: Array<UsageBreakdown>;
   byModel: Array<UsageBreakdown>;
   byApiKey: Array<UsageBreakdown>;
+  byUpstreamKey: Array<UsageBreakdown>;
 }
 
 /** Aggregated usage for one dimension value (a route / provider / model / api key). */
@@ -561,6 +726,7 @@ export function usageStats(): UsageStats {
     byProvider: breakdown(db, 'provider'),
     byModel: breakdown(db, 'model'),
     byApiKey: breakdownByApiKey(db),
+    byUpstreamKey: breakdownByUpstreamKey(db),
   };
 }
 
@@ -593,6 +759,57 @@ function breakdownByApiKey(db: DB): UsageBreakdown[] {
            WHEN r.api_key_id IS NULL THEN '(auth-open)'
            WHEN k.name IS NOT NULL THEN k.name
            ELSE '(deleted)'
+         END
+       ORDER BY totalTokens DESC`,
+    )
+    .all() as any[];
+  return rows.map((r) => ({
+    name: r.name,
+    count: r.count ?? 0,
+    avgLatencyMs: r.avgLatencyMs ?? 0,
+    promptTokens: r.promptTokens ?? 0,
+    completionTokens: r.completionTokens ?? 0,
+    totalTokens: r.totalTokens ?? 0,
+    costUsd: r.costUsd ?? 0,
+    successCount: r.successCount ?? 0,
+    errorCount: r.errorCount ?? 0,
+  }));
+}
+
+/**
+ * Breakdown usage per upstream API key (provider_keys). JOIN ke provider_keys utk
+ * dapat label (lebih manusiawi drpd id internal). Request yg dilayani dgn key
+ * default provider (upstream_key_id NULL) dikelompokkan PER PROVIDER dgn suffix
+ * '(default)' — mis. 'deepseek (default)', 'gemini (default)' — supaya key
+ * default tiap provider terpisah, bukan tergabung jadi satu group besar. Ini
+ * penting krn tiap provider punya kredensial default sendiri di providers.credentials.
+ */
+function breakdownByUpstreamKey(db: DB): UsageBreakdown[] {
+  // LEFT JOIN krn upstream_key_id mungkin NULL (key default) atau merujuk key
+  // yg sudah dihapus (ON DELETE SET NULL → juga NULL). Group key default per
+  // provider (COALESCE provider, '(unknown)') supaya tidak tergabung semua.
+  const rows = db
+    .prepare(
+      `SELECT
+         CASE
+           WHEN r.upstream_key_id IS NULL THEN COALESCE(r.provider, '(unknown)') || ' (default)'
+           WHEN k.label IS NOT NULL THEN k.label
+           ELSE COALESCE(r.provider, '(unknown)') || ' (deleted key)'
+         END AS name,
+         COUNT(*) AS count,
+         SUM(CASE WHEN r.status = 200 THEN 1 ELSE 0 END) AS successCount,
+         SUM(CASE WHEN r.status != 200 THEN 1 ELSE 0 END) AS errorCount,
+         COALESCE(CAST(AVG(r.latency_ms) AS INT), 0) AS avgLatencyMs,
+         COALESCE(SUM(r.prompt_tokens), 0) AS promptTokens,
+         COALESCE(SUM(r.completion_tokens), 0) AS completionTokens,
+         COALESCE(SUM(r.total_tokens), 0) AS totalTokens,
+         COALESCE(SUM(r.cost_usd), 0) AS costUsd
+       FROM requests r
+       LEFT JOIN provider_keys k ON k.id = r.upstream_key_id
+       GROUP BY CASE
+           WHEN r.upstream_key_id IS NULL THEN COALESCE(r.provider, '(unknown)') || ' (default)'
+           WHEN k.label IS NOT NULL THEN k.label
+           ELSE COALESCE(r.provider, '(unknown)') || ' (deleted key)'
          END
        ORDER BY totalTokens DESC`,
     )
@@ -747,6 +964,20 @@ export function resetStats(): { logs: number; latencyEntries: number } {
   const logs = clearLogs();
   const latency = resetLatency();
   return { logs: logs.logs, latencyEntries: latency.cleared };
+}
+
+/* ─────────── Signature cache (Gemini thought_signature) ───────────
+ * Wrap module fn dari signatures.ts supaya bisa dipanggi via admin API (UI
+ * Settings bisa lihat jumlah & clear manual). Lihat signatures.ts utk detail. */
+
+/** Snapshot cache signature utk monitoring UI (count + sample entries). */
+export function listSignatureCache(): SignatureList {
+  return listSigs();
+}
+
+/** Hapus semua signature dari cache. Return jumlah yg dihapus. */
+export function clearSignatures(): { cleared: number } {
+  return resetSigs();
 }
 
 export interface ImportResult {

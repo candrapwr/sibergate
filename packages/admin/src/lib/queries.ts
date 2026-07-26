@@ -11,6 +11,7 @@ import type {
   ListResponse,
   Model,
   Provider,
+  ProviderKey,
   RequestLog,
   Route,
   SystemInfo,
@@ -125,6 +126,73 @@ export function useToggleProvider() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] });
       qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+/* ──────────────────────── Provider keys (multi-account) ────────────────── */
+
+/** Upstream API keys milik sebuah provider. QueryKey sertakan providerId supaya
+ *  cache terpisah per provider. */
+export function useProviderKeys(providerId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['provider-keys', providerId],
+    queryFn: () => api.get<ListResponse<ProviderKey>>(`providers/${providerId}/keys`),
+    enabled: !!providerId,
+  });
+}
+
+export function useCreateProviderKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, label, apiKey }: { providerId: string; label: string; apiKey: string }) =>
+      api.post<ProviderKey>(`providers/${providerId}/keys`, { label, apiKey }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['provider-keys', vars.providerId] });
+      // Provider.keyCount berubah → refresh list provider juga.
+      qc.invalidateQueries({ queryKey: ['providers'] });
+    },
+  });
+}
+
+export function useUpdateProviderKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      providerId,
+      keyId,
+      data,
+    }: {
+      providerId: string;
+      keyId: string;
+      data: { label?: string; enabled?: boolean; apiKey?: string };
+    }) => api.patch<ProviderKey>(`providers/${providerId}/keys/${keyId}`, data),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['provider-keys', vars.providerId] });
+    },
+  });
+}
+
+export function useDeleteProviderKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, keyId }: { providerId: string; keyId: string }) =>
+      api.delete(`providers/${providerId}/keys/${keyId}`),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['provider-keys', vars.providerId] });
+      qc.invalidateQueries({ queryKey: ['providers'] });
+    },
+  });
+}
+
+/** Tandai sebuah key sebagai default provider-nya (clear default lainnya). */
+export function useSetDefaultProviderKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, keyId }: { providerId: string; keyId: string }) =>
+      api.post<ProviderKey>(`providers/${providerId}/keys/${keyId}/default`, {}),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['provider-keys', vars.providerId] });
     },
   });
 }
@@ -349,6 +417,38 @@ export function useResetStats() {
       qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['usage'] });
       qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+/* ─────────────────── Signature cache (Gemini tool calls) ─────────────────── */
+
+export interface SignatureCacheEntry {
+  id: string;
+  providerId: string;
+  ageMs: number;
+}
+export interface SignatureCache {
+  count: number;
+  entries: SignatureCacheEntry[];
+}
+
+/** Snapshot cache signature utk monitoring (count + 50 sample entries). */
+export function useSignatures() {
+  return useQuery({
+    queryKey: ['signatures'],
+    queryFn: () => api.get<SignatureCache>('signatures'),
+    refetchInterval: 15_000,
+  });
+}
+
+/** Hapus semua signature dari cache (Gemini thought_signature). */
+export function useClearSignatures() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ ok: boolean; removed: { cleared: number } }>('signatures/clear'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['signatures'] });
     },
   });
 }

@@ -54,10 +54,12 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔌 One endpoint, all providers** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, and 10+ more, unified behind the OpenAI API you already use.
 - **🧠 Smart routing** — `fallback` (auto-failover), `fastest` (lowest-latency pick), `weighted` (load balancing). Strategies apply to every modality.
 - **🎨 Six AI modalities + REST passthrough** — chat, image generation, text-to-speech, transcription, embeddings, and **text-to-music** (DeepInfra ACE-Step), plus a **generic** modality that proxies any non-LLM API (GET/POST/PUT/DELETE) with the same routing + failover.
+- **🔑 Multiple API keys per provider** — one provider may own **several keys** (e.g. multiple OpenAI/Gemini accounts), each with a label. Every route target points to a specific key (`provider → model → key`) — handy for cross-account load balancing or quota isolation. One key is marked **default** (used when a target doesn't specify one). Stats are tracked **per upstream key**.
+- **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
-- **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys are encrypted at rest, decrypted transiently at request time, and never logged.
-- **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model, live dashboard with charts.
+- **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys (default and additional) are encrypted at rest (AES-256-GCM), decrypted transiently at request time, and never logged. Plaintext is never returned by the API — only the label + a redacted prefix.
+- **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
 - **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
 - **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
@@ -124,14 +126,16 @@ Or open **http://localhost:3000** (or whatever `SIBERGATE_ADMIN_PORT` you set) f
 
 ### 1. Master Data (SQLite — single source of truth)
 - **Providers** — vendor endpoints + per-modality URL templates + **AES-256-GCM encrypted credentials**
+- **Provider keys** — **multi-account**: a provider may own several upstream keys (each labeled + a redacted prefix); exactly one is marked **default** (used when a route target doesn't specify a key)
 - **Models** — specs with **JSON modalities** (`text-to-text`, `vision`, `image-generation`, `audio`, `embeddings`, …) so adding new capability types is a data change, not a code change
 - **API keys** — client keys (sha256-hashed; plaintext shown once at creation)
 
 ### 2. Routing Engine (operational)
 - **Routes** — virtual client-facing endpoints (`smart`, `chat`, `image-fast`, …) tagged with a modality
-- **Route targets** — ordered `(provider, model, weight)` mappings; filtered to providers that actually support the route's modality
+- **Route targets** — ordered `(provider, model, weight, key)` mappings; filtered to providers that actually support the route's modality; the optional `key` points to a specific key on the provider (multi-account)
 - **Strategies** — `fallback`, `fastest` (EMA latency), `weighted`
-- **Requests** — per-request log (latency, tokens, cost, errors, served-by)
+- **Signature cache** — in-memory cache of Gemini `thought_signature` (per `tool_call.id`) for multi-turn tool calling; 1h TTL, 5000-entry cap, auto-evict
+- **Requests** — per-request log (latency, tokens, cost, errors, served-by, **which upstream key served it**)
 
 The polymorphic **provider adapter** dispatches each request to the right
 modality handler (chat / image / speech / transcribe / embed / music / generic),
@@ -204,16 +208,46 @@ A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
 ### Features
 
 - **Dashboard** — live stats (requests, success rate, tokens, spend) + charts by route/provider/model
-- **Usage** — token & cost monitoring across providers, models, and routes; provider×model matrix
-- **Providers / Models / Routes / API Keys** — full CRUD with inline forms; route form filters models by selected modality
-- **Logs** — filterable request table + detail drawer
+- **Usage** — token & cost monitoring across providers, models, routes, **client API keys**, and **upstream keys**; provider×model matrix
+- **Providers / Models / Routes / API Keys** — full CRUD with inline forms; route form filters models by selected modality. Providers have an **API keys** section (multi-account) — add/remove/set-default per key
+- **Logs** — filterable request table + detail drawer; every upstream error shows a **URL + response body** panel in full, plus the failover trail (including which upstream key was used/failed)
 - **Chat Playground** — test routes with live SSE streaming
 - **Media Lab** — generate & preview images, speech, and music inline
 - **Route testing** — probe any route and visualize the failover path
+- **Settings → Maintenance** — clear logs, reset stats, and manually **clear the signature cache** (Gemini `thought_signature`)
 - **Code snippets** — Postman-style client code in cURL / Node / Python / PHP / Go
 
 The admin key is injected server-side via a proxy route — it never reaches the
 browser. The playground uses a separate client key (`sg_live_*`).
+
+---
+
+## 🔧 Gemini-specific compatibility
+
+Google Gemini 3.x has a few quirks that SiberGate handles automatically so
+clients can keep using the standard OpenAI format without modification:
+
+### 1. Multi-turn tool/function calling (`thought_signature`)
+
+When Gemini returns a tool call, it attaches a `thought_signature` (an internal
+Google token for reasoning tracking). The signature **must be sent back** in the
+assistant message on the next turn — if missing, Gemini replies
+`400 Function call is missing a thought_signature`.
+
+Since this field doesn't exist in the OpenAI format, SiberGate handles it
+transparently:
+
+1. **Capture** the signature from the Gemini response → cache it in memory (key: `tool_call.id`)
+2. **Strip** `extra_content` from the response → the client receives pure OpenAI format
+3. **Inject** the signature back into `body.messages` when a multi-turn request arrives → Gemini gets the full payload
+
+**No client changes needed** — resend the assistant message in standard OpenAI format and the gateway inserts the signature automatically.
+
+**Specific & low-overhead** — only Gemini providers (direct or via OpenRouter) are processed; other providers (DeepSeek, OpenAI, …) skip automatically. Cache: 1h TTL, 5000-entry cap, lazy eviction. Monitoring and manual clear live in **Settings → Maintenance → Signature cache**.
+
+### 2. Model naming & deprecation
+
+Older Gemini models (e.g. `gemini-2.5-flash-lite`) are deprecated by Google and reply `404 "no longer available to new users"`. The SiberGate catalog ships current models (`gemini-3.5-flash`, etc.); if your route still points to an old one, switch to a newer model on the Routes page.
 
 ---
 

@@ -6,11 +6,27 @@ export interface Provider {
   baseUrl: string;
   authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   hasCredentials: boolean;
+  /** Jumlah upstream key tambahan di provider_keys (multi-account). */
+  keyCount: number;
   endpoints: Record<string, string>;
   /** Modalities this provider can serve (keys of `endpoints`). */
   modalities: string[];
   headers: Record<string, string>;
   timeoutMs: number | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** An upstream API key milik sebuah provider (multi-account). Plaintext tidak pernah dikembalikan API. */
+export interface ProviderKey {
+  id: string;
+  providerId: string;
+  label: string;
+  /** Redacted prefix untuk display, e.g. "sk-ab12…". */
+  keyPrefix: string;
+  /** True bila ini adalah key default provider (dipakai saat target.keyId NULL). */
+  isDefault: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -39,6 +55,8 @@ export interface RouteTarget {
   enabled: boolean;
   /** Override modality per-target. null/undefined = pakai route.modality. */
   modality?: string | null;
+  /** Upstream key (provider_keys.id) utk target ini. null = pakai key default provider. */
+  key?: string | null;
 }
 
 export interface Route {
@@ -128,6 +146,7 @@ export interface UsageStats {
   byProvider: UsageBreakdown[];
   byModel: UsageBreakdown[];
   byApiKey: UsageBreakdown[];
+  byUpstreamKey: UsageBreakdown[];
 }
 
 /** Aggregated usage for one dimension value (route / provider / model). */

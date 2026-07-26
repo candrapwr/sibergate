@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { decryptJSON, encryptJSON } from './crypto.js';
 
 /**
  * SQLite is the single source of truth for SiberGate.
@@ -109,6 +111,28 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 
+    -- Upstream API keys per provider (multi-account support). One provider may
+    -- own several keys (e.g. multiple OpenAI accounts); each is assigned to a
+    -- route target so the engine can pick a specific account per target.
+    -- credentials = encrypted blob {iv,ct,tag}, payload {apiKey:'sk-...'}.
+    -- key_prefix holds a redacted prefix ('sk-ab12…') for display only.
+    -- is_default: tepat SATU key per provider yg bertanda default — dipakai saat
+    -- route target tidak menunjuk key spesifik (target.keyId NULL). Pengelolaan
+    -- key lewat UI disatukan di sini; kolom providers.credentials lama dipertahankan
+    -- utk backward-compat (migrasi memindahkannya ke sini sebagai default key).
+    CREATE TABLE IF NOT EXISTS provider_keys (
+      id            TEXT PRIMARY KEY,              -- UUID
+      provider_id   TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+      label         TEXT NOT NULL,                 -- 'Akun Kantor', 'Akun Pribadi'
+      credentials   TEXT NOT NULL,                 -- encrypted blob {iv,ct,tag}
+      key_prefix    TEXT NOT NULL DEFAULT '',      -- 'sk-ab12…' for display
+      is_default    INTEGER NOT NULL DEFAULT 0,    -- 1 = key default provider ini
+      enabled       INTEGER NOT NULL DEFAULT 1,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_provider_keys_provider ON provider_keys(provider_id);
+
     -- ════════════════════════════════════════════════════════════
     -- PILLAR 2: ROUTING ENGINE
     -- ════════════════════════════════════════════════════════════
@@ -141,6 +165,7 @@ function migrate(db: DB): void {
       weight        INTEGER NOT NULL DEFAULT 1,  -- relative (weighted strategy)
       enabled       INTEGER NOT NULL DEFAULT 1,
       modality      TEXT,  -- nullable: bila NULL → pakai route.modality (default)
+      key_id        TEXT,  -- nullable: provider_keys(id). NULL → pakai provider.apiKey default
       FOREIGN KEY (provider_id, model_id) REFERENCES models(provider_id, id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_route_targets_route ON route_targets(route_id);
@@ -166,7 +191,8 @@ function migrate(db: DB): void {
       error_code        TEXT,
       error_message     TEXT,
       client_ip         TEXT,
-      api_key_id        TEXT                     -- FK ke api_keys(id), nullable utk request auth-open
+      api_key_id        TEXT,                     -- FK ke api_keys(id), nullable utk request auth-open
+      upstream_key_id   TEXT                      -- FK ke provider_keys(id), nullable utk statistik
     );
     CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts);
   `);
@@ -242,6 +268,71 @@ function migrate(db: DB): void {
   // api_keys terdaftar). Index utk query GROUP BY api_key_id yg cepat.
   addColumnIfMissing(db, 'requests', 'api_key_id', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_api_key ON requests(api_key_id)');
+
+  // ── migrasi: multi API key per provider ────────────────────────────────
+  // (1) key_id di route_targets: assign key spesifik (provider_keys.id) ke tiap
+  //     target. NULL = pakai provider.apiKey default (backward compatible).
+  // (2) upstream_key_id di requests: catat key upstream mana yg melayani tiap
+  //     request, utk statistik per upstream key. Index utk GROUP BY cepat.
+  addColumnIfMissing(db, 'route_targets', 'key_id', 'TEXT');
+  addColumnIfMissing(db, 'requests', 'upstream_key_id', 'TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_requests_upstream_key ON requests(upstream_key_id)');
+
+  // ── migrasi: kolom is_default di provider_keys + pindah credentials lama ──
+  // Pengelolaan key disatukan di provider_keys (UI hanya punya satu tempat). Key
+  // default provider (yg lama disimpan di providers.credentials) dipindah otomatis
+  // ke sini sebagai satu baris dgn is_default=1 — idempoten: skip provider yg
+  // sudah punya default key di tabel provider_keys.
+  addColumnIfMissing(db, 'provider_keys', 'is_default', 'INTEGER NOT NULL DEFAULT 0');
+  migrateLegacyCredentialsToProviderKeys(db);
+}
+
+/**
+ * Pindah kredensial lama (providers.credentials) ke provider_keys sebagai key
+ * default (is_default=1). Idempoten: provider yg sudah punya default key skip.
+ * Provider dgn credentials kosong/korup dilewati (key default bisa dibuat manual).
+ * `crypto.ts` dipakai via require-paksa setelah migrasi krn modul ini tidak boleh
+ * bergantung balik ke crypto (agar urutan import aman); di sini kita pakai encryptJSON.
+ */
+function migrateLegacyCredentialsToProviderKeys(db: DB): void {
+  // Ambil provider yg BELUM punya default key di provider_keys tapi punya row
+  // credentials non-kosong di providers.
+  const providers = db
+    .prepare(
+      `SELECT p.id, p.credentials
+       FROM providers p
+       WHERE p.credentials IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM provider_keys k WHERE k.provider_id = p.id AND k.is_default = 1)`,
+    )
+    .all() as { id: string; credentials: string }[];
+
+  for (const p of providers) {
+    try {
+      const blob = JSON.parse(p.credentials) as { iv?: string; ct?: string; tag?: string };
+      if (!blob.iv || !blob.ct || !blob.tag) continue; // korup, skip
+      // Decrypt dgn blob lama utk dapat plaintext, lalu insert sbg default key.
+      const decrypted = decryptJSON<{ apiKey?: string }>(blob as import('./crypto.js').EncryptedBlob);
+      const value = decrypted.apiKey ?? '';
+      if (!value) continue; // empty key (provider import dgn credentials blank), skip
+      const id = `pkdef_${p.id}`;
+      // Pakai id stabil (pkdef_<providerId>) supaya idempoten: run ulang tidak
+      // buat duplikat. INSERT OR IGNORE cegah error bila sudah ada (mis. user
+      // manual buat dgn id sama).
+      db.prepare(
+        `INSERT OR IGNORE INTO provider_keys (id, provider_id, label, credentials, key_prefix, is_default, enabled)
+         VALUES (?, ?, ?, ?, ?, 1, 1)`,
+      ).run(
+        id,
+        p.id,
+        'Default',
+        JSON.stringify(encryptJSON({ apiKey: value })),
+        value.slice(0, 8) + (value.length > 8 ? '…' : ''),
+      );
+    } catch {
+      // decrypt gagal (master key beda / blob korup) → skip, biar user set manual.
+      continue;
+    }
+  }
 }
 
 /**

@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2, Eraser, BarChart3 } from 'lucide-react';
+import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2, Eraser, BarChart3, KeyRound } from 'lucide-react';
 import { toast } from 'sonner';
-import { useImportProviders, useResetAll, useClearLogs, useResetStats, useSystem } from '@/lib/queries';
+import { useImportProviders, useResetAll, useClearLogs, useResetStats, useSystem, useSignatures, useClearSignatures } from '@/lib/queries';
 import { api } from '@/lib/api-client';
 import { KNOWN_STATS } from '@/lib/known-providers-client';
 import { PageHeader } from '@/components/layout/page-header';
@@ -137,8 +137,51 @@ function MaintenanceSection() {
       <CardContent className="space-y-3">
         <ClearLogsButton />
         <ResetStatsButton />
+        <ClearSignaturesButton />
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Signature cache (Gemini thought_signature utk multi-turn tool calling).
+ * Tampilkan jumlah entry cached + tombol clear manual. Entry auto-expire 1 jam.
+ */
+function ClearSignaturesButton() {
+  const { data } = useSignatures();
+  const clear = useClearSignatures();
+  const count = data?.count ?? 0;
+  const run = async () => {
+    const r = await clear.mutateAsync();
+    toast.success(`Cleared ${r.removed.cleared} signature(s)`);
+  };
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
+      <div className="space-y-0.5">
+        <div className="flex items-center gap-1.5 text-[13px] font-medium">
+          <KeyRound size={13} /> Signature cache
+          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+            {count} cached
+          </span>
+        </div>
+        <div className="text-[11px] text-muted-foreground">
+          Gemini <code className="font-mono">thought_signature</code> utk multi-turn tool calling. Auto-expire 1 jam.
+          Clear bila ingin paksa re-init (mis. setelah debug).
+        </div>
+      </div>
+      <ConfirmDialog
+        trigger={
+          <Button variant="outline" size="sm" disabled={count === 0}>
+            <Trash2 size={14} /> Clear
+          </Button>
+        }
+        title="Clear signature cache?"
+        description={`${count} signature akan dihapus. Conversation multi-turn Gemini aktif perlu re-init. Master data & request log aman.`}
+        confirmLabel="Clear signatures"
+        pending={clear.isPending}
+        onConfirm={run}
+      />
+    </div>
   );
 }
 

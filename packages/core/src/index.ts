@@ -15,6 +15,14 @@ export {
 } from './adapters/responses.js';
 export { executeRoute, type ExecuteResult, type FailoverStep } from './engine.js';
 export { recordLatency, recordFailure, getLatency, hasLatencyEstimate, resetLatency } from './latency.js';
+export {
+  storeSignature,
+  getSignature,
+  listSignatures,
+  resetSignatures,
+  type SignatureList,
+  type SignatureListEntry,
+} from './signatures.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
 export { ConfigStore } from './config-store.js';
 export * as admin from './admin.js';

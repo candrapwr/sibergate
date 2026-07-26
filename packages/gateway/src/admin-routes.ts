@@ -84,6 +84,52 @@ export function createAdminRouter(configStore: ConfigStore) {
     return c.json({ ok: true });
   });
 
+  /* ─────────────────── /admin/providers/:id/keys (multi-account) ─────── */
+  // CRUD upstream API keys milik sebuah provider. Satu provider boleh punya
+  // beberapa key (mis. beberapa akun OpenAI); masing-masing di-assign ke route
+  // target via target.keyId. Plaintext value gak pernah di-return.
+  app.get('/providers/:id/keys', (c) => {
+    if (!admin.getProvider(c.req.param('id'))) return c.json(notFound('provider'), 404);
+    return c.json({ data: admin.listProviderKeys(c.req.param('id')) });
+  });
+
+  app.post('/providers/:id/keys', async (c) => {
+    const body = await c.req.json();
+    const created = admin.createProviderKey(c.req.param('id'), {
+      label: body.label,
+      apiKey: body.apiKey,
+    });
+    reload();
+    return c.json(created, 201);
+  });
+
+  app.patch('/providers/:id/keys/:kid', async (c) => {
+    const body = await c.req.json();
+    const updated = admin.updateProviderKey(c.req.param('kid'), {
+      label: body.label,
+      enabled: body.enabled,
+      apiKey: body.apiKey,
+    });
+    if (!updated) return c.json(notFound('provider key'), 404);
+    reload();
+    return c.json(updated);
+  });
+
+  // Tandai sebuah key sebagai default provider (clear default lainnya).
+  app.post('/providers/:id/keys/:kid/default', (c) => {
+    const updated = admin.setDefaultProviderKey(c.req.param('kid'));
+    if (!updated) return c.json(notFound('provider key'), 404);
+    reload();
+    return c.json(updated);
+  });
+
+  app.delete('/providers/:id/keys/:kid', (c) => {
+    const ok = admin.deleteProviderKey(c.req.param('kid'));
+    if (!ok) return c.json(notFound('provider key'), 404);
+    reload();
+    return c.json({ ok: true });
+  });
+
   /* ───────────────────────────── /admin/models ───────────────────────── */
   app.get('/models', (c) => c.json({ data: admin.listModels() }));
 
@@ -342,6 +388,14 @@ export function createAdminRouter(configStore: ConfigStore) {
   // SiberGate dihitung dari requests, ini mengosongkan semua stat agregat.
   app.post('/stats/reset', (c) => {
     const removed = admin.resetStats();
+    return c.json({ ok: true, removed });
+  });
+
+  // Signature cache (Gemini thought_signature utk multi-turn tool calling).
+  // GET = lihat jumlah + sample entries (monitoring); clear = hapus semua manual.
+  app.get('/signatures', (c) => c.json(admin.listSignatureCache()));
+  app.post('/signatures/clear', (c) => {
+    const removed = admin.clearSignatures();
     return c.json({ ok: true, removed });
   });
 

@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { createResponsesStreamConverter } from '@sibergate/core';
+import { createResponsesStreamConverter, storeSignature } from '@sibergate/core';
 
 /**
  * Proxy an upstream SSE stream to the client VERBATIM while capturing usage.
@@ -8,15 +8,24 @@ import { createResponsesStreamConverter } from '@sibergate/core';
  * so we forward it untouched (avoids re-encoding bugs with picky clients) and
  * only decode a copy to extract the final `usage` chunk for logging.
  *
+ * Selain usage, juga CAPTURE Gemini thought_signature dari tool_call delta —
+ * signature tsb WAJIB di-inject balik saat request multi-turn (lihat routes.ts).
+ * Stream tetap verbatim (banyak client OpenAI ignore field `extra_content` yg
+ * bocor; inject multi-turn yg krusial, bukan strip streaming).
+ *
  * On client disconnect, we cancel the upstream reader so its fetch doesn't
  * linger (good hygiene; avoids leaking sockets).
  */
 export interface ProxyResult {
   content: string;
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
+  usage: { prompt_tokens: number; completion_tokens?: number; total_tokens: number } | null;
 }
 
-export function proxySSEStream(c: Context, upstream: Response): { response: Response; done: Promise<ProxyResult> } {
+export function proxySSEStream(
+  c: Context,
+  upstream: Response,
+  providerId?: string,
+): { response: Response; done: Promise<ProxyResult> } {
   const body = upstream.body;
   if (!body) {
     return {
@@ -41,11 +50,26 @@ export function proxySSEStream(c: Context, upstream: Response): { response: Resp
       if (!data || data === '[DONE]') continue;
       try {
         const chunk = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{ delta?: { content?: string; tool_calls?: Array<{ id?: string; extra_content?: { google?: { thought_signature?: string } } }> } }>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         };
         const delta = chunk.choices?.[0]?.delta?.content;
         if (typeof delta === 'string') result.content += delta;
+        // Capture Gemini thought_signature dari tool_call delta utk inject balik
+        // di multi-turn. Guard ganda supaya provider non-Gemini tidak overhead:
+        // (1) providerId check (skip cepat), (2) field presence (cover Gemini-via-OR).
+        // Untuk non-Gemini, blok ini no-op — tidak iterasi tool_calls sama sekali.
+        if (providerId === 'gemini' || providerId === 'openrouter') {
+          const toolCalls = chunk.choices?.[0]?.delta?.tool_calls;
+          if (Array.isArray(toolCalls)) {
+            for (const tc of toolCalls) {
+              const sig = tc?.extra_content?.google?.thought_signature;
+              if (typeof sig === 'string' && sig && tc.id) {
+                storeSignature(tc.id, sig, providerId ?? 'unknown');
+              }
+            }
+          }
+        }
         if (chunk.usage) {
           result.usage = {
             prompt_tokens: chunk.usage.prompt_tokens ?? 0,

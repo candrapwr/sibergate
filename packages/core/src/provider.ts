@@ -180,7 +180,7 @@ export function callProvider(call: AdapterCall & { modality: RouteModality }): P
 export class GatewayCallError extends Error {
   readonly code: string;
   readonly status?: number;
-  servedBy?: { provider: string; model: string };
+  servedBy?: { provider: string; model: string; keyId?: string | null };
   /** Failover trail accumulated before this error was thrown (for audit logging). */
   trail?: import('./engine.js').FailoverStep[];
   /** Diagnostics from the failing upstream call (URL, status, response body). */

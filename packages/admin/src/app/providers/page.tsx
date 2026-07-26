@@ -9,8 +9,13 @@ import {
   useUpdateProvider,
   useDeleteProvider,
   useToggleProvider,
+  useProviderKeys,
+  useCreateProviderKey,
+  useUpdateProviderKey,
+  useDeleteProviderKey,
+  useSetDefaultProviderKey,
 } from '@/lib/queries';
-import type { Provider } from '@/lib/types';
+import type { Provider, ProviderKey } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -104,6 +109,7 @@ function ProviderRow({ provider }: { provider: Provider }) {
       <TableCell><Badge variant="muted">{provider.authScheme}</Badge></TableCell>
       <TableCell>
         {provider.hasCredentials ? <Badge variant="success">set</Badge> : <Badge variant="warning">missing</Badge>}
+        {provider.keyCount > 0 && <Badge variant="muted" className="ml-1">+{provider.keyCount} key{provider.keyCount !== 1 ? 's' : ''}</Badge>}
       </TableCell>
       <TableCell>
         <button
@@ -208,7 +214,6 @@ function ProviderForm({
     name: provider?.name ?? '',
     baseUrl: provider?.baseUrl ?? '',
     authScheme: provider?.authScheme ?? 'bearer',
-    apiKey: '',
   });
   // Per-modality endpoint templates (e.g. {generic:"/anything/{path}"}).
   // Initialized from the provider's existing endpoints map on edit.
@@ -232,10 +237,9 @@ function ProviderForm({
       // the provider inherits the OpenAI-compatible defaults at the catalog/
       // config layer (empty {} would wipe them).
       ...(Object.keys(endpointMap).length > 0 ? { endpoints: endpointMap } : {}),
-      // 'none' auth needs no key; on create the gateway requires a key, so send
-      // a harmless placeholder. On edit, blank keeps the existing credentials.
-      ...(form.authScheme === 'none' && !isEdit ? { apiKey: 'none' } : {}),
-      ...(form.apiKey ? { apiKey: form.apiKey } : {}),
+      // API key tidak lagi di-set di sini — key dikelola via section "API keys"
+      // di bawah (provider_keys), termasuk key default. Create provider tanpa
+      // key dulu lalu tambah key setelahnya.
     };
     try {
       await onSubmit(payload);
@@ -283,22 +287,6 @@ function ProviderForm({
             <option value="none">none (public)</option>
           </select>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="pkey">
-            API key{' '}
-            {isEdit ? <span className="text-muted-foreground">(blank = keep current)</span> : null}
-            {form.authScheme === 'none' && <span className="text-muted-foreground">(not required for none)</span>}
-          </Label>
-          <Input
-            id="pkey"
-            type="password"
-            value={form.apiKey}
-            onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-            placeholder="sk-..."
-            required={isEdit ? false : form.authScheme !== 'none'}
-          />
-        </div>
-
         {/* Per-modality endpoint templates.
             Most providers inherit the OpenAI-compatible defaults automatically,
             so this is empty for them. It matters for `generic` (the passthrough
@@ -351,9 +339,160 @@ function ProviderForm({
           </div>
         </div>
 
+        {/* Multi API keys — tambahan key upstream per provider (multi-account).
+            Hanya tampil saat EDIT (provider sudah ada). Key utama tetap kolom
+            API key di atas (provider.credentials default); section ini utk key
+            tambahan yg bisa di-assign ke route target (target.keyId). */}
+        {isEdit && provider && <ProviderKeysSection providerId={provider.id} />}
+
         <DialogFooter><Button type="submit" disabled={submitting}>{submitLabel}</Button></DialogFooter>
       </form>
     </>
+  );
+}
+
+/**
+ * Section daftar key tambahan milik sebuah provider (multi-account). Tampilkan
+ * label + prefix redacted + toggle enable + hapus. Form tambah key baru di
+ * bawahnya. Plaintext value gak pernah keluar API — hanya label + prefix.
+ */
+function ProviderKeysSection({ providerId }: { providerId: string }) {
+  const { data, isLoading } = useProviderKeys(providerId);
+  const createKey = useCreateProviderKey();
+  const updateKey = useUpdateProviderKey();
+  const deleteKey = useDeleteProviderKey();
+  const setDefault = useSetDefaultProviderKey();
+  const [newKey, setNewKey] = useState({ label: '', apiKey: '' });
+  const keys = (data?.data ?? []) as ProviderKey[];
+
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKey.label.trim() || !newKey.apiKey.trim()) return;
+    try {
+      await createKey.mutateAsync({
+        providerId,
+        label: newKey.label.trim(),
+        apiKey: newKey.apiKey.trim(),
+      });
+      setNewKey({ label: '', apiKey: '' });
+      toast.success('Key added.');
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border/60 p-2.5">
+      <div className="flex items-center justify-between">
+        <Label>API keys</Label>
+        <span className="text-[10px] text-muted-foreground">
+          {keys.length} key{keys.length !== 1 ? 's' : ''} · multi-account
+        </span>
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Satu key ditandai <span className="font-medium text-foreground">default</span> — dipakai saat route target tidak
+        menunjuk key spesifik. Key lain bisa di-assign ke target tertentu di halaman Routes (mis. utk load-balance antar akun).
+      </p>
+
+      {isLoading ? (
+        <div className="h-8 animate-pulse rounded bg-secondary/40" />
+      ) : keys.length === 0 ? (
+        <p className="py-1 text-[11px] italic text-muted-foreground">
+          No keys yet. Add one below — key pertama otomatis jadi default.
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {keys.map((k) => (
+            <div key={k.id} className="flex items-center gap-2 rounded border border-border/40 bg-background px-2 py-1.5">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-[12px] font-medium">{k.label}</span>
+                  {k.isDefault && (
+                    <Badge variant="success" className="shrink-0 px-1 py-0 text-[9px]">default</Badge>
+                  )}
+                </div>
+                <div className="truncate font-mono text-[10px] text-muted-foreground">{k.keyPrefix}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  updateKey.mutate({ providerId, keyId: k.id, data: { enabled: !k.enabled } })
+                }
+                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                  k.enabled ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'
+                }`}
+                title={k.enabled ? 'Disable' : 'Enable'}
+              >
+                {k.enabled ? 'on' : 'off'}
+              </button>
+              {!k.isDefault && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await setDefault.mutateAsync({ providerId, keyId: k.id });
+                      toast.success('Default key set.');
+                    } catch (err) {
+                      toast.error((err as Error).message);
+                    }
+                  }}
+                  className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary hover:bg-primary/20"
+                  title="Jadikan key default provider ini"
+                >
+                  set default
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!confirm(`Delete key "${k.label}"? Targets using it fall back to default key.`)) return;
+                  try {
+                    await deleteKey.mutateAsync({ providerId, keyId: k.id });
+                    toast.success('Key deleted.');
+                  } catch (err) {
+                    toast.error((err as Error).message);
+                  }
+                }}
+                className="text-muted-foreground hover:text-destructive"
+                title="Delete key"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tambah key baru. Bukan <form> krn sudah berada di dalam form dialog
+          provider (HTML melarang nested form → hydration error). Pakai button
+          onClick + handle Enter via onKeyDown utk UX submit. */}
+      <div className="flex flex-wrap items-center gap-1.5 pt-1">
+        <Input
+          value={newKey.label}
+          onChange={(e) => setNewKey({ ...newKey, label: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(e as unknown as React.FormEvent); } }}
+          placeholder="Label (e.g. Akun Kantor)"
+          className="h-8 w-40 text-[12px]"
+        />
+        <Input
+          value={newKey.apiKey}
+          onChange={(e) => setNewKey({ ...newKey, apiKey: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(e as unknown as React.FormEvent); } }}
+          placeholder="API key value"
+          type="password"
+          className="h-8 flex-1 text-[12px]"
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={createKey.isPending || !newKey.label.trim() || !newKey.apiKey.trim()}
+          onClick={add as unknown as React.MouseEventHandler}
+        >
+          <Plus size={13} /> Add
+        </Button>
+      </div>
+    </div>
   );
 }
 

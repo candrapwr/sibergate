@@ -80,6 +80,29 @@ export interface RouteTarget {
    * (OpenAI) diakses via modality 'responses' — gateway convert dua arah.
    */
   modality?: RouteModality | null;
+  /**
+   * Upstream API key to use for this target (opsional). Merujuk ke
+   * ProviderKey.id — memungkinkan satu provider memakai beberapa akun/key,
+   * masing-masing di-assign ke target berbeda (mis. load-balance antar akun).
+   * Bila null/undefined → pakai provider.apiKey default (kolom credentials lama).
+   */
+  keyId?: string | null;
+}
+
+/**
+ * An upstream API key milik sebuah provider (multi-account support).
+ * Plaintext (value) dipegang di memori saat runtime untuk injeksi ke upstream.
+ */
+export interface ProviderKey {
+  id: string;
+  providerId: string;
+  /** Decrypted plaintext key (held in memory only; never returned by admin API). */
+  value: string;
+  /** Display label, e.g. "Akun Kantor". */
+  label: string;
+  enabled: boolean;
+  /** Tepat satu key per provider bertanda default — dipakai saat target.keyId NULL. */
+  isDefault: boolean;
 }
 
 /** A virtual client-facing endpoint. */
@@ -111,4 +134,6 @@ export interface SiberGateConfig {
   models: Model[];
   routes: Route[];
   apiKeys: ApiKey[];
+  /** Upstream API keys per provider (multi-account support). */
+  providerKeys: ProviderKey[];
 }
