@@ -46,8 +46,12 @@ export function proxySSEStream(
 
   // Gemini-via-OpenRouter juga emit field google.extra_content → perlakukan sama.
   const isGemini = providerId === 'gemini' || providerId === 'openrouter';
-  // Track apakah di stream ini pernah muncul tool_call (utk fix finish_reason).
+  // Track apakah di stream ini pernah muncul tool_call (utk fix finish_reason),
+  // dan map id→index utk inject field `index` di tool_call delta Gemini (spec
+  // OpenAI streaming wajib `index` utk aggregate argumen parsial).
   let sawToolCall = false;
+  const tcIndexMap: Record<string, number> = {};
+  let nextTcIndex = 0;
   const encoder = new TextEncoder();
 
   /** Extract usage + content dari block (shared oleh kedua mode). */
@@ -106,18 +110,34 @@ export function proxySSEStream(
           total_tokens: chunk.usage.total_tokens ?? 0,
         };
       }
-      // Capture + strip thought_signature dari tool_call delta.
+      // Capture + strip thought_signature dari tool_call delta, DAN inject field
+      // `index` (OpenAI streaming spec WAJIB utk aggregate argumen parsial).
+      // Gemini tidak sertakan `index` di delta streaming → client yg match by
+      // index (mis. SiberFlow) tidak bisa aggregate → spinner tool call stuck.
+      // Map id→index konsisten sepanjang stream supaya argumen tambahan nyambung.
       const toolCalls = delta?.tool_calls;
       if (Array.isArray(toolCalls) && toolCalls.length > 0) {
         sawToolCall = true;
-        for (const tc of toolCalls) {
-          const sig = tc?.extra_content?.google?.thought_signature;
+        for (let ti = 0; ti < toolCalls.length; ti++) {
+          const tc = toolCalls[ti];
+          if (!tc) continue;
+          const sig = tc.extra_content?.google?.thought_signature;
           if (typeof sig === 'string' && sig && tc.id) {
             storeSignature(tc.id, sig, providerId ?? 'unknown');
           }
-          if (tc?.extra_content) {
+          if (tc.extra_content) {
             delete tc.extra_content;
             changed = true;
+          }
+          // Inject index: pakai posisi dlm delta bila ada, atau map by id utk
+          // konsistensi antar chunk (argumen parsial datang dgn id sama).
+          if (tc.index === undefined) {
+            const idKey = tc.id ?? `__pos${ti}`;
+            if (!(idKey in tcIndexMap)) tcIndexMap[idKey] = nextTcIndex++;
+            tc.index = tcIndexMap[idKey];
+            changed = true;
+          } else if (tc.id && !(tc.id in tcIndexMap)) {
+            tcIndexMap[tc.id] = tc.index;
           }
         }
       }
