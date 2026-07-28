@@ -16,7 +16,7 @@ import type { Provider } from '@sibergate/core';
  */
 
 /** Konfigurasi polling. Default: 10x coba, jeda 5 detik. */
-export const POLL_MAX_ITERATIONS = 10;
+export const POLL_MAX_ITERATIONS = 50;
 export const POLL_INTERVAL_MS = 5_000;
 
 /** Status task yg dianggap sukses (case-insensitive). */
