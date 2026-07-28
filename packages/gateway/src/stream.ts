@@ -1,5 +1,5 @@
 import type { Context } from 'hono';
-import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSignature, estimateTokens } from '@sibergate/core';
+import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSignature, estimateTokens, normalizeChatUsage } from '@sibergate/core';
 
 /**
  * Proxy an upstream SSE stream to the client while capturing usage.
@@ -64,16 +64,13 @@ export function proxySSEStream(
         const chunk = JSON.parse(data) as {
           choices?: Array<{ delta?: { content?: string } }>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+          usage_metadata?: Record<string, unknown>;
+          usageMetadata?: Record<string, unknown>;
         };
         const delta = chunk.choices?.[0]?.delta?.content;
         if (typeof delta === 'string') result.content += delta;
-        if (chunk.usage) {
-          result.usage = {
-            prompt_tokens: chunk.usage.prompt_tokens ?? 0,
-            completion_tokens: chunk.usage.completion_tokens ?? 0,
-            total_tokens: chunk.usage.total_tokens ?? 0,
-          };
-        }
+        const usage = normalizeChatUsage(chunk);
+        if (usage) result.usage = usage;
       } catch {
         /* ignore non-JSON */
       }
@@ -103,13 +100,8 @@ export function proxySSEStream(
       const delta = chunk.choices?.[0]?.delta;
       const content = delta?.content;
       if (typeof content === 'string') result.content += content;
-      if (chunk.usage) {
-        result.usage = {
-          prompt_tokens: chunk.usage.prompt_tokens ?? 0,
-          completion_tokens: chunk.usage.completion_tokens ?? 0,
-          total_tokens: chunk.usage.total_tokens ?? 0,
-        };
-      }
+      const usage = normalizeChatUsage(chunk);
+      if (usage) result.usage = usage;
       // Strip extra_content.google dari delta level (Gemini menempel signature
       // tidak hanya di tool_calls, tapi juga di delta/message content biasa utk
       // model reasoning). Field ini non-OpenAI — bocor ke client bila tidak dihapus.
@@ -357,6 +349,7 @@ export function proxyToolsTextSSEStream(
   c: Context,
   upstream: Response,
   modelId: string,
+  opts: { providerId?: string; promptTokenEstimate?: number } = {},
 ): { response: Response; done: Promise<ProxyResult> } {
   const body = upstream.body;
   if (!body) {
@@ -414,13 +407,8 @@ export function proxyToolsTextSSEStream(
           }
         }
         // Capture usage bila ada di chunk (beberapa provider kirim di chunk terakhir).
-        if (chunk.usage) {
-          result.usage = {
-            prompt_tokens: chunk.usage.prompt_tokens ?? 0,
-            completion_tokens: chunk.usage.completion_tokens ?? 0,
-            total_tokens: chunk.usage.total_tokens ?? 0,
-          };
-        }
+        const usage = normalizeChatUsage(chunk);
+        if (usage) result.usage = usage;
         // Capture finish_reason upstream (STOP/MAX_TOKENS) — akan dikoreksi di akhir.
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       } catch {
@@ -458,10 +446,13 @@ export function proxyToolsTextSSEStream(
         const finalReason = sawToolCall ? 'tool_calls' : (lastFinishReason ?? 'stop');
         // Usage: beberapa provider (mis. Gemini OpenAI-compat) tdk kirim usage di
         // streaming chunks. Estimate dari total output (content + tool args).
+        const outputForEstimate = totalOutputChars > 0 ? ' '.repeat(totalOutputChars) : result.content;
+        const completionEstimate = estimateTokens(outputForEstimate);
+        const promptEstimate = opts.providerId === 'gemini' ? (opts.promptTokenEstimate ?? 0) : 0;
         const usage = result.usage ?? {
-          prompt_tokens: 0,
-          completion_tokens: estimateTokens(result.content + ' '.repeat(totalOutputChars)),
-          total_tokens: estimateTokens(result.content + ' '.repeat(totalOutputChars)),
+          prompt_tokens: promptEstimate,
+          completion_tokens: completionEstimate,
+          total_tokens: promptEstimate + completionEstimate,
         };
         writeChunk(controller, {
           id: `tt_${Math.random().toString(36).slice(2, 12)}`,

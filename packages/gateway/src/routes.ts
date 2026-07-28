@@ -7,6 +7,7 @@ import {
   getRoute,
   logRequest,
   convertResponsesToChat,
+  convertChatRequestToToolsText,
   convertToolsTextToChat,
   storeSignature,
   getSignature,
@@ -204,8 +205,14 @@ export function createApp(configStore: ConfigStore) {
         //   tools-text → re-parse XML <tool_call> ke OpenAI tool_calls (chunk parsial)
         //   responses  → convert Responses SSE events → chat SSE
         //   lainnya    → verbatim (proxySSEStream, dgn Gemini transform inline)
+        const toolsTextPromptEstimate = isToolsTextModality && servedBy.providerId === 'gemini'
+          ? estimateTokens(JSON.stringify(convertChatRequestToToolsText(body).messages ?? body.messages ?? ''))
+          : undefined;
         const { response: streamRes, done } = isToolsTextModality
-          ? proxyToolsTextSSEStream(c, response, upstreamModelForLog)
+          ? proxyToolsTextSSEStream(c, response, upstreamModelForLog, {
+            providerId: servedBy.providerId,
+            promptTokenEstimate: toolsTextPromptEstimate,
+          })
           : isResponsesModality
             ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
             : proxySSEStream(c, response, servedBy.providerId);

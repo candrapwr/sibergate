@@ -50,6 +50,58 @@ export interface ConvertedChunk {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
+export type ChatUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+
+function numberField(obj: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize OpenAI-compatible usage plus Gemini/Google variants into the
+ * OpenAI chat usage shape. Gemini can surface usage as usageMetadata /
+ * usage_metadata with promptTokenCount and candidatesTokenCount.
+ */
+export function normalizeChatUsage(payload: unknown): ChatUsage | null {
+  const root = (payload ?? {}) as Record<string, unknown>;
+  const usage = (root.usage ?? root.usage_metadata ?? root.usageMetadata ?? root) as Record<string, unknown>;
+  if (!usage || typeof usage !== 'object') return null;
+
+  const promptTokens = numberField(usage, [
+    'prompt_tokens',
+    'input_tokens',
+    'promptTokenCount',
+    'prompt_token_count',
+    'inputTokenCount',
+    'input_token_count',
+  ]);
+  const completionTokens = numberField(usage, [
+    'completion_tokens',
+    'output_tokens',
+    'candidatesTokenCount',
+    'candidates_token_count',
+    'outputTokenCount',
+    'output_token_count',
+  ]);
+  const totalTokens = numberField(usage, [
+    'total_tokens',
+    'totalTokenCount',
+    'total_token_count',
+  ]);
+
+  if (promptTokens === undefined && completionTokens === undefined && totalTokens === undefined) return null;
+  const prompt = promptTokens ?? 0;
+  const completion = completionTokens ?? 0;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: totalTokens ?? prompt + completion,
+  };
+}
+
 /* ────────────────────── Request converter (chat → tools-text) ────────────────────── */
 
 /**
@@ -289,10 +341,7 @@ export function convertToolsTextToChat(json: any, modelId: string): ChatCompleti
     message.content = rawContent;
   }
 
-  const u = json?.usage ?? {};
-  const promptTokens = u.prompt_tokens ?? 0;
-  const completionTokens = u.completion_tokens ?? 0;
-  const usage = { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: u.total_tokens ?? promptTokens + completionTokens };
+  const usage = normalizeChatUsage(json);
 
   return {
     id: json?.id ?? `tt_${Math.random().toString(36).slice(2, 12)}`,
@@ -304,7 +353,7 @@ export function convertToolsTextToChat(json: any, modelId: string): ChatCompleti
       message,
       finish_reason: toolCalls.length > 0 ? 'tool_calls' : (choice.finish_reason ?? 'stop'),
     }],
-    ...(promptTokens || completionTokens ? { usage } : {}),
+    ...(usage ? { usage } : {}),
   };
 }
 
@@ -528,6 +577,12 @@ export async function toolsText(call: AdapterCall): Promise<Response> {
   const url = upstreamUrl(provider, 'chat', model);
   const converted = convertChatRequestToToolsText(body);
   converted.model = model;
+  if (provider.id === 'gemini' && body.stream === true) {
+    const streamOptions = converted.stream_options && typeof converted.stream_options === 'object'
+      ? converted.stream_options as Record<string, unknown>
+      : {};
+    converted.stream_options = { ...streamOptions, include_usage: true };
+  }
   const upstreamBody = JSON.stringify(converted);
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';

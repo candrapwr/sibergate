@@ -18,6 +18,7 @@ export {
   convertChatRequestToToolsText,
   convertToolsTextToChat,
   createToolsTextStreamConverter,
+  normalizeChatUsage,
   type ChatToolCall as ToolsTextChatToolCall,
 } from './adapters/tools-text.js';
 export { recordLatency, recordFailure, getLatency, hasLatencyEstimate, resetLatency } from './latency.js';
