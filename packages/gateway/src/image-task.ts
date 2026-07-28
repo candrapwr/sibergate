@@ -23,6 +23,8 @@ export const POLL_INTERVAL_MS = 5_000;
 const SUCCESS_STATUSES = new Set(['succeed', 'success', 'completed', 'done']);
 /** Status task yg dianggap masih berjalan. */
 const PROCESSING_STATUSES = new Set(['processing', 'submitted', 'pending', 'running', 'queued']);
+/** Status task yg dianggap gagal permanen. */
+const FAILED_STATUSES = new Set(['failed', 'fail', 'failure', 'error', 'canceled', 'cancelled', 'rejected', 'timeout', 'expired']);
 
 /**
  * Deteksi apakah response upstream adalah async task (perlu polling).
@@ -136,10 +138,15 @@ export async function pollTaskUntilDone(
     const taskStatus = String(body?.data?.task_status ?? '').toLowerCase();
     const code = body?.code;
     const message = typeof body?.message === 'string' ? body.message : '';
+    const taskStatusMsg = typeof body?.data?.task_status_msg === 'string' ? body.data.task_status_msg : '';
 
     // Bila code != 0 dan ada message error → anggap gagal.
     if (typeof code === 'number' && code !== 0) {
-      return { status: 'failed', message: message || `Task failed (code ${code}).`, taskStatus };
+      return { status: 'failed', message: taskStatusMsg || message || `Task failed (code ${code}).`, taskStatus };
+    }
+
+    if (FAILED_STATUSES.has(taskStatus)) {
+      return { status: 'failed', message: taskStatusMsg || message || `Task failed with status '${taskStatus}'.`, taskStatus };
     }
 
     if (SUCCESS_STATUSES.has(taskStatus)) {
@@ -160,6 +167,7 @@ export async function pollTaskUntilDone(
     }
 
     // Status masih processing/queued/submitted → lanjut iterasi berikutnya.
+    if (PROCESSING_STATUSES.has(taskStatus)) continue;
     // Bila status tidak dikenal, juga lanjut (lebih permisif daripada gagal).
   }
 
