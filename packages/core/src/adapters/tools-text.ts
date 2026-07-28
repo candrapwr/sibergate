@@ -214,10 +214,123 @@ export function convertChatRequestToToolsText(body: Record<string, unknown>): Re
 
 /* ────────────────────── Non-stream reverse converter ────────────────────── */
 
-const TOOL_CALL_RE = /<tool_call>\s*<name>([\s\S]*?)<\/name>\s*<args>([\s\S]*?)<\/args>\s*<\/tool_call>/g;
-
 function randomCallId(): string {
   return `call_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Some models occasionally omit `</args>` or emit a corrupted closing tag before
+ * `</tool_call>`. Trim only trailing closing tags after the JSON payload; this
+ * keeps JSON content intact while preventing `}</tool_call>` from reaching the
+ * client as function.arguments.
+ */
+function stripTrailingClosingTags(s: string): string {
+  return s.replace(/(?:\s*<\/[^>]*>\s*)+$/g, '');
+}
+
+function trailingClosingTagSuffix(s: string): number {
+  const complete = s.match(/(?:\s*<\/[^>]*>\s*)+$/);
+  if (complete?.index !== undefined) return s.length - complete.index;
+
+  // Hold an incomplete unknown closing tag split across chunks, e.g. `}</｜｜`.
+  const lt = s.lastIndexOf('</');
+  if (lt >= 0 && s.indexOf('>', lt) === -1) return s.length - lt;
+  return 0;
+}
+
+function findTagOutsideJsonString(
+  s: string,
+  tag: string,
+  state: { inString?: boolean; escaped?: boolean } = {},
+): number {
+  let inString = state.inString === true;
+  let escaped = state.escaped === true;
+
+  for (let i = 0; i <= s.length - tag.length; i++) {
+    const ch = s[i]!;
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        continue;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (s.startsWith(tag, i)) return i;
+  }
+
+  return -1;
+}
+
+function findAnyClosingTagOutsideJsonString(
+  s: string,
+  state: { inString?: boolean; escaped?: boolean } = {},
+): number {
+  let inString = state.inString === true;
+  let escaped = state.escaped === true;
+
+  for (let i = 0; i < s.length - 1; i++) {
+    const ch = s[i]!;
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        continue;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === '<' && s[i + 1] === '/') return i;
+  }
+
+  return -1;
+}
+
+function advanceJsonStringState(
+  s: string,
+  state: { inString: boolean; escaped: boolean },
+): void {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (state.inString) {
+      if (state.escaped) {
+        state.escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        state.escaped = true;
+        continue;
+      }
+      if (ch === '"') state.inString = false;
+      continue;
+    }
+    if (ch === '"') state.inString = true;
+  }
 }
 
 /**
@@ -309,19 +422,71 @@ function repairArgsJson(args: string): string {
 function parseToolCallText(content: string): { toolCalls: ChatToolCall[]; text: string } {
   const toolCalls: ChatToolCall[] = [];
   let text = '';
-  let lastIdx = 0;
-  let m: RegExpExecArray | null;
-  TOOL_CALL_RE.lastIndex = 0;
-  while ((m = TOOL_CALL_RE.exec(content)) !== null) {
-    text += content.slice(lastIdx, m.index);
+  let pos = 0;
+
+  while (pos < content.length) {
+    const start = content.indexOf('<tool_call>', pos);
+    if (start < 0) {
+      text += content.slice(pos);
+      break;
+    }
+
+    text += content.slice(pos, start);
+    const nameOpen = content.indexOf('<name>', start + '<tool_call>'.length);
+    if (nameOpen < 0) {
+      text += content.slice(start);
+      break;
+    }
+
+    const nameClose = content.indexOf('</name>', nameOpen + '<name>'.length);
+    if (nameClose < 0) {
+      text += content.slice(start);
+      break;
+    }
+
+    const argsOpen = content.indexOf('<args>', nameClose + '</name>'.length);
+    if (argsOpen < 0) {
+      text += content.slice(start);
+      break;
+    }
+
+    const argsStart = argsOpen + '<args>'.length;
+    const rest = content.slice(argsStart);
+    const argsEnd = findTagOutsideJsonString(rest, '</args>');
+    const toolEnd = findTagOutsideJsonString(rest, '</tool_call>');
+    const anyClosingTag = findAnyClosingTagOutsideJsonString(rest);
+
+    let argsCloseRel = -1;
+    let blockEnd = -1;
+    if (argsEnd >= 0 && (toolEnd < 0 || argsEnd < toolEnd)) {
+      argsCloseRel = argsEnd;
+      const afterArgs = argsStart + argsEnd + '</args>'.length;
+      const close = content.indexOf('</tool_call>', afterArgs);
+      blockEnd = close >= 0 ? close + '</tool_call>'.length : afterArgs;
+    } else if (anyClosingTag >= 0 && (toolEnd < 0 || anyClosingTag < toolEnd)) {
+      argsCloseRel = anyClosingTag;
+      const close = content.indexOf('</tool_call>', argsStart + anyClosingTag);
+      blockEnd = close >= 0 ? close + '</tool_call>'.length : argsStart + anyClosingTag;
+    } else if (toolEnd >= 0) {
+      argsCloseRel = toolEnd;
+      blockEnd = argsStart + toolEnd + '</tool_call>'.length;
+    }
+
+    if (argsCloseRel < 0 || blockEnd < 0) {
+      text += content.slice(start);
+      break;
+    }
+
+    const name = content.slice(nameOpen + '<name>'.length, nameClose);
+    const args = content.slice(argsStart, argsStart + argsCloseRel);
     toolCalls.push({
       id: randomCallId(),
       type: 'function',
-      function: { name: (m[1] ?? '').trim(), arguments: repairArgsJson(escapeArgsJson((m[2] ?? '').trim())) },
+      function: { name: name.trim(), arguments: repairArgsJson(escapeArgsJson(stripTrailingClosingTags(args.trim()))) },
     });
-    lastIdx = m.index + m[0].length;
+    pos = blockEnd;
   }
-  text += content.slice(lastIdx);
+
   return { toolCalls, text: text.trim() };
 }
 
@@ -402,6 +567,24 @@ export function createToolsTextStreamConverter(modelId: string): {
   let currentToolIndex = -1;
   // Buffer utk handle tag yg ter-split lintas chunk.
   let buffer = '';
+  const argsStringState = { inString: false, escaped: false };
+
+  const emitArgsChunk = (text: string) => {
+    advanceJsonStringState(text, argsStringState);
+    return baseChunk({
+      tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(text) } }],
+    }, null);
+  };
+
+  const splitTrailingWhitespaceOutsideArgsString = (text: string): { emit: string; hold: string } => {
+    const m = text.match(/\s+$/);
+    if (!m?.[0]) return { emit: text, hold: '' };
+    const emit = text.slice(0, text.length - m[0].length);
+    const stateAfterEmit = { ...argsStringState };
+    advanceJsonStringState(emit, stateAfterEmit);
+    if (stateAfterEmit.inString) return { emit: text, hold: '' };
+    return { emit, hold: m[0] };
+  };
 
   /**
    * Cek apakah `s` diakhiri prefix dari tag (mis. "<tool", "<na", "</ar"). Return
@@ -480,6 +663,8 @@ export function createToolsTextStreamConverter(modelId: string): {
           if (argsStart >= 0 && (toolEnd < 0 || argsStart < toolEnd)) {
             buffer = buffer.slice(argsStart + '<args>'.length);
             phase = 'inside_args';
+            argsStringState.inString = false;
+            argsStringState.escaped = false;
             progress = true;
             continue;
           }
@@ -521,15 +706,15 @@ export function createToolsTextStreamConverter(modelId: string): {
         }
 
         if (phase === 'inside_args') {
-          const end = buffer.indexOf('</args>');
-          if (end >= 0) {
+          const end = findTagOutsideJsonString(buffer, '</args>', argsStringState);
+          const toolEnd = findTagOutsideJsonString(buffer, '</tool_call>', argsStringState);
+          const anyClosingTag = findAnyClosingTagOutsideJsonString(buffer, argsStringState);
+          if (end >= 0 && (toolEnd < 0 || end < toolEnd)) {
             // Emit sisa args sebelum </args>. Escape control chars supaya valid JSON.
-            const tail = buffer.slice(0, end);
+            const tail = buffer.slice(0, end).trimEnd();
             if (tail) {
               out.push({
-                chunk: baseChunk({
-                  tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(tail) } }],
-                }, null),
+                chunk: emitArgsChunk(tail),
               });
             }
             buffer = buffer.slice(end + '</args>'.length);
@@ -537,27 +722,66 @@ export function createToolsTextStreamConverter(modelId: string): {
             progress = true;
             continue;
           }
+          if (anyClosingTag >= 0 && (toolEnd < 0 || anyClosingTag < toolEnd)) {
+            // Corrupted close like `</｜｜DSML｜｜>` before `</tool_call>`.
+            const tagEnd = buffer.indexOf('>', anyClosingTag);
+            if (tagEnd < 0) break;
+            const tail = stripTrailingClosingTags(buffer.slice(0, anyClosingTag).trimEnd());
+            if (tail) {
+              out.push({
+                chunk: emitArgsChunk(tail),
+              });
+            }
+            buffer = buffer.slice(tagEnd + 1);
+            progress = true;
+            continue;
+          }
+          if (toolEnd >= 0) {
+            // Model kadang lupa `</args>` dan langsung tutup `</tool_call>`.
+            // Treat that as an implicit args close, trimming any corrupted
+            // closing tag it inserted just before `</tool_call>`.
+            const tail = stripTrailingClosingTags(buffer.slice(0, toolEnd).trimEnd());
+            if (tail) {
+              out.push({
+                chunk: emitArgsChunk(tail),
+              });
+            }
+            buffer = buffer.slice(toolEnd + '</tool_call>'.length);
+            phase = 'outside';
+            progress = true;
+            continue;
+          }
           // Belum nemu </args>. Emit args parsial TAPI simpan suffix yg mungkin prefix
           // dari "</args>" (mis. "</ar") utk hindari emit premature.
           const inc = incompleteTagSuffix(buffer);
           if (inc > 0 && inc < buffer.length) {
-            const emit = buffer.slice(0, buffer.length - inc);
+            const emit = buffer.slice(0, buffer.length - inc).replace(/\s+$/g, '');
             if (emit) {
               out.push({
-                chunk: baseChunk({
-                  tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(emit) } }],
-                }, null),
+                chunk: emitArgsChunk(emit),
               });
             }
             buffer = buffer.slice(buffer.length - inc);
           } else if (inc === 0 && buffer.length > 0) {
+            const closingTagSuffix = trailingClosingTagSuffix(buffer);
+            if (closingTagSuffix > 0) {
+              const emit = buffer.slice(0, buffer.length - closingTagSuffix);
+              if (emit) {
+                out.push({
+                  chunk: emitArgsChunk(emit),
+                });
+              }
+              buffer = buffer.slice(buffer.length - closingTagSuffix);
+              break;
+            }
             // Emit seluruh buffer (tdk ada prefix tag). Escape control chars.
-            out.push({
-              chunk: baseChunk({
-                tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(buffer) } }],
-              }, null),
-            });
-            buffer = '';
+            const { emit, hold } = splitTrailingWhitespaceOutsideArgsString(buffer);
+            if (emit) {
+              out.push({
+                chunk: emitArgsChunk(emit),
+              });
+            }
+            buffer = hold;
           }
           break;
         }

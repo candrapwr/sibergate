@@ -305,6 +305,8 @@ Di **Admin → Routes → edit route chat → add target → pilih modality** `T
 
 - Tool selection prompt-based (bisa salah pilih, tapi teruji reliable — model LLM modern ikuti XML pattern dgn baik)
 - Type validation per-tool hilang (gateway parse JSON apa adana; client validasi sendiri setelah eksekusi)
+- Parser gateway toleran terhadap beberapa output model yg tidak rapi: `</args>` hilang, closing tag rusak/split, whitespace setelah JSON, dan teks mirip tag XML di dalam string JSON.
+- Streaming tetap tidak bisa memperbaiki sempurna argumen yg sudah terkirim parsial bila model membuat JSON invalid berat (mis. quote mentah di dalam string). Untuk argumen panjang seperti script/code, beri `max_tokens` cukup supaya model sempat menutup `<tool_call>`.
 - Utk provider yg native-nya sudah chunk + reliable (OpenAI, DeepSeek), modality `chat` default tetap opsi terbaik
 
 ---

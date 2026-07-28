@@ -295,6 +295,8 @@ In **Admin → Routes → edit a chat route → add target → pick modality** `
 
 - Tool selection is prompt-based (can pick wrong, but tested reliable — modern LLMs follow the XML pattern well)
 - Per-tool type validation is lost (the gateway parses JSON as-is; the client validates after execution)
+- The gateway parser tolerates several messy model outputs: missing `</args>`, corrupted/split closing tags, whitespace after JSON, and XML-like text inside JSON strings.
+- Streaming still cannot perfectly repair severely invalid JSON once argument chunks have already been sent, such as raw unescaped quotes inside a string. For long script/code arguments, allow enough `max_tokens` so the model can close the `<tool_call>`.
 - For providers whose native path already chunks reliably (OpenAI, DeepSeek), the default `chat` modality remains the best option
 
 ---
