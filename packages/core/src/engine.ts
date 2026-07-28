@@ -42,6 +42,8 @@ export async function executeRoute(
   signal: AbortSignal,
 ): Promise<ExecuteResult> {
   const routeModality: RouteModality = route.modality ?? 'chat';
+  const isToolsTextModality = (m: RouteModality): boolean =>
+    m === 'tools-text' || m === 'tools-text-stream' || m === 'tools-text-nonstream';
   // Modality efektif tiap target: override bila di-set, jika tidak pakai
   // route.modality. Memungkinkan route campur target dgn modality berbeda
   // (mis. OpenAI responses + DeepSeek chat di route yg sama, dgn failover
@@ -57,9 +59,9 @@ export async function executeRoute(
     const p = config.providers.find((x) => x.id === t.providerId && x.enabled);
     if (!p) return false;
     const em = effectiveModality(t);
-    // Modality 'tools-text' reuse endpoint chat (tool calling via text generation,
+    // Modality tools-text* reuse endpoint chat (tool calling via text generation,
     // upstream tetap /v1/chat/completions). Anggap supported bila endpoint chat ada.
-    const endpointKey = em === 'tools-text' ? 'chat' : em;
+    const endpointKey = isToolsTextModality(em) ? 'chat' : em;
     if (!p.endpoints[endpointKey]) return false;
     const m = config.models.find((x) => x.id === t.modelId && x.enabled);
     if (!m) return false;

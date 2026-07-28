@@ -74,7 +74,18 @@ export interface Route {
   updatedAt: string;
 }
 
-export type RouteModality = 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic';
+export type RouteModality =
+  | 'chat'
+  | 'image'
+  | 'speech'
+  | 'transcribe'
+  | 'embed'
+  | 'music'
+  | 'generic'
+  | 'responses'
+  | 'tools-text'
+  | 'tools-text-stream'
+  | 'tools-text-nonstream';
 
 export interface ApiKey {
   id: string;

@@ -33,7 +33,9 @@ const MODALITIES = [
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
   { id: 'music', label: 'Music', desc: 'Text-to-music (/v1/music/generations)' },
   { id: 'responses', label: 'Responses', desc: 'OpenAI Responses API (auto-convert from chat format) — /v1/chat/completions client, upstream /v1/responses' },
-  { id: 'tools-text', label: 'Tools (text/XML)', desc: 'Tool calling via XML text pattern — bypass native fn-calling (chunk parsial args, no signature issues) — client chat/completions, upstream chat/completions w/ <tool_call> XML' },
+  { id: 'tools-text', label: 'Tools (text/XML auto)', desc: 'Tool calling via XML text pattern — follows client stream flag; upstream chat/completions w/ <tool_call> XML' },
+  { id: 'tools-text-stream', label: 'Tools (text/XML stream)', desc: 'Tool calling via XML text pattern — stream tool args token-by-token when client stream:true' },
+  { id: 'tools-text-nonstream', label: 'Tools (text/XML buffered)', desc: 'Tool calling via XML text pattern — when client stream:true, buffer tool args and emit the complete tool call once' },
   { id: 'generic', label: 'Generic', desc: 'Passthrough REST API (/v1/generic/:id) — non-LLM' },
 ] as const;
 
@@ -49,9 +51,17 @@ function targetModalityChoices(routeModality: string): { id: string; label: stri
     return [
       { id: 'responses', label: 'responses' },
       { id: 'tools-text', label: 'tools-text' },
+      { id: 'tools-text-stream', label: 'tools-text-stream' },
+      { id: 'tools-text-nonstream', label: 'tools-text-nonstream' },
     ];
   }
   return []; // route non-chat: tidak ada pilihan override
+}
+
+function providerCapabilityModality(routeModality: string): string {
+  if (routeModality === 'responses') return 'responses';
+  if (routeModality === 'tools-text' || routeModality === 'tools-text-stream' || routeModality === 'tools-text-nonstream') return 'chat';
+  return routeModality;
 }
 
 export default function RoutesPage() {
@@ -236,7 +246,7 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // Only providers that support the selected modality can be picked as targets.
-  const capableProviders = providers?.data.filter((p) => p.modalities.includes(form.modality)) ?? [];
+  const capableProviders = providers?.data.filter((p) => p.modalities.includes(providerCapabilityModality(form.modality))) ?? [];
 
   const addTarget = () => {
     if (!newTarget.provider || !newTarget.model) return;
@@ -291,6 +301,10 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   // transcription". Chat matches any text model.
 const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
   chat: ['text-to-text', 'vision'],
+  responses: ['text-to-text', 'vision'],
+  'tools-text': ['text-to-text', 'vision'],
+  'tools-text-stream': ['text-to-text', 'vision'],
+  'tools-text-nonstream': ['text-to-text', 'vision'],
   image: ['image-generation'],
   speech: ['audio'],
   transcribe: ['audio-transcription'],

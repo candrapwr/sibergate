@@ -349,7 +349,7 @@ export function proxyToolsTextSSEStream(
   c: Context,
   upstream: Response,
   modelId: string,
-  opts: { providerId?: string; promptTokenEstimate?: number } = {},
+  opts: { providerId?: string; promptTokenEstimate?: number; bufferToolArgs?: boolean } = {},
 ): { response: Response; done: Promise<ProxyResult> } {
   const body = upstream.body;
   if (!body) {
@@ -367,7 +367,7 @@ export function proxyToolsTextSSEStream(
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
 
-  const converter = createToolsTextStreamConverter(modelId);
+  const converter = createToolsTextStreamConverter(modelId, { bufferToolArgs: opts.bufferToolArgs });
   const encoder = new TextEncoder();
   let sawToolCall = false;
   // Akumulasi semua output char (text content + tool args) utk estimateTokens

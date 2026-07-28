@@ -541,7 +541,10 @@ export function convertToolsTextToChat(json: any, modelId: string): ChatCompleti
  * Penting: tag bisa ter-split lintas chunk (mis. `<tool` + `_call>`). State machine
  * buffer sampai tag complete dgn strategi: simpan text sejak tag `<` mulai, cek pattern.
  */
-export function createToolsTextStreamConverter(modelId: string): {
+export function createToolsTextStreamConverter(
+  modelId: string,
+  opts: { bufferToolArgs?: boolean } = {},
+): {
   processChunk: (deltaText: string) => ConvertedChunk[];
 } {
   const respId = `tt_${Math.random().toString(36).slice(2, 12)}`;
@@ -565,15 +568,39 @@ export function createToolsTextStreamConverter(modelId: string): {
   let phase: Phase = 'outside';
   let pendingName = '';
   let currentToolIndex = -1;
+  let currentToolId = '';
+  let bufferedArgs = '';
   // Buffer utk handle tag yg ter-split lintas chunk.
   let buffer = '';
   const argsStringState = { inString: false, escaped: false };
 
   const emitArgsChunk = (text: string) => {
     advanceJsonStringState(text, argsStringState);
+    if (opts.bufferToolArgs) {
+      bufferedArgs += text;
+      return null;
+    }
     return baseChunk({
       tool_calls: [{ index: currentToolIndex, function: { arguments: escapeArgsJson(text) } }],
     }, null);
+  };
+
+  const emitBufferedToolCall = () => {
+    if (!opts.bufferToolArgs || currentToolIndex < 0 || !currentToolId) return null;
+    const args = repairArgsJson(escapeArgsJson(stripTrailingClosingTags(bufferedArgs.trimEnd())));
+    const chunk = baseChunk({
+      role: 'assistant',
+      tool_calls: [{
+        index: currentToolIndex,
+        id: currentToolId,
+        type: 'function',
+        function: { name: pendingName, arguments: args },
+      }],
+    }, null);
+    currentToolIndex = -1;
+    currentToolId = '';
+    bufferedArgs = '';
+    return chunk;
   };
 
   const splitTrailingWhitespaceOutsideArgsString = (text: string): { emit: string; hold: string } => {
@@ -672,6 +699,10 @@ export function createToolsTextStreamConverter(modelId: string): {
             // tool_call selesai (tanpa args / setelah args). Tutup tool.
             buffer = buffer.slice(toolEnd + '</tool_call>'.length);
             phase = 'outside';
+            if (opts.bufferToolArgs) {
+              const chunk = emitBufferedToolCall();
+              if (chunk) out.push({ chunk });
+            }
             progress = true;
             continue;
           }
@@ -686,17 +717,21 @@ export function createToolsTextStreamConverter(modelId: string): {
             buffer = buffer.slice(end + '</name>'.length);
             // Emit tool_call header (id/type/name, args kosong) — mulai tool call baru.
             currentToolIndex = nextToolIndex++;
-            out.push({
-              chunk: baseChunk({
-                role: 'assistant',
-                tool_calls: [{
-                  index: currentToolIndex,
-                  id: randomCallId(),
-                  type: 'function',
-                  function: { name: pendingName, arguments: '' },
-                }],
-              }, null),
-            });
+            currentToolId = randomCallId();
+            bufferedArgs = '';
+            if (!opts.bufferToolArgs) {
+              out.push({
+                chunk: baseChunk({
+                  role: 'assistant',
+                  tool_calls: [{
+                    index: currentToolIndex,
+                    id: currentToolId,
+                    type: 'function',
+                    function: { name: pendingName, arguments: '' },
+                  }],
+                }, null),
+              });
+            }
             phase = 'inside_tool';
             progress = true;
             continue;
@@ -713,12 +748,15 @@ export function createToolsTextStreamConverter(modelId: string): {
             // Emit sisa args sebelum </args>. Escape control chars supaya valid JSON.
             const tail = buffer.slice(0, end).trimEnd();
             if (tail) {
-              out.push({
-                chunk: emitArgsChunk(tail),
-              });
+              const chunk = emitArgsChunk(tail);
+              if (chunk) out.push({ chunk });
             }
             buffer = buffer.slice(end + '</args>'.length);
             phase = 'inside_tool';
+            if (opts.bufferToolArgs) {
+              const chunk = emitBufferedToolCall();
+              if (chunk) out.push({ chunk });
+            }
             progress = true;
             continue;
           }
@@ -728,11 +766,14 @@ export function createToolsTextStreamConverter(modelId: string): {
             if (tagEnd < 0) break;
             const tail = stripTrailingClosingTags(buffer.slice(0, anyClosingTag).trimEnd());
             if (tail) {
-              out.push({
-                chunk: emitArgsChunk(tail),
-              });
+              const chunk = emitArgsChunk(tail);
+              if (chunk) out.push({ chunk });
             }
             buffer = buffer.slice(tagEnd + 1);
+            if (opts.bufferToolArgs) {
+              const chunk = emitBufferedToolCall();
+              if (chunk) out.push({ chunk });
+            }
             progress = true;
             continue;
           }
@@ -742,12 +783,15 @@ export function createToolsTextStreamConverter(modelId: string): {
             // closing tag it inserted just before `</tool_call>`.
             const tail = stripTrailingClosingTags(buffer.slice(0, toolEnd).trimEnd());
             if (tail) {
-              out.push({
-                chunk: emitArgsChunk(tail),
-              });
+              const chunk = emitArgsChunk(tail);
+              if (chunk) out.push({ chunk });
             }
             buffer = buffer.slice(toolEnd + '</tool_call>'.length);
             phase = 'outside';
+            if (opts.bufferToolArgs) {
+              const chunk = emitBufferedToolCall();
+              if (chunk) out.push({ chunk });
+            }
             progress = true;
             continue;
           }
@@ -757,9 +801,8 @@ export function createToolsTextStreamConverter(modelId: string): {
           if (inc > 0 && inc < buffer.length) {
             const emit = buffer.slice(0, buffer.length - inc).replace(/\s+$/g, '');
             if (emit) {
-              out.push({
-                chunk: emitArgsChunk(emit),
-              });
+              const chunk = emitArgsChunk(emit);
+              if (chunk) out.push({ chunk });
             }
             buffer = buffer.slice(buffer.length - inc);
           } else if (inc === 0 && buffer.length > 0) {
@@ -767,9 +810,8 @@ export function createToolsTextStreamConverter(modelId: string): {
             if (closingTagSuffix > 0) {
               const emit = buffer.slice(0, buffer.length - closingTagSuffix);
               if (emit) {
-                out.push({
-                  chunk: emitArgsChunk(emit),
-                });
+                const chunk = emitArgsChunk(emit);
+                if (chunk) out.push({ chunk });
               }
               buffer = buffer.slice(buffer.length - closingTagSuffix);
               break;
@@ -777,9 +819,8 @@ export function createToolsTextStreamConverter(modelId: string): {
             // Emit seluruh buffer (tdk ada prefix tag). Escape control chars.
             const { emit, hold } = splitTrailingWhitespaceOutsideArgsString(buffer);
             if (emit) {
-              out.push({
-                chunk: emitArgsChunk(emit),
-              });
+              const chunk = emitArgsChunk(emit);
+              if (chunk) out.push({ chunk });
             }
             buffer = hold;
           }

@@ -46,7 +46,9 @@ export type RouteModality =
   | 'music'
   | 'generic'
   | 'responses'
-  | 'tools-text';
+  | 'tools-text'
+  | 'tools-text-stream'
+  | 'tools-text-nonstream';
 
 /** What a model can do (capabilities). JSON array stored in DB. */
 export type ModelModality =

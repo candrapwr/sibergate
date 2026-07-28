@@ -20,6 +20,10 @@ const MAP: Record<string, ModalityEndpoint> = {
   transcribe: { path: '/v1/audio/transcriptions', proxyPath: '/v1/audio/transcriptions', label: 'Transcribe' },
   embed: { path: '/v1/embeddings', proxyPath: '/v1/embeddings', label: 'Embed' },
   music: { path: '/v1/music/generations', proxyPath: '/v1/music/generations', label: 'Music' },
+  responses: { path: '/v1/chat/completions', proxyPath: '/v1/chat/completions', label: 'Responses' },
+  'tools-text': { path: '/v1/chat/completions', proxyPath: '/v1/chat/completions', label: 'Tools Text' },
+  'tools-text-stream': { path: '/v1/chat/completions', proxyPath: '/v1/chat/completions', label: 'Tools Text Stream' },
+  'tools-text-nonstream': { path: '/v1/chat/completions', proxyPath: '/v1/chat/completions', label: 'Tools Text Non-stream' },
   // Generic passthrough: the route id is a path param, not a body field. Callers
   // (code-samples, route-tester) substitute the actual route id into the path.
   generic: { path: '/v1/generic/{routeId}', proxyPath: '/v1/generic/{routeId}', label: 'Generic' },

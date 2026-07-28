@@ -39,6 +39,8 @@ const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> 
   generic,
   responses,
   'tools-text': toolsText,
+  'tools-text-stream': toolsText,
+  'tools-text-nonstream': toolsText,
 };
 
 /**

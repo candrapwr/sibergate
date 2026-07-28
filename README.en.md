@@ -291,6 +291,13 @@ CLIENT (OpenAI format)  ◀───  emit delta.tool_calls[]
 
 In **Admin → Routes → edit a chat route → add target → pick modality** `Tools (text/XML)` (alongside `responses`). Or set the route's default modality to `tools-text`. Works with any OpenAI-compat provider (DeepSeek, Gemini, OpenAI, Groq, etc.) — it reuses the chat endpoint.
 
+Modality variants:
+- `tools-text` — auto mode, follows the client request's `stream` flag (backward compatible)
+- `tools-text-stream` — when the client uses `stream:true`, tool arguments are streamed token-by-token
+- `tools-text-nonstream` — when the client uses `stream:true`, the gateway still uses the upstream `tools-text` path but buffers tool arguments until complete, then emits one complete tool call
+
+When the client uses `stream:false`, all `tools-text*` variants use the normal non-stream path. The gateway uses the already-parsed chat request `body.stream`; it does not parse the request body a second time just to choose this variant.
+
 ### Trade-offs
 
 - Tool selection is prompt-based (can pick wrong, but tested reliable — modern LLMs follow the XML pattern well)

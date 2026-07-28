@@ -193,8 +193,11 @@ export function createApp(configStore: ConfigStore) {
       // Pakai servedBy.modality (override per-target) bila ada; fallback route.modality.
       // Ini krusial: jika target OpenAI responses sukses setelah failover, gateway
       // harus convert — walau route.modality mungkin 'chat'.
-      const isResponsesModality = (servedBy.modality ?? route.modality ?? 'chat') === 'responses';
-      const isToolsTextModality = (servedBy.modality ?? route.modality ?? 'chat') === 'tools-text';
+      const effectiveModality = servedBy.modality ?? route.modality ?? 'chat';
+      const isResponsesModality = effectiveModality === 'responses';
+      const isToolsTextModality = effectiveModality === 'tools-text'
+        || effectiveModality === 'tools-text-stream'
+        || effectiveModality === 'tools-text-nonstream';
       // Model id upstream = strip prefix provider (sama dgn yg dikirim adapter).
       const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
         ? servedBy.modelId.slice(servedBy.providerId.length + 1)
@@ -212,6 +215,7 @@ export function createApp(configStore: ConfigStore) {
           ? proxyToolsTextSSEStream(c, response, upstreamModelForLog, {
             providerId: servedBy.providerId,
             promptTokenEstimate: toolsTextPromptEstimate,
+            bufferToolArgs: effectiveModality === 'tools-text-nonstream',
           })
           : isResponsesModality
             ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
