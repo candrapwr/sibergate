@@ -13,6 +13,9 @@ infrastruktur Anda sendiri, tanpa markup.
 [![Provider](https://img.shields.io/badge/provider-18-orange.svg)](#-katalog-bawaan)
 [![Model](https://img.shields.io/badge/model-206-orange.svg)](#-katalog-bawaan)
 [![PR diterima](https://img.shields.io/badge/PR-diterima-brightgreen.svg)](#-berkontribusi)
+[![Status](https://img.shields.io/badge/status-aktif-maintained-success.svg)](#-roadmap)
+[![Bintang](https://img.shields.io/github/stars/candrapwr/sibergate?style=social&label=Star)](https://github.com/candrapwr/sibergate/stargazers)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
 </div>
 
