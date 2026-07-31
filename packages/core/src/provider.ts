@@ -133,8 +133,20 @@ export async function sendUpstream(opts: {
     res = await fetch(url, { method: opts.method ?? 'POST', headers, body, signal });
   } catch (err) {
     const e = err as Error;
-    if (e.name === 'AbortError') throw new GatewayCallError('timeout', 'Request timed out.');
-    throw new GatewayCallError('network', `Failed to reach ${provider.id}: ${e.message}`);
+    const cause = (e as Error & { cause?: { code?: string; name?: string; message?: string } }).cause;
+    const causeCode = cause?.code;
+    const causeDetail = causeCode || cause?.name || cause?.message
+      ? ` (${[causeCode ?? cause?.name, cause?.message].filter(Boolean).join(': ')})`
+      : '';
+    if (
+      e.name === 'AbortError'
+      || causeCode === 'UND_ERR_HEADERS_TIMEOUT'
+      || causeCode === 'UND_ERR_BODY_TIMEOUT'
+      || causeCode === 'UND_ERR_CONNECT_TIMEOUT'
+    ) {
+      throw new GatewayCallError('timeout', `Request timed out${causeDetail}.`);
+    }
+    throw new GatewayCallError('network', `Failed to reach ${provider.id}: ${e.message}${causeDetail}`);
   }
 
   if (!res.ok) {

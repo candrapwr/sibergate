@@ -166,7 +166,15 @@ export function createApp(configStore: ConfigStore) {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 30_000);
-    c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+    let clientAborted = false;
+    c.req.raw.signal?.addEventListener(
+      'abort',
+      () => {
+        clientAborted = true;
+        controller.abort();
+      },
+      { once: true },
+    );
 
     const baseLog = {
       requestId,
@@ -180,6 +188,160 @@ export function createApp(configStore: ConfigStore) {
       clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
       apiKeyId: c.get('apiKeyId') ?? null,
     };
+
+    if (body.stream === true) {
+      const encoder = new TextEncoder();
+      const heartbeatMsRaw = Number(process.env.SIBERGATE_SSE_HEARTBEAT_MS ?? 10_000);
+      const heartbeatMs = Number.isFinite(heartbeatMsRaw) && heartbeatMsRaw > 0 ? heartbeatMsRaw : 10_000;
+      let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let innerLogAttached = false;
+
+      const logStreamResult = (
+        res: Awaited<ReturnType<typeof proxySSEStream>['done']>,
+        servedBy: import('@sibergate/core').RouteTarget,
+        trail: import('@sibergate/core').FailoverStep[],
+        upstreamKeyId: string | null,
+      ) => {
+        const streamStatus = res.status;
+        const status = streamStatus === 'client_aborted' ? 499 : streamStatus === 'upstream_error' ? 502 : 200;
+        const errorCode =
+          streamStatus === 'client_aborted'
+            ? 'client_closed_request'
+            : streamStatus === 'upstream_error'
+              ? 'stream_error'
+              : null;
+        const errorMessage =
+          streamStatus === 'client_aborted'
+            ? res.errorMessage ?? 'Client disconnected before the stream completed.'
+            : streamStatus === 'upstream_error'
+              ? res.errorMessage ?? 'Upstream stream error.'
+              : null;
+        const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
+        const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
+        const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
+        const model = config.models.find((m) => m.id === servedBy.modelId);
+        const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        logRequest({
+          ...baseLog,
+          status,
+          provider: servedBy.providerId,
+          model: servedBy.modelId,
+          upstreamKeyId,
+          latencyMs: Math.round(performance.now() - startedAt),
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          costUsd,
+          errorCode,
+          errorMessage,
+          metadata: { trail, streamStatus, ...(res.errorMessage ? { streamError: res.errorMessage } : {}) },
+        });
+      };
+
+      const logStreamFailure = (err: unknown) => {
+        const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
+        const status = clientAborted ? 499 : e.status ?? 502;
+        logRequest({
+          ...baseLog,
+          status,
+          latencyMs: Math.round(performance.now() - startedAt),
+          provider: e.servedBy?.provider ?? null,
+          model: e.servedBy?.model ?? null,
+          upstreamKeyId: e.servedBy?.keyId ?? null,
+          errorCode: clientAborted ? 'client_closed_request' : e.code ?? null,
+          errorMessage: (clientAborted ? 'Client disconnected before the request completed.' : e.message ?? String(e)).slice(0, 500),
+          metadata: errorMetadata(e),
+        });
+      };
+
+      const readable = new ReadableStream<Uint8Array>({
+        async start(streamController) {
+          let heartbeat: ReturnType<typeof setInterval> | null = null;
+          const enqueue = (chunk: string | Uint8Array) => {
+            try {
+              streamController.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const close = () => {
+            try {
+              streamController.close();
+            } catch {
+              /* already closed/cancelled */
+            }
+          };
+
+          enqueue(': connected\n\n');
+          heartbeat = setInterval(() => {
+            enqueue(': ping\n\n');
+          }, heartbeatMs);
+
+          try {
+            // For large-context requests, executeRoute can spend a long time
+            // before upstream sends headers. The heartbeat above keeps the
+            // client/proxy connection from looking idle during that phase.
+            injectSignaturesIntoMessages(body.messages);
+            const { response, servedBy, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+            const upstreamKeyId = servedByKeyId ?? null;
+            const effectiveModality = servedBy.modality ?? route.modality ?? 'chat';
+            const isResponsesModality = effectiveModality === 'responses';
+            const isToolsTextModality = effectiveModality === 'tools-text'
+              || effectiveModality === 'tools-text-stream'
+              || effectiveModality === 'tools-text-nonstream';
+            const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
+              ? servedBy.modelId.slice(servedBy.providerId.length + 1)
+              : servedBy.modelId;
+            const toolsTextPromptEstimate = isToolsTextModality && servedBy.providerId === 'gemini'
+              ? estimateTokens(JSON.stringify(convertChatRequestToToolsText(body).messages ?? body.messages ?? ''))
+              : undefined;
+            const { response: streamRes, done } = isToolsTextModality
+              ? proxyToolsTextSSEStream(c, response, upstreamModelForLog, {
+                providerId: servedBy.providerId,
+                promptTokenEstimate: toolsTextPromptEstimate,
+                bufferToolArgs: effectiveModality === 'tools-text-nonstream',
+              })
+              : isResponsesModality
+                ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
+                : proxySSEStream(c, response, servedBy.providerId);
+            innerLogAttached = true;
+            done.then((res) => logStreamResult(res, servedBy, trail, upstreamKeyId));
+
+            activeReader = streamRes.body?.getReader() ?? null;
+            if (!activeReader) throw new Error('Upstream returned no stream body.');
+            while (true) {
+              const { done: rd, value } = await activeReader.read();
+              if (rd) break;
+              if (value) enqueue(value);
+            }
+          } catch (err) {
+            if (!innerLogAttached) logStreamFailure(err);
+            if (!clientAborted) {
+              const msg = err instanceof Error ? err.message : 'Upstream stream error.';
+              enqueue(`data: ${JSON.stringify({ error: { message: msg, type: 'upstream_error' } })}\n\n`);
+              enqueue('data: [DONE]\n\n');
+            }
+          } finally {
+            if (heartbeat) clearInterval(heartbeat);
+            clearTimeout(timeout);
+            close();
+          }
+        },
+        cancel() {
+          clientAborted = true;
+          controller.abort();
+          activeReader?.cancel().catch(() => {});
+        },
+      });
+
+      return c.newResponse(readable, 200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+    }
 
     try {
       // Inject Gemini thought_signature balik ke body.messages utk multi-turn
@@ -202,45 +364,6 @@ export function createApp(configStore: ConfigStore) {
       const upstreamModelForLog = servedBy.modelId.startsWith(`${servedBy.providerId}/`)
         ? servedBy.modelId.slice(servedBy.providerId.length + 1)
         : servedBy.modelId;
-
-      if (body.stream === true) {
-        // Streaming: pilih SSE converter sesuai modality target.
-        //   tools-text → re-parse XML <tool_call> ke OpenAI tool_calls (chunk parsial)
-        //   responses  → convert Responses SSE events → chat SSE
-        //   lainnya    → verbatim (proxySSEStream, dgn Gemini transform inline)
-        const toolsTextPromptEstimate = isToolsTextModality && servedBy.providerId === 'gemini'
-          ? estimateTokens(JSON.stringify(convertChatRequestToToolsText(body).messages ?? body.messages ?? ''))
-          : undefined;
-        const { response: streamRes, done } = isToolsTextModality
-          ? proxyToolsTextSSEStream(c, response, upstreamModelForLog, {
-            providerId: servedBy.providerId,
-            promptTokenEstimate: toolsTextPromptEstimate,
-            bufferToolArgs: effectiveModality === 'tools-text-nonstream',
-          })
-          : isResponsesModality
-            ? proxyResponsesSSEStream(c, response, upstreamModelForLog)
-            : proxySSEStream(c, response, servedBy.providerId);
-        done.then((res) => {
-          const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
-          const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
-          const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
-          const model = config.models.find((m) => m.id === servedBy.modelId);
-          const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
-          logRequest({
-            ...baseLog,
-            provider: servedBy.providerId,
-            model: servedBy.modelId,
-            upstreamKeyId,
-            latencyMs: Math.round(performance.now() - startedAt),
-            promptTokens,
-            completionTokens,
-            totalTokens,
-            costUsd,
-            metadata: { trail },
-          });
-        });
-        return streamRes;
-      }
 
       // Non-streaming.
       if (isResponsesModality) {
@@ -323,7 +446,7 @@ export function createApp(configStore: ConfigStore) {
       return c.json(json);
     } catch (err) {
       const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
-      const status = e.status ?? 502;
+      const status = clientAborted ? 499 : e.status ?? 502;
       const latencyMs = Math.round(performance.now() - startedAt);
       logRequest({
         ...baseLog,
@@ -332,12 +455,12 @@ export function createApp(configStore: ConfigStore) {
         provider: e.servedBy?.provider ?? null,
         model: e.servedBy?.model ?? null,
         upstreamKeyId: e.servedBy?.keyId ?? null,
-        errorCode: e.code ?? null,
-        errorMessage: (e.message ?? String(e)).slice(0, 500),
+        errorCode: clientAborted ? 'client_closed_request' : e.code ?? null,
+        errorMessage: (clientAborted ? 'Client disconnected before the request completed.' : e.message ?? String(e)).slice(0, 500),
         metadata: errorMetadata(e),
       });
       const type =
-        e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
+        clientAborted ? 'client_closed_request' : e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
       return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
     } finally {
       clearTimeout(timeout);

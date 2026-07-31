@@ -21,6 +21,20 @@ import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSi
 export interface ProxyResult {
   content: string;
   usage: { prompt_tokens: number; completion_tokens?: number; total_tokens: number } | null;
+  status: 'completed' | 'client_aborted' | 'upstream_error';
+  errorMessage?: string;
+}
+
+function streamErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : 'stream error';
+}
+
+function safeClose(controller: ReadableStreamDefaultController<Uint8Array>): void {
+  try {
+    controller.close();
+  } catch {
+    /* already closed/cancelled */
+  }
 }
 
 export function proxySSEStream(
@@ -35,14 +49,22 @@ export function proxySSEStream(
         { error: { message: 'Upstream returned no stream body.', type: 'internal_error', param: null, code: null } },
         502,
       ),
-      done: Promise.resolve({ content: '', usage: null }),
+      done: Promise.resolve({ content: '', usage: null, status: 'upstream_error', errorMessage: 'Upstream returned no stream body.' }),
     };
   }
 
-  const result: ProxyResult = { content: '', usage: null };
+  const result: ProxyResult = { content: '', usage: null, status: 'completed' };
   const reader = body.getReader();
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
+  let resolved = false;
+  const resolveOnce = (status: ProxyResult['status'] = result.status, errorMessage?: string) => {
+    if (resolved) return;
+    result.status = status;
+    if (errorMessage) result.errorMessage = errorMessage;
+    resolved = true;
+    resolveDone();
+  };
 
   // Gemini-via-OpenRouter juga emit field google.extra_content → perlakukan sama.
   const isGemini = providerId === 'gemini' || providerId === 'openrouter';
@@ -186,13 +208,16 @@ export function proxySSEStream(
           if (isGemini) controller.enqueue(encoder.encode(transformGeminiBlock(buffer) + '\n\n'));
           else trackUsage(buffer);
         }
+      } catch (err) {
+        resolveOnce('upstream_error', streamErrorMessage(err));
       } finally {
         reader.releaseLock?.();
-        controller.close();
-        resolveDone();
+        safeClose(controller);
+        resolveOnce();
       }
     },
     cancel() {
+      resolveOnce('client_aborted', 'Client disconnected before the stream completed.');
       reader.cancel().catch(() => {});
     },
   });
@@ -238,14 +263,22 @@ export function proxyResponsesSSEStream(
         { error: { message: 'Upstream returned no stream body.', type: 'internal_error', param: null, code: null } },
         502,
       ),
-      done: Promise.resolve({ content: '', usage: null }),
+      done: Promise.resolve({ content: '', usage: null, status: 'upstream_error', errorMessage: 'Upstream returned no stream body.' }),
     };
   }
 
-  const result: ProxyResult = { content: '', usage: null };
+  const result: ProxyResult = { content: '', usage: null, status: 'completed' };
   const reader = body.getReader();
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
+  let resolved = false;
+  const resolveOnce = (status: ProxyResult['status'] = result.status, errorMessage?: string) => {
+    if (resolved) return;
+    result.status = status;
+    if (errorMessage) result.errorMessage = errorMessage;
+    resolved = true;
+    resolveDone();
+  };
 
   // Converter stateful per-stream — track tool_call index mapping (lihat
   // createResponsesStreamConverter utk alasan kenapa perlu state).
@@ -280,15 +313,17 @@ export function proxyResponsesSSEStream(
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
       } catch (err) {
         // Upstream error mid-stream: kirim pesan error sebagai chunk terakhir.
-        const msg = err instanceof Error ? err.message : 'stream error';
+        const msg = streamErrorMessage(err);
+        resolveOnce('upstream_error', msg);
         writeChunk(controller, { error: { message: msg, type: 'upstream_error' } });
       } finally {
         reader.releaseLock?.();
-        controller.close();
-        resolveDone();
+        safeClose(controller);
+        resolveOnce();
       }
     },
     cancel() {
+      resolveOnce('client_aborted', 'Client disconnected before the stream completed.');
       reader.cancel().catch(() => {});
     },
   });
@@ -358,14 +393,22 @@ export function proxyToolsTextSSEStream(
         { error: { message: 'Upstream returned no stream body.', type: 'internal_error', param: null, code: null } },
         502,
       ),
-      done: Promise.resolve({ content: '', usage: null }),
+      done: Promise.resolve({ content: '', usage: null, status: 'upstream_error', errorMessage: 'Upstream returned no stream body.' }),
     };
   }
 
-  const result: ProxyResult = { content: '', usage: null };
+  const result: ProxyResult = { content: '', usage: null, status: 'completed' };
   const reader = body.getReader();
   let resolveDone!: () => void;
   const done = new Promise<ProxyResult>((r) => (resolveDone = () => r(result)));
+  let resolved = false;
+  const resolveOnce = (status: ProxyResult['status'] = result.status, errorMessage?: string) => {
+    if (resolved) return;
+    result.status = status;
+    if (errorMessage) result.errorMessage = errorMessage;
+    resolved = true;
+    resolveDone();
+  };
 
   const converter = createToolsTextStreamConverter(modelId, { bufferToolArgs: opts.bufferToolArgs });
   const encoder = new TextEncoder();
@@ -464,15 +507,17 @@ export function proxyToolsTextSSEStream(
         });
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'stream error';
+        const msg = streamErrorMessage(err);
+        resolveOnce('upstream_error', msg);
         writeChunk(controller, { error: { message: msg, type: 'upstream_error' } });
       } finally {
         reader.releaseLock?.();
-        controller.close();
-        resolveDone();
+        safeClose(controller);
+        resolveOnce();
       }
     },
     cancel() {
+      resolveOnce('client_aborted', 'Client disconnected before the stream completed.');
       reader.cancel().catch(() => {});
     },
   });

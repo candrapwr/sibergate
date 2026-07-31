@@ -6,6 +6,13 @@ import { createAdminRouter } from './admin-routes.js';
 import { createAuthRouter } from './auth-routes.js';
 import { getOrCreateAdminKey } from './admin-middleware.js';
 
+function readTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 /**
  * SiberGate gateway entry point.
  *
@@ -63,7 +70,7 @@ async function main() {
   });
 
   const cfg = configStore.get();
-  serve({ fetch: app.fetch, port, hostname: host }, (info) => {
+  const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
     console.log(`🚪 SiberGate listening on http://${info.address}:${info.port}`);
     console.log(`   Providers: ${cfg.providers.map((p) => p.id).join(', ') || '(none)'}`);
     console.log(`   Routes: ${cfg.routes.map((r) => `${r.id} (${r.strategy})`).join(', ') || '(none)'}`);
@@ -71,6 +78,17 @@ async function main() {
     console.log(`   Client auth: ${cfg.apiKeys.length > 0 ? 'enabled' : 'OPEN (run: npm run seed)'}`);
     console.log(`   Admin API: /admin/* (key ends …${adminKey.slice(-6)})`);
   });
+
+  const nodeServer = server as unknown as {
+    requestTimeout: number;
+    timeout: number;
+    headersTimeout: number;
+    keepAliveTimeout: number;
+  };
+  nodeServer.requestTimeout = readTimeoutMs('SIBERGATE_SERVER_REQUEST_TIMEOUT_MS', 0);
+  nodeServer.timeout = readTimeoutMs('SIBERGATE_SERVER_SOCKET_TIMEOUT_MS', 0);
+  nodeServer.headersTimeout = readTimeoutMs('SIBERGATE_SERVER_HEADERS_TIMEOUT_MS', 120_000);
+  nodeServer.keepAliveTimeout = readTimeoutMs('SIBERGATE_SERVER_KEEPALIVE_TIMEOUT_MS', 60_000);
 }
 
 main().catch((err) => {
