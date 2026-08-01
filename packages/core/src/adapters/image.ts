@@ -22,7 +22,7 @@ export async function image(call: AdapterCall): Promise<Response> {
   const isKling = /klingai/i.test(provider.baseUrl) || /klingai/i.test(provider.endpoints.image ?? '');
   if (isKling) {
     const { model: _drop, ...rest } = body;
-    return sendUpstream({ url, provider, body: JSON.stringify({ ...rest, model_name: model }), signal });
+    return sendUpstream({ url, provider, body: JSON.stringify({ ...rest, model_name: model }), signal, passthroughHeaders: call.passthroughHeaders });
   }
-  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal });
+  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders });
 }

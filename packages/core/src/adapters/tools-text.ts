@@ -851,5 +851,5 @@ export async function toolsText(call: AdapterCall): Promise<Response> {
   const upstreamBody = JSON.stringify(converted);
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';
-  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json' });
+  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders });
 }

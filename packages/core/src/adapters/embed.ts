@@ -11,5 +11,5 @@ import { sendUpstream, upstreamUrl, type AdapterCall } from '../provider.js';
 export async function embed(call: AdapterCall): Promise<Response> {
   const { provider, model, body, signal } = call;
   const url = upstreamUrl(provider, 'embed', model);
-  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal });
+  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders });
 }

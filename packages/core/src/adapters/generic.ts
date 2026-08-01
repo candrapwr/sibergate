@@ -48,5 +48,6 @@ export async function generic(call: AdapterCall): Promise<Response> {
     signal,
     method,
     contentType,
+    passthroughHeaders: call.passthroughHeaders,
   });
 }

@@ -27,6 +27,13 @@ export interface AdapterCall {
   /** The original client request body (already validated upstream). */
   body: Record<string, unknown>;
   signal: AbortSignal;
+  /**
+   * Client headers to pass through to the upstream, after filtering by the
+   * allowlist. Set by the gateway handler before dispatch; undefined = none.
+   * Secrets (Authorization, cookie, …) are NEVER included here — the gateway
+   * filters them before populating this field.
+   */
+  passthroughHeaders?: Record<string, string>;
 }
 
 const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> = {
@@ -112,12 +119,18 @@ export async function sendUpstream(opts: {
   body: BodyInit;
   signal: AbortSignal;
   contentType?: string;
+  /** Filtered client headers to forward to the upstream (allowlist only). */
+  passthroughHeaders?: Record<string, string>;
 }): Promise<Response> {
   const { provider, body, signal } = opts;
   let url = opts.url;
+  // Build upstream headers: Content-Type, provider custom headers, then any
+  // allowlisted client headers (passthrough). Passthrough comes LAST so it can
+  // override Content-Type if the client explicitly set it (e.g. multipart).
   const headers: Record<string, string> = {
     'Content-Type': opts.contentType ?? 'application/json',
     ...provider.headers,
+    ...(opts.passthroughHeaders ?? {}),
   };
   // Attach credentials according to the provider's auth scheme.
   // 'none' skips auth entirely (public upstreams); the others inject the key.

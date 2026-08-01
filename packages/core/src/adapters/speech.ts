@@ -11,5 +11,5 @@ import { sendUpstream, upstreamUrl, type AdapterCall } from '../provider.js';
 export async function speech(call: AdapterCall): Promise<Response> {
   const { provider, model, body, signal } = call;
   const url = upstreamUrl(provider, 'speech', model);
-  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal });
+  return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders });
 }

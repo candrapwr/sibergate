@@ -83,6 +83,8 @@ export async function executeRoute(
   route: Route,
   body: Record<string, unknown>,
   signal: AbortSignal,
+  /** Allowlisted client headers to forward to the upstream (set by gateway). */
+  passthroughHeaders?: Record<string, string>,
 ): Promise<ExecuteResult> {
   const routeModality: RouteModality = route.modality ?? 'chat';
   const isToolsTextModality = (m: RouteModality): boolean =>
@@ -185,7 +187,7 @@ export async function executeRoute(
         targetBudgetMs: perTargetBudgetMs,
       });
       const response = await withTargetTimeout(signal, perTargetBudgetMs, (targetSignal) =>
-        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality }),
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders }),
       );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);

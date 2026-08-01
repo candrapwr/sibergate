@@ -13,9 +13,6 @@ import {
   storeSignature,
   getSignature,
   getDefaultSignature,
-  storeReasoning,
-  getReasoning,
-  reasoningKeyFor,
   saveRequestTrace,
   type RequestTraceData,
   type RouteModality,
@@ -53,6 +50,34 @@ const REDACT_HEADERS = new Set([
   'authorization', 'x-api-key', 'api-key', 'cookie', 'set-cookie',
   'proxy-authorization', 'x-auth-token',
 ]);
+
+/**
+ * Client headers that are SAFE to forward to the upstream provider. This is a
+ * strict allowlist: anything not listed here is dropped (secrets, internal
+ * proxy headers, etc.). Operators who need a custom header to reach the LLM
+ * can set it statically per-provider (provider.headers in the DB), or extend
+ * this list. Configurable via SIBERGATE_PASSTHROUGH_HEADERS (comma-separated).
+ */
+const DEFAULT_PASSTHROUGH = [
+  'user-agent',
+  'http-referer',   // OpenRouter attribution
+  'x-title',        // OpenRouter app title
+  'x-request-id',
+  'accept-language',
+];
+const PASSTHROUGH_HEADERS: ReadonlySet<string> = new Set(
+  (process.env.SIBERGATE_PASSTHROUGH_HEADERS?.split(',').map((s) => s.trim().toLowerCase()) ?? DEFAULT_PASSTHROUGH)
+    .filter(Boolean),
+);
+
+/** Extract allowlisted client headers for forwarding to the upstream. */
+function extractPassthroughHeaders(c: Context): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  c.req.raw.headers.forEach((value, key) => {
+    if (PASSTHROUGH_HEADERS.has(key.toLowerCase())) out[key] = value;
+  });
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** Copy a Headers object into a plain record, redacting secret values. */
 function redactHeaders(headers: Headers): Record<string, string> {
@@ -227,38 +252,38 @@ function injectSignaturesIntoMessages(messages: unknown): void {
   }
 }
 
-/* ─── DeepSeek reasoning_content preservation ──────────────────────────────
- * Analog dgn Gemini thought_signature, tapi utk field `reasoning_content` di
- * level assistant MESSAGE (bukan tool_call). DeepSeek thinking-mode WAJIB
- * kirim balik field ini di multi-turn, jika tidak → 400.
- * Capture di response → cache by hash(content) → inject balik di request.
- * No-op utk provider non-DeepSeek (cache kosong utk mereka).
+/* ─── DeepSeek reasoning_content handling ──────────────────────────────────
+ * DeepSeek thinking-mode mengembalikan field non-standard `reasoning_content`
+ * di assistant message. Masalah: history multi-turn lintas-vendor (mis. Gemini
+ * tidak punya, DeepSeek punya) bikin DeepSeek tolak 400 "reasoning_content
+ * must be passed back" krn field ada di sebagian message saja.
+ *
+ * Solusi (lebih aman drpd inject): STRIP `reasoning_content` dari SEMUA
+ * assistant messages sebelum kirim ke upstream. DeepSeek tetap menerima
+ * request (dia generate reasoning baru di response), dan tidak ada masalah
+ * konsistensi krn semua message konsisten tanpa reasoning.
+ *
+ * Response: reasoning_content juga di-strip sebelum kirim ke client supaya
+ * format OpenAI murni (field non-OpenAI).
  */
 
-/** Capture reasoning_content dari response message, strip supaya client format OpenAI murni. */
-function captureAndStripReasoning(message: Record<string, unknown> | undefined | null, providerId: string): void {
+/** Strip reasoning_content dari response message supaya client format OpenAI murni. */
+function captureAndStripReasoning(message: Record<string, unknown> | undefined | null, _providerId: string): void {
   if (!message) return;
-  const reasoning = message.reasoning_content;
-  if (typeof reasoning === 'string' && reasoning) {
-    const key = reasoningKeyFor(message.content);
-    if (key) storeReasoning(key, reasoning, providerId);
-  }
   // Selalu strip reasoning_content dari response ke client (field non-OpenAI).
   // Bila provider bukan thinking-mode, field ini undefined → no-op.
   if (message.reasoning_content !== undefined) delete message.reasoning_content;
 }
 
-/** Inject reasoning_content balik ke assistant messages (request multi-turn) by content hash. */
-function injectReasoningIntoMessages(messages: unknown): void {
+/** Strip reasoning_content dari SEMUA assistant messages sebelum kirim upstream.
+ *  Mencegah error DeepSeek "reasoning_content must be passed back" saat history
+ *  campur vendor (sebagian punya, sebagian tidak). */
+function stripReasoningFromMessages(messages: unknown): void {
   if (!Array.isArray(messages)) return;
   for (const m of messages) {
-    const msg = m as { role?: string; content?: unknown };
-    if (msg?.role !== 'assistant') continue;
-    const key = reasoningKeyFor(msg.content);
-    if (!key) continue;
-    const reasoning = getReasoning(key);
-    if (reasoning) {
-      (msg as { reasoning_content?: string }).reasoning_content = reasoning;
+    const msg = m as { role?: string; reasoning_content?: unknown };
+    if (msg?.role === 'assistant' && msg.reasoning_content !== undefined) {
+      delete msg.reasoning_content;
     }
   }
 }
@@ -361,6 +386,7 @@ export function createApp(configStore: ConfigStore) {
   app.post('/v1/chat/completions', async (c) => {
     const config = configStore.get();
     const requestId = c.get('requestId');
+    const passthroughHeaders = extractPassthroughHeaders(c);
     const startedAt = c.get('startedAt');
 
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
@@ -438,13 +464,11 @@ export function createApp(configStore: ConfigStore) {
         const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
         const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
         const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
-        // DeepSeek streaming reasoning_content: capture by content-hash agar bisa
-        // di-inject balik di request multi-turn berikutnya. (Non-stream di-capture
-        // di captureAndStripReasoning; streaming di sini krn content baru lengkap.)
-        if (res.reasoning) {
-          const rKey = reasoningKeyFor(res.content);
-          if (rKey) storeReasoning(rKey, res.reasoning, servedBy.providerId);
-        }
+        // DeepSeek streaming reasoning_content: di-strip dari stream (di
+        // proxySSEStream verbatim mode, reasoning_content tetap diteruskan apa
+        // adanya ke client — itu by design utk UX thinking). Tapi di request
+        // multi-turn, reasoning_content di-strip semua (stripReasoningFromMessages)
+        // supaya history konsisten & DeepSeek tidak error.
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
         // Capture a trace on the success path too when this stream recovered via
@@ -528,8 +552,8 @@ export function createApp(configStore: ConfigStore) {
             // before upstream sends headers. The heartbeat above keeps the
             // client/proxy connection from looking idle during that phase.
             injectSignaturesIntoMessages(body.messages);
-            injectReasoningIntoMessages(body.messages);
-            const { response, servedBy, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+            stripReasoningFromMessages(body.messages);
+            const { response, servedBy, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
             const upstreamKeyId = servedByKeyId ?? null;
             const effectiveModality = servedBy.modality ?? route.modality ?? 'chat';
             const isResponsesModality = effectiveModality === 'responses';
@@ -592,8 +616,8 @@ export function createApp(configStore: ConfigStore) {
       // Inject Gemini thought_signature balik ke body.messages utk multi-turn
       // tool calling. No-op bila cache kosong (provider non-Gemini / turn pertama).
       injectSignaturesIntoMessages(body.messages);
-      injectReasoningIntoMessages(body.messages);
-      const { response, servedBy, latencyMs, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+      stripReasoningFromMessages(body.messages);
+      const { response, servedBy, latencyMs, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
       const upstreamKeyId = servedByKeyId ?? null;
 
       // Route/target modality 'responses': upstream menerima/mengembalikan format
@@ -775,6 +799,7 @@ async function modalityHandler(
   const config = configStore.get();
   const requestId = c.get('requestId');
   const startedAt = c.get('startedAt');
+  const passthroughHeaders = extractPassthroughHeaders(c);
   const contentType = c.req.header('content-type') ?? '';
 
   // Build the request body. Transcription uses multipart passthrough; others JSON.
@@ -829,7 +854,7 @@ async function modalityHandler(
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
 
     // Forward the body verbatim with the upstream Content-Type (binary or JSON).
@@ -897,6 +922,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   const config = configStore.get();
   const requestId = c.get('requestId');
   const startedAt = c.get('startedAt');
+  const passthroughHeaders = extractPassthroughHeaders(c);
   const path = '/v1/images/generations';
 
   const parsed = await c.req.json().catch(() => null);
@@ -941,7 +967,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
     const upstreamKeyId = servedByKeyId ?? null;
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
     const buf = Buffer.from(await response.arrayBuffer());
@@ -1090,6 +1116,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   const config = configStore.get();
   const requestId = c.get('requestId');
   const startedAt = c.get('startedAt');
+  const passthroughHeaders = extractPassthroughHeaders(c);
 
   // URL matcher wildcard: /v1/generic/* → c.req.path berisi sisa path setelah
   // prefix. Karena route id sekarang boleh multi-segment ('app/secret'), kita
@@ -1167,7 +1194,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
 
     // Forward the upstream response verbatim: status, headers (minus hop-by-hop
     // and the auth the adapter added), and the raw body bytes (binary-safe).
