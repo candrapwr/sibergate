@@ -4,6 +4,40 @@ import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 import { pushConsoleLog } from './console-log.js';
 
 /**
+ * Run `fn` with a fresh AbortController whose timeout is `budgetMs`, while
+ * ALSO propagating an abort from the parent `signal` (client disconnect /
+ * overall route timeout). Whichever fires first wins.
+ *
+ * Returns whatever `fn` resolves to, and always cleans up its timer + parent
+ * listener so the next failover iteration starts from a clean slate.
+ *
+ * This is the crux of per-target timeout: each failover target gets its OWN
+ * budget instead of sharing one signal across all targets (which caused the
+ * first slow target to consume the entire route timeout, leaving the rest
+ * to fail instantly at 0ms).
+ */
+async function withTargetTimeout<T>(
+  parentSignal: AbortSignal,
+  budgetMs: number,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  // If the parent (client disconnect / overall budget) aborts, abort the child
+  // immediately so we stop the in-flight upstream call.
+  const onParentAbort = () => controller.abort();
+  if (parentSignal.aborted) controller.abort();
+  else parentSignal.addEventListener('abort', onParentAbort, { once: true });
+
+  const timer = setTimeout(() => controller.abort(), budgetMs);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    clearTimeout(timer);
+    parentSignal.removeEventListener('abort', onParentAbort);
+  }
+}
+
+/**
  * The routing engine: resolve a client route to a successful upstream Response,
  * applying the route's strategy across its targets — now GENERIC across all
  * modalities (chat, image, speech, transcribe, embed, music).
@@ -89,6 +123,20 @@ export async function executeRoute(
       ? [ordered[0]!, ...usable.filter((t) => t !== ordered[0])].slice(0, Math.max(1, route.maxRetries ?? usable.length))
       : ordered.slice(0, Math.max(1, route.maxRetries ?? usable.length));
 
+  // Overall deadline for the WHOLE route (all targets combined), measured from
+  // now. The route handler passes a parent signal that aborts at route.timeoutMs;
+  // we compute an independent deadline here so per-target budgets are derived
+  // from wall-clock remaining time, not from a shared timer. Min 1s floor so a
+  // near-zero remaining budget still gives each target a fair attempt.
+  const routeBudgetMs = route.timeoutMs ?? 30_000;
+  const routeStart = Date.now();
+  const routeDeadline = routeStart + routeBudgetMs;
+  // Per-target cap: even if there's lots of time left, don't let ONE target
+  // monopolize it — give each at most an equal share of the total. This is the
+  // effective per-target timeout; the adaptive remaining-time split below makes
+  // sure leftover time from a fast fail is reused by later targets.
+  const perTargetCapMs = Math.max(1_000, Math.floor(routeBudgetMs / attempts.length));
+
   let lastErr: unknown;
   let lastTarget: RouteTarget | null = null;
   const trail: FailoverStep[] = [];
@@ -96,6 +144,16 @@ export async function executeRoute(
   for (let attemptIdx = 0; attemptIdx < attempts.length; attemptIdx++) {
     const target = attempts[attemptIdx]!;
     const hasMore = attemptIdx < attempts.length - 1;
+    // Stop failover if the client disconnected (parent signal aborted) or the
+    // overall route budget is exhausted. Without this, after the route deadline
+    // passes each remaining target would still be attempted with the 1s floor
+    // budget — pointless once the caller is gone or time is up.
+    if (signal.aborted || Date.now() >= routeDeadline) {
+      if (!lastErr) {
+        lastErr = new GatewayCallError('timeout', `Route '${route.id}' exceeded its ${routeBudgetMs}ms budget before reaching all targets.`);
+      }
+      break;
+    }
     const baseProvider = config.providers.find((p) => p.id === target.providerId)!;
     // Resolve upstream key: bila target.keyId di-set & key enabled ada, clone
     // provider dgn value key tsb; bila tidak, pakai provider.apiKey default.
@@ -119,11 +177,21 @@ export async function executeRoute(
       : target.modelId;
     try {
       const stepNoBefore = trail.length + 1;
-      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId}`, {
+      // Adaptive per-target budget: whichever is smaller between the equal-share
+      // cap and the wall-clock remaining time. This is what makes failover real:
+      // a route with 30s budget and 4 targets gives each target ~7.5s (not 30s
+      // to the first and 0s to the rest). Leftover time from a fast failure is
+      // automatically reclaimed by the next target via the remaining-time term.
+      const remainingMs = Math.max(0, routeDeadline - Date.now());
+      const targetBudgetMs = Math.max(1_000, Math.min(perTargetCapMs, remainingMs));
+      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId} (budget ${targetBudgetMs}ms)`, {
         route: route.id, step: stepNoBefore, totalSteps: attempts.length,
         provider: target.providerId, model: target.modelId, modality, strategy: route.strategy,
+        targetBudgetMs,
       });
-      const response = await callProvider({ provider, model: upstreamModel, body, signal, modality });
+      const response = await withTargetTimeout(signal, targetBudgetMs, (targetSignal) =>
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality }),
+      );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
       trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs, keyId: key?.id ?? null });
