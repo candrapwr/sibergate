@@ -6,6 +6,7 @@ import {
   executeRoute,
   getRoute,
   logRequest,
+  pushConsoleLog,
   convertResponsesToChat,
   convertChatRequestToToolsText,
   convertToolsTextToChat,
@@ -107,6 +108,25 @@ function stripMessageExtraContent(message: { extra_content?: unknown } | undefin
 
 
 /**
+ * Emit an "incoming" console event the moment a request enters a handler —
+ * before any routing/upstream work. This anchors the start of the lifecycle:
+ *   incoming (client req) → routing (route picked) → upstream (call provider)
+ *   → routing (served/failed) → request (completed)
+ */
+function emitIncoming(c: Context, routeId: string | null, modality: string) {
+  pushConsoleLog('info', 'incoming', `${c.req.method} ${c.req.path} from client`, {
+    requestId: c.get('requestId'),
+    method: c.req.method,
+    path: c.req.path,
+    route: routeId,
+    modality,
+    clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
+    stream: c.req.header('accept')?.includes('text/event-stream') ?? false,
+  });
+}
+
+/**
  * Build the public OpenAI-compatible app.
  * Receives the ConfigStore so every handler reads the LIVE config — admin
  * mutations (hot-reload) are reflected without a restart.
@@ -175,6 +195,8 @@ export function createApp(configStore: ConfigStore) {
       },
       { once: true },
     );
+
+    emitIncoming(c, route.id, route.modality ?? 'chat');
 
     const baseLog = {
       requestId,
@@ -553,6 +575,8 @@ async function modalityHandler(
   const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 60_000);
   c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
 
+  emitIncoming(c, route.id, modality);
+
   const baseLog = {
     requestId,
     method: 'POST',
@@ -657,6 +681,8 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   // di atas max 10x5s polling = 50s.
   const timeout = setTimeout(() => controller.abort(), (route.timeoutMs ?? 300_000));
   c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+
+  emitIncoming(c, route.id, 'image');
 
   const baseLog = {
     requestId,
@@ -856,6 +882,8 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       'model',
     );
   }
+
+  emitIncoming(c, route.id, 'generic');
 
   // Capture the request body bytes verbatim (works for any Content-Type and is
   // empty for GET). __method/__contentType/__path let the adapter forward the

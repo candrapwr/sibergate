@@ -118,6 +118,11 @@ export async function executeRoute(
       ? target.modelId.slice(target.providerId.length + 1)
       : target.modelId;
     try {
+      const stepNoBefore = trail.length + 1;
+      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId}`, {
+        route: route.id, step: stepNoBefore, totalSteps: attempts.length,
+        provider: target.providerId, model: target.modelId, modality, strategy: route.strategy,
+      });
       const response = await callProvider({ provider, model: upstreamModel, body, signal, modality });
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);

@@ -8,7 +8,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
  * because the admin package is browser-bundled and must not pull @sibergate/core.
  */
 export type ConsoleLogLevel = 'info' | 'success' | 'warn' | 'error';
-export type ConsoleLogCategory = 'request' | 'auth' | 'routing' | 'config' | 'system';
+export type ConsoleLogCategory =
+  | 'request'
+  | 'auth'
+  | 'routing'
+  | 'config'
+  | 'system'
+  | 'incoming'
+  | 'upstream';
 
 export interface ConsoleLogEntry {
   id: string;
