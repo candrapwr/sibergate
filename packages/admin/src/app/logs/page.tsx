@@ -72,6 +72,7 @@ export default function LogsPage() {
           <option value="429">429</option>
           <option value="502">502</option>
           <option value="504">504</option>
+          <option value="499">499</option>
         </select>
         <select value={filter.route} onChange={(e) => setFilter({ ...filter, route: e.target.value })} className="h-9 rounded-md border border-border bg-background px-2 text-[12px]">
           <option value="">all routes</option>
@@ -157,7 +158,8 @@ export default function LogsPage() {
 function StatusBadge({ status }: { status: number | null }) {
   if (status == null) return <Badge variant="muted">—</Badge>;
   if (status >= 200 && status < 300) return <Badge variant="success">{status}</Badge>;
-  if (status === 429) return <Badge variant="warning">{status}</Badge>;
+  if (status === 429 || status === 504) return <Badge variant="warning">{status}</Badge>;
+  if (status === 499) return <Badge variant="muted">{status}</Badge>;
   if (status >= 500) return <Badge variant="destructive">{status}</Badge>;
   return <Badge variant="destructive">{status}</Badge>;
 }

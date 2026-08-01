@@ -19,7 +19,7 @@ import {
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { proxySSEStream, proxyResponsesSSEStream, proxyToolsTextSSEStream } from './stream.js';
-import { errorResponse } from './errors.js';
+import { errorResponse, mapUpstreamErrorStatus } from './errors.js';
 import { isAsyncTaskResponse, buildPollUrl, pollTaskUntilDone, buildOpenAIImageResponse } from './image-task.js';
 
 /**
@@ -319,7 +319,7 @@ export function createApp(configStore: ConfigStore) {
 
       const logStreamFailure = (err: unknown) => {
         const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
-        const status = clientAborted ? 499 : e.status ?? 502;
+        const status = mapUpstreamErrorStatus(e, clientAborted);
         logRequest({
           ...baseLog,
           status,
@@ -528,7 +528,7 @@ export function createApp(configStore: ConfigStore) {
       return c.json(json);
     } catch (err) {
       const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
-      const status = clientAborted ? 499 : e.status ?? 502;
+      const status = mapUpstreamErrorStatus(e, clientAborted);
       const latencyMs = Math.round(performance.now() - startedAt);
       logRequest({
         ...baseLog,
@@ -675,7 +675,7 @@ async function modalityHandler(
     });
   } catch (err) {
     const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
-    const status = e.status ?? 502;
+    const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
       ...baseLog,
@@ -840,7 +840,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
     });
   } catch (err) {
     const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
-    const status = e.status ?? 502;
+    const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
       ...baseLog,
@@ -1003,7 +1003,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
     });
   } catch (err) {
     const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
-    const status = e.status ?? 502;
+    const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
     logRequest({
       ...baseLog,
