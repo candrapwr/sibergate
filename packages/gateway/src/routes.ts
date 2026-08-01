@@ -185,7 +185,10 @@ export function createApp(configStore: ConfigStore) {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 30_000);
+    // Per-target timeout is enforced inside executeRoute (each target gets the
+    // full route.timeoutMs as its own budget). This parent controller only
+    // propagates a CLIENT disconnect — it must NOT abort on a route-level
+    // timer, otherwise later failover targets would be cut short.
     let clientAborted = false;
     c.req.raw.signal?.addEventListener(
       'abort',
@@ -346,7 +349,6 @@ export function createApp(configStore: ConfigStore) {
             }
           } finally {
             if (heartbeat) clearInterval(heartbeat);
-            clearTimeout(timeout);
             close();
           }
         },
@@ -484,8 +486,6 @@ export function createApp(configStore: ConfigStore) {
       const type =
         clientAborted ? 'client_closed_request' : e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
       return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
-    } finally {
-      clearTimeout(timeout);
     }
   });
 
@@ -571,8 +571,9 @@ async function modalityHandler(
     );
   }
 
+  // Per-target timeout is enforced inside executeRoute. This parent controller
+  // only propagates a client disconnect.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 60_000);
   c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
 
   emitIncoming(c, route.id, modality);
@@ -630,8 +631,6 @@ async function modalityHandler(
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -898,8 +897,9 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   };
   if (raw) body.__raw = raw;
 
+  // Per-target timeout is enforced inside executeRoute. This parent controller
+  // only propagates a client disconnect.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 60_000);
   c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
 
   const baseLog = {
@@ -959,7 +959,5 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
-  } finally {
-    clearTimeout(timeout);
   }
 }
