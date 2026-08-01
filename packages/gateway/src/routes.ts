@@ -13,6 +13,9 @@ import {
   storeSignature,
   getSignature,
   getDefaultSignature,
+  storeReasoning,
+  getReasoning,
+  reasoningKeyFor,
   saveRequestTrace,
   type RequestTraceData,
   type RouteModality,
@@ -253,38 +256,50 @@ function injectSignaturesIntoMessages(messages: unknown): void {
 }
 
 /* ─── DeepSeek reasoning_content handling ──────────────────────────────────
- * DeepSeek thinking-mode mengembalikan field non-standard `reasoning_content`
- * di assistant message. Masalah: history multi-turn lintas-vendor (mis. Gemini
- * tidak punya, DeepSeek punya) bikin DeepSeek tolak 400 "reasoning_content
- * must be passed back" krn field ada di sebagian message saja.
+ * DeepSeek thinking-mode mengembalikan field non-standard `reasoning_content`.
+ * Aturan resmi (api-docs.deepseek.com/guides/thinking_mode):
+ *   - Assistant message TANPA tool_calls → reasoning_content TIDAK wajib
+ *   - Assistant message DENGAN tool_calls → reasoning_content WAJIB di-pass
+ *     back di request berikutnya. Kalau hilang → 400 error.
  *
- * Solusi (lebih aman drpd inject): STRIP `reasoning_content` dari SEMUA
- * assistant messages sebelum kirim ke upstream. DeepSeek tetap menerima
- * request (dia generate reasoning baru di response), dan tidak ada masalah
- * konsistensi krn semua message konsisten tanpa reasoning.
- *
- * Response: reasoning_content juga di-strip sebelum kirim ke client supaya
- * format OpenAI murni (field non-OpenAI).
+ * Strategi hybrid:
+ *   1. Response: capture reasoning_content by content-hash, lalu STRIP dari
+ *      response ke client (format OpenAI murni).
+ *   2. Request: utk messages DENGAN tool_calls, inject reasoning_content balik
+ *      dari cache (by content-hash). Utk messages TANPA tool_calls, biarkan
+ *      kosong (tidak wajib per docs DeepSeek). Ini juga handle cross-vendor:
+ *      messages dari Gemini/Qwen (yg tdk punya reasoning DeepSeek) tetap aman
+ *      krn tdk ada tool_calls DeepSeek yg expect reasoning.
  */
 
-/** Strip reasoning_content dari response message supaya client format OpenAI murni. */
-function captureAndStripReasoning(message: Record<string, unknown> | undefined | null, _providerId: string): void {
+/** Capture reasoning_content dari response message, strip supaya client format OpenAI murni. */
+function captureAndStripReasoning(message: Record<string, unknown> | undefined | null, providerId: string): void {
   if (!message) return;
+  const reasoning = message.reasoning_content;
+  if (typeof reasoning === 'string' && reasoning) {
+    const key = reasoningKeyFor(message.content);
+    if (key) storeReasoning(key, reasoning, providerId);
+  }
   // Selalu strip reasoning_content dari response ke client (field non-OpenAI).
-  // Bila provider bukan thinking-mode, field ini undefined → no-op.
   if (message.reasoning_content !== undefined) delete message.reasoning_content;
 }
 
-/** Strip reasoning_content dari SEMUA assistant messages sebelum kirim upstream.
- *  Mencegah error DeepSeek "reasoning_content must be passed back" saat history
- *  campur vendor (sebagian punya, sebagian tidak). */
-function stripReasoningFromMessages(messages: unknown): void {
+/** Inject reasoning_content balik ke assistant messages DENGAN tool_calls saja.
+ *  Messages tanpa tool_calls tidak di-inject (tdk wajib per docs DeepSeek,
+ *  dan menghindari konflik cross-vendor dgn history dari provider lain). */
+function restoreReasoningForToolCalls(messages: unknown): void {
   if (!Array.isArray(messages)) return;
   for (const m of messages) {
-    const msg = m as { role?: string; reasoning_content?: unknown };
-    if (msg?.role === 'assistant' && msg.reasoning_content !== undefined) {
-      delete msg.reasoning_content;
-    }
+    const msg = m as { role?: string; content?: unknown; tool_calls?: unknown[]; reasoning_content?: string };
+    if (msg?.role !== 'assistant') continue;
+    // Hanya inject bila message punya tool_calls (reasoning wajib utk ini).
+    if (!Array.isArray(msg.tool_calls) || msg.tool_calls.length === 0) continue;
+    // Sudah ada reasoning_content? skip (client mungkin kirim sendiri).
+    if (msg.reasoning_content !== undefined) continue;
+    const key = reasoningKeyFor(msg.content);
+    if (!key) continue;
+    const reasoning = getReasoning(key);
+    if (reasoning) msg.reasoning_content = reasoning;
   }
 }
 
@@ -465,10 +480,12 @@ export function createApp(configStore: ConfigStore) {
         const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
         const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
         // DeepSeek streaming reasoning_content: di-strip dari stream (di
-        // proxySSEStream verbatim mode, reasoning_content tetap diteruskan apa
-        // adanya ke client — itu by design utk UX thinking). Tapi di request
-        // multi-turn, reasoning_content di-strip semua (stripReasoningFromMessages)
-        // supaya history konsisten & DeepSeek tidak error.
+        // DeepSeek streaming reasoning_content: capture by content-hash agar bisa
+        // di-restore di request multi-turn berikutnya (utk messages dgn tool_calls).
+        if (res.reasoning) {
+          const rKey = reasoningKeyFor(res.content);
+          if (rKey) storeReasoning(rKey, res.reasoning, servedBy.providerId);
+        }
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
         // Capture a trace on the success path too when this stream recovered via
@@ -552,7 +569,7 @@ export function createApp(configStore: ConfigStore) {
             // before upstream sends headers. The heartbeat above keeps the
             // client/proxy connection from looking idle during that phase.
             injectSignaturesIntoMessages(body.messages);
-            stripReasoningFromMessages(body.messages);
+            restoreReasoningForToolCalls(body.messages);
             const { response, servedBy, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
             const upstreamKeyId = servedByKeyId ?? null;
             const effectiveModality = servedBy.modality ?? route.modality ?? 'chat';
@@ -616,7 +633,7 @@ export function createApp(configStore: ConfigStore) {
       // Inject Gemini thought_signature balik ke body.messages utk multi-turn
       // tool calling. No-op bila cache kosong (provider non-Gemini / turn pertama).
       injectSignaturesIntoMessages(body.messages);
-      stripReasoningFromMessages(body.messages);
+      restoreReasoningForToolCalls(body.messages);
       const { response, servedBy, latencyMs, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
       const upstreamKeyId = servedByKeyId ?? null;
 
