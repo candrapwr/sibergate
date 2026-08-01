@@ -131,6 +131,8 @@ export interface TrailStep {
   status?: number;
   errorCode?: string;
   errorMessage?: string;
+  /** Body response upstream lengkap saat step gagal (audit). */
+  upstreamBody?: string | null;
   latencyMs: number;
 }
 

@@ -262,6 +262,11 @@ function FailoverTrail({ metadata }: { metadata: string | null }) {
                   {step.errorMessage.slice(0, 150)}
                 </div>
               )}
+              {!ok && step.upstreamBody && (
+                <pre className="ml-7 mt-0.5 max-h-32 overflow-auto rounded border border-border/50 bg-background px-2 py-1 text-[10px] leading-tight whitespace-pre-wrap break-all text-destructive/80">
+                  {step.upstreamBody.slice(0, 400)}
+                </pre>
+              )}
               {i < trail.length - 1 && (
                 <div className="ml-3 flex items-center gap-1 py-0.5 text-[10px] text-muted-foreground/50">
                   <ArrowRight size={10} /> failover to next target

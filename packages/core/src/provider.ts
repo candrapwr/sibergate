@@ -155,9 +155,21 @@ export async function sendUpstream(opts: {
     try {
       const ct = res.headers.get('content-type') ?? '';
       if (ct.includes('application/json')) {
-        const errBody = (await res.clone().json()) as { error?: { message?: string } | string };
-        detail = typeof errBody.error === 'string' ? errBody.error : errBody.error?.message ?? '';
-        rawBody = JSON.stringify(errBody).slice(0, 1000);
+        const parsed = await res.clone().json();
+        // Error body dapat berupa object {error:{message}} atau ARRAY
+        // [{"error":{...}}] (Gemini OpenAI-compat sering balas array). Resolve
+        // ke elemen error pertama supaya detail message tidak hilang.
+        const errBody = (Array.isArray(parsed) ? parsed[0] : parsed) as
+          | { error?: { message?: string } | string }
+          | undefined;
+        detail = errBody?.error
+          ? typeof errBody.error === 'string'
+            ? errBody.error
+            : errBody.error.message ?? ''
+          : typeof parsed === 'string'
+            ? parsed
+            : '';
+        rawBody = JSON.stringify(parsed).slice(0, 1000);
       } else {
         rawBody = (await res.clone().text()).slice(0, 1000);
         detail = rawBody.slice(0, 200);
