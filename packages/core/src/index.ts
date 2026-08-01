@@ -25,6 +25,7 @@ export { recordLatency, recordFailure, getLatency, hasLatencyEstimate, resetLate
 export {
   storeSignature,
   getSignature,
+  getDefaultSignature,
   listSignatures,
   resetSignatures,
   type SignatureList,

@@ -31,9 +31,26 @@ interface CachedSignature {
 const cache = new Map<string, CachedSignature>(); // key: tool_call.id
 
 /**
+ * Dynamic default signature fallback — per-provider. Saat gateway capture
+ * signature pertama yg valid dari sebuah provider, disimpan jg sbg default.
+ * Dipakai saat cache miss by-id (mis. server restart di tengah conversation
+ * multi-turn aktif, shg signature by-id hilang). Inject default lebih baik
+ * drpd kosong: Google saat ini menerima signature non-valid, dan default yg
+ * berasal dari provider yg sama lebih mungkin diterima drpd placeholder acak.
+ *
+ * Ini mekanisme anti-restart: signature asli (by-id) = fidelity tinggi;
+ * default fallback = safety net. Mirip strategi 9Router (static default) tapi
+ * dynamic — nilai default didapat dari provider sendiri, bukan hardcode.
+ */
+const defaultByProvider = new Map<string, { signature: string; createdAt: number }>();
+
+/**
  * Simpan signature utk sebuah tool_call.id. Evict entry terlama bila cap tercapai
  * (Map maintain insertion order di JS, jadi iterasi pertama = tertua). Insertion-
  * order juga dipakai sbg LRU kasar: get() re-insert utk update recency (opsional).
+ *
+ * Juga update default provider (fallback anti-restart) bila signature ini lebih
+ * baru dari yg tersimpan.
  */
 export function storeSignature(toolCallId: string, signature: string, providerId: string): void {
   // Cap: bila sudah penuh DAN id baru (bukan update), evict entry tertua.
@@ -41,7 +58,13 @@ export function storeSignature(toolCallId: string, signature: string, providerId
     const oldest = cache.keys().next().value;
     if (oldest) cache.delete(oldest);
   }
-  cache.set(toolCallId, { signature, providerId, createdAt: Date.now() });
+  const now = Date.now();
+  cache.set(toolCallId, { signature, providerId, createdAt: now });
+  // Anti-restart fallback: simpan/refresh default utk provider ini.
+  const prev = defaultByProvider.get(providerId);
+  if (!prev || now > prev.createdAt) {
+    defaultByProvider.set(providerId, { signature, createdAt: now });
+  }
 }
 
 /**
@@ -59,6 +82,21 @@ export function getSignature(toolCallId: string): string | null {
   // Re-insert supaya recency ter-update (LRU-ish).
   cache.delete(toolCallId);
   cache.set(toolCallId, entry);
+  return entry.signature;
+}
+
+/**
+ * Ambil signature DEFAULT utk provider (anti-restart fallback). Dipakai saat
+ * getSignature(id) miss (cache hilang krn restart / sesi lama). Return null bila
+ * provider belum pernah lihat signature sama sekali (mis. fresh start total).
+ */
+export function getDefaultSignature(providerId: string): string | null {
+  const entry = defaultByProvider.get(providerId);
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > TTL_MS) {
+    defaultByProvider.delete(providerId); // basi
+    return null;
+  }
   return entry.signature;
 }
 
@@ -94,5 +132,6 @@ export function listSignatures(): SignatureList {
 export function resetSignatures(): { cleared: number } {
   const cleared = cache.size;
   cache.clear();
+  defaultByProvider.clear();
   return { cleared };
 }

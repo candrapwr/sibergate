@@ -12,6 +12,7 @@ import {
   convertToolsTextToChat,
   storeSignature,
   getSignature,
+  getDefaultSignature,
   storeReasoning,
   getReasoning,
   reasoningKeyFor,
@@ -146,6 +147,15 @@ function stripSignature(tc: ToolCall | undefined): void {
  * assistant message dgn tool_calls, lookup signature by tool_call.id di cache,
  * set extra_content bila ada. Body pass-by-reference sampai adapter → sampai
  * upstream. No-op utk provider non-Gemini (cache kosong utk id mereka).
+ *
+ * HYBRID anti-restart: bila lookup by-id MISS (cache hilang krn server restart
+ * atau sesi lama), fallback ke signature DEFAULT provider Gemini (signature
+ * valid pertama yg pernah di-capture utk provider tsb). Lebih baik inject
+ * default drpd kosong — Google saat ini menerima signature non-valid, dan
+ * signature default (dari provider yg sama) lebih mungkin diterima drpd kosong.
+ * Hanya berlaku bila target akhirnya provider Gemini (dideteksi saat servedBy
+ * sudah diketahui di handler — di sini kita inject untuk SEMUA provider krn
+ * cache hanya berisi signature Gemini; provider lain no-op).
  */
 function injectSignaturesIntoMessages(messages: unknown): void {
   if (!Array.isArray(messages)) return;
@@ -154,7 +164,12 @@ function injectSignaturesIntoMessages(messages: unknown): void {
     if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
     for (const tc of msg.tool_calls) {
       if (!tc?.id) continue;
-      const sig = getSignature(tc.id);
+      // 1) Signature ASLI by-id (fidelity tinggi).
+      let sig = getSignature(tc.id);
+      // 2) Fallback: default provider Gemini (anti-restart). Coba provider Gemini
+      //    yg umum dulu; getDefaultSignature return null bila provider belum pernah
+      //    lihat signature (fresh start total → no-op, biarkan apa adanya).
+      if (!sig) sig = getDefaultSignature('gemini') ?? getDefaultSignature('openrouter');
       if (sig) {
         // Pertahankan extra_content lain bila ada; set path google.thought_signature.
         tc.extra_content = { ...(tc.extra_content ?? {}), google: { thought_signature: sig } };
