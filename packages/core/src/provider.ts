@@ -182,6 +182,35 @@ export async function sendUpstream(opts: {
       { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null },
     );
   }
+
+  // Cloudflare/CDN/proxy error pages: upstream can reply with status 200 OK
+  // (interstitial / cached challenge) OR a 5xx, but the body is an HTML error
+  // page instead of the JSON/SSE the API should return. res.ok being true lets
+  // these slip past the check above and the raw HTML gets forwarded verbatim to
+  // the client. Detect by Content-Type and convert to a proper GatewayCallError
+  // so the engine can fail over (or the gateway returns an OpenAI-compat JSON
+  // error). No SiberGate adapter legitimately expects text/html.
+  const responseCt = res.headers.get('content-type') ?? '';
+  if (responseCt.includes('text/html')) {
+    let htmlBody = '';
+    try {
+      htmlBody = (await res.clone().text()).slice(0, 1000);
+    } catch {
+      /* ignore */
+    }
+    const title = htmlBody.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim();
+    const htmlRedactedUrl = url.replace(/(api_key|key|token|access_token)=[^&]+/gi, '$1=***');
+    console.warn(
+      `[sibergate] upstream ${provider.id} returned HTML (not JSON/SSE)\n` +
+        `  status: ${res.status}\n  URL: ${htmlRedactedUrl}\n  body: ${htmlBody.slice(0, 200) || '(empty)'}`,
+    );
+    throw new GatewayCallError(
+      'server_error',
+      `${provider.id} returned an HTML page instead of an API response${title ? `: ${title}` : ''} (likely a proxy/CDN error page)`.slice(0, 400),
+      res.status,
+      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null },
+    );
+  }
   return res;
 }
 
