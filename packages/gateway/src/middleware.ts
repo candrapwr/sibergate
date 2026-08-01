@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
-import { extractBearer, getDb, hashApiKey, touchApiKey } from '@sibergate/core';
+import { extractBearer, getDb, hashApiKey, touchApiKey, pushConsoleLog } from '@sibergate/core';
 
 /** Vars attached to each request context. */
 export interface Vars {
@@ -35,7 +35,11 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
       return;
     }
     const token = extractBearer(c.req.header('authorization'));
+    const clientIp = c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
     if (!token) {
+      pushConsoleLog('error', 'auth', `missing API key on ${c.req.method} ${path}`, {
+        requestId: c.get('requestId'), method: c.req.method, path, clientIp, reason: 'missing_key',
+      });
       return c.json(
         {
           error: {
@@ -52,6 +56,10 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
       .prepare('SELECT id, enabled FROM api_keys WHERE key_hash = ?')
       .get(hashApiKey(token)) as { id: string; enabled: number } | undefined;
     if (!row || row.enabled !== 1) {
+      pushConsoleLog('error', 'auth', `invalid API key on ${c.req.method} ${path}`, {
+        requestId: c.get('requestId'), method: c.req.method, path, clientIp,
+        reason: !row ? 'unknown_key' : 'disabled_key',
+      });
       return c.json(
         { error: { message: 'Invalid API key.', type: 'authentication_error', param: null, code: 'invalid_api_key' } },
         401,

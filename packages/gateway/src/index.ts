@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { ConfigStore, getDb, loadDotEnv } from '@sibergate/core';
+import { ConfigStore, getDb, loadDotEnv, pushConsoleLog } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { createApp } from './routes.js';
 import { createAdminRouter } from './admin-routes.js';
@@ -63,6 +63,9 @@ async function main() {
   app.onError((err, c) => {
     const e = err as Error;
     console.error('[sibergate] unhandled error:', e.message);
+    pushConsoleLog('error', 'system', `unhandled error: ${e.message}`, {
+      method: c.req.method, path: new URL(c.req.url).pathname, stack: e.stack?.slice(0, 500),
+    });
     return c.json(
       { error: { message: 'Internal server error.', type: 'internal_error', param: null, code: null } },
       500,
@@ -77,6 +80,13 @@ async function main() {
     console.log(`   Models: ${cfg.models.length}`);
     console.log(`   Client auth: ${cfg.apiKeys.length > 0 ? 'enabled' : 'OPEN (run: npm run seed)'}`);
     console.log(`   Admin API: /admin/* (key ends …${adminKey.slice(-6)})`);
+    pushConsoleLog('info', 'system', `SiberGate listening on http://${info.address}:${info.port}`, {
+      port: info.port, address: info.address,
+      providers: cfg.providers.map((p) => p.id),
+      routes: cfg.routes.map((r) => r.id),
+      models: cfg.models.length,
+      clientAuth: cfg.apiKeys.length > 0 ? 'enabled' : 'open',
+    });
   });
 
   const nodeServer = server as unknown as {

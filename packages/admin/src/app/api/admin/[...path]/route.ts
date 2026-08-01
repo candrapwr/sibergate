@@ -1,6 +1,11 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+// Force dynamic: this proxy forwards arbitrary admin requests (including the
+// long-lived /logs/stream SSE). It must never be statically optimized/cached.
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
 /**
  * Server-side proxy: browser → /api/admin/<path> → gateway /admin/<path>.
  *

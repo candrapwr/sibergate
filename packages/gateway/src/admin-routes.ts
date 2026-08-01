@@ -11,9 +11,13 @@ import {
   deleteUser,
   listUsers,
   parseBackup,
+  pushConsoleLog,
+  recentConsoleLogs,
   restoreBackup,
   setUserStatus,
+  subscribeConsoleLogs,
   updateUser,
+  type ConsoleLogEntry,
   type SiberGateConfig,
 } from '@sibergate/core';
 import { adminAuthMiddleware } from './admin-middleware.js';
@@ -33,8 +37,23 @@ export function createAdminRouter(configStore: ConfigStore) {
   // All admin routes require the admin key.
   app.use('*', adminAuthMiddleware(process.env.SIBERGATE_ADMIN_KEY!));
 
+  // Per-stream cleanup handles (heartbeat + listener unsubscribe), keyed by the
+  // ReadableStream controller so cancel() can tear a stream down cleanly.
+  const cleanupMap = new WeakMap<ReadableStreamDefaultController, () => void>();
+
   // Reload after a mutation so the public app sees the change immediately.
-  const reload = () => configStore.reload();
+  // Wrapped to emit a config_changed event (single hook covers ~25 handlers).
+  const reload = () => {
+    const cfg = configStore.reload();
+    pushConsoleLog('info', 'config', `config reloaded (v${configStore.getVersion()})`, {
+      version: configStore.getVersion(),
+      providers: cfg.providers.length,
+      models: cfg.models.length,
+      routes: cfg.routes.length,
+      apiKeys: cfg.apiKeys.length,
+    });
+    return cfg;
+  };
 
   /* ─────────────────────────── /admin/system ─────────────────────────── */
   app.get('/system', (c) => {
@@ -301,6 +320,60 @@ export function createAdminRouter(configStore: ConfigStore) {
   app.get('/logs', (c) => {
     const limit = Math.min(Number(c.req.query('limit') ?? 50), 500);
     return c.json({ data: admin.recentRequests(limit) });
+  });
+
+  // Live console stream (SSE). Sends the ring-buffer snapshot first, then each
+  // new event as it is pushed. Reuses the ReadableStream + heartbeat pattern
+  // from routes.ts. Authed by the admin key (injected by the Next.js proxy),
+  // so the browser never holds the secret — only its session cookie.
+  app.get('/logs/stream', (c) => {
+    const heartbeatMsRaw = Number(process.env.SIBERGATE_SSE_HEARTBEAT_MS ?? 10_000);
+    const heartbeatMs = Number.isFinite(heartbeatMsRaw) && heartbeatMsRaw > 0 ? heartbeatMsRaw : 10_000;
+    const encoder = new TextEncoder();
+    const enqueue = (controller: ReadableStreamDefaultController, chunk: string) => {
+      try {
+        controller.enqueue(encoder.encode(chunk));
+      } catch {
+        /* controller already closed */
+      }
+    };
+
+    const readable = new ReadableStream<Uint8Array>({
+      start(controller) {
+        enqueue(controller, ': connected\n\n');
+        // 1) Seed with the current buffer snapshot (oldest → newest).
+        for (const entry of recentConsoleLogs()) {
+          enqueue(controller, `data: ${JSON.stringify(entry)}\n\n`);
+        }
+        // 2) Forward every NEW log pushed after subscribe.
+        const listener = (entry: ConsoleLogEntry) => {
+          enqueue(controller, `data: ${JSON.stringify(entry)}\n\n`);
+        };
+        const unsubscribe = subscribeConsoleLogs(listener);
+        // Heartbeat keeps proxies from timing the idle connection out.
+        const heartbeat = setInterval(() => enqueue(controller, ': ping\n\n'), heartbeatMs);
+        // Cleanup runs when the client disconnects (stream cancel/close).
+        // Stored on the controller closure so cancel() can reach it.
+        cleanupMap.set(controller, () => {
+          clearInterval(heartbeat);
+          unsubscribe();
+        });
+      },
+      cancel(controller) {
+        const cleanup = cleanupMap.get(controller);
+        if (cleanup) {
+          cleanup();
+          cleanupMap.delete(controller);
+        }
+      },
+    });
+
+    return c.newResponse(readable, 200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
   });
 
   app.get('/stats', (c) => c.json(admin.usageStats()));

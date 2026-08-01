@@ -1,4 +1,5 @@
 import { getDb } from './db.js';
+import { pushConsoleLog, type ConsoleLogLevel } from './console-log.js';
 
 /**
  * Request logger (writes to the shared SQLite `requests` table).
@@ -69,6 +70,42 @@ export function logRequest(entry: LogRequest): void {
       });
   } catch (err) {
     console.error('[sibergate] failed to write log:', (err as Error).message);
+  }
+
+  // Mirror to the live console bus. Single hook covers every call site
+  // (all 14 logRequest() invocations across the gateway route handlers).
+  try {
+    const status = entry.status;
+    const level: ConsoleLogLevel =
+      status >= 500 ? 'error' : status >= 400 ? 'warn' : 'success';
+    const target = entry.provider && entry.model ? `${entry.provider}/${entry.model}` : null;
+    const parts = [
+      `${entry.method} ${entry.path}`,
+      `→ ${status}`,
+      `${entry.latencyMs}ms`,
+      entry.route ? `[${entry.route}]` : null,
+      target ? `· ${target}` : null,
+    ].filter(Boolean);
+    pushConsoleLog(level, 'request', parts.join(' '), {
+      requestId: entry.requestId,
+      method: entry.method,
+      path: entry.path,
+      status,
+      latencyMs: entry.latencyMs,
+      route: entry.route ?? null,
+      provider: entry.provider ?? null,
+      model: entry.model ?? null,
+      strategy: entry.strategy ?? null,
+      streamed: entry.streamed ?? false,
+      modality: entry.modality ?? null,
+      totalTokens: entry.totalTokens ?? 0,
+      costUsd: entry.costUsd ?? 0,
+      errorCode: entry.errorCode ?? null,
+      errorMessage: entry.errorMessage ?? null,
+      clientIp: entry.clientIp ?? null,
+    });
+  } catch {
+    /* swallow — console mirror must never break the request */
   }
 }
 

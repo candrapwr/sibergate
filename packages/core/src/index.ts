@@ -31,6 +31,14 @@ export {
   type SignatureListEntry,
 } from './signatures.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
+export {
+  pushConsoleLog,
+  recentConsoleLogs,
+  subscribeConsoleLogs,
+  type ConsoleLogEntry,
+  type ConsoleLogLevel,
+  type ConsoleLogCategory,
+} from './console-log.js';
 export { ConfigStore } from './config-store.js';
 export * as admin from './admin.js';
 export { ConflictError, ValidationError } from './admin.js';

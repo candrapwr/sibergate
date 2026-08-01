@@ -1,6 +1,7 @@
 import type { Provider, Route, RouteModality, RouteTarget, SiberGateConfig } from './types.js';
 import { getLatency, hasLatencyEstimate, recordFailure, recordLatency } from './latency.js';
 import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
+import { pushConsoleLog } from './console-log.js';
 
 /**
  * The routing engine: resolve a client route to a successful upstream Response,
@@ -73,6 +74,9 @@ export async function executeRoute(
   });
 
   if (usable.length === 0) {
+    pushConsoleLog('error', 'routing', `route '${route.id}' has no enabled targets`, {
+      route: route.id, reason: 'no_targets',
+    });
     throw new GatewayCallError(
       'no_targets',
       `Route '${route.id}' has no enabled targets that support its modality.`,
@@ -89,7 +93,9 @@ export async function executeRoute(
   let lastTarget: RouteTarget | null = null;
   const trail: FailoverStep[] = [];
 
-  for (const target of attempts) {
+  for (let attemptIdx = 0; attemptIdx < attempts.length; attemptIdx++) {
+    const target = attempts[attemptIdx]!;
+    const hasMore = attemptIdx < attempts.length - 1;
     const baseProvider = config.providers.find((p) => p.id === target.providerId)!;
     // Resolve upstream key: bila target.keyId di-set & key enabled ada, clone
     // provider dgn value key tsb; bila tidak, pakai provider.apiKey default.
@@ -116,6 +122,11 @@ export async function executeRoute(
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
       trail.push({ provider: target.providerId, model: target.modelId, outcome: 'served', latencyMs, keyId: key?.id ?? null });
+      const stepNo = trail.length;
+      pushConsoleLog('success', 'routing', `step #${stepNo} served by ${target.providerId}/${target.modelId} (${latencyMs}ms)`, {
+        route: route.id, step: stepNo, totalSteps: attempts.length,
+        provider: target.providerId, model: target.modelId, latencyMs, outcome: 'served',
+      });
       return { response, servedBy: target, latencyMs, trail, servedByKeyId: key?.id ?? null };
     } catch (err) {
       const latencyMs = Date.now() - start;
@@ -131,6 +142,19 @@ export async function executeRoute(
         latencyMs,
         keyId: key?.id ?? null,
       });
+      const stepNo = trail.length;
+      const failMsg = ge.status ? `${ge.code ?? 'error'} ${ge.status}` : (ge.code ?? 'error');
+      pushConsoleLog(
+        'warn',
+        'routing',
+        `step #${stepNo} ${target.providerId}/${target.modelId} failed (${failMsg})${hasMore ? ' → failover' : ' (last target)'}`,
+        {
+          route: route.id, step: stepNo, totalSteps: attempts.length,
+          provider: target.providerId, model: target.modelId, latencyMs, outcome: 'failed',
+          status: ge.status, errorCode: ge.code, errorMessage: ge.message?.slice(0, 300),
+          failover: hasMore,
+        },
+      );
       lastErr = err;
       if (!isFailoverable(err)) {
         if (err instanceof GatewayCallError)
@@ -146,8 +170,14 @@ export async function executeRoute(
   if (lastErr instanceof GatewayCallError && lastTarget) {
     lastErr.servedBy = { provider: lastTarget.providerId, model: lastTarget.modelId, keyId: lastTarget.keyId ?? null };
     lastErr.trail = trail;
+    pushConsoleLog('error', 'routing', `route '${route.id}' exhausted all ${trail.length} target(s) — last error`, {
+      route: route.id, steps: trail.length, lastError: lastErr.message?.slice(0, 300),
+    });
     throw lastErr;
   }
+  pushConsoleLog('error', 'routing', `route '${route.id}' all targets failed`, {
+    route: route.id, steps: trail.length,
+  });
   const allErr = new GatewayCallError('all_failed', 'All targets failed.');
   allErr.trail = trail;
   throw allErr;

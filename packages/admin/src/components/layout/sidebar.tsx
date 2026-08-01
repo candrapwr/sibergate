@@ -16,6 +16,7 @@ import {
   Clapperboard,
   LogOut,
   Users,
+  Terminal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSystem, useReload } from '@/lib/queries';
@@ -31,6 +32,7 @@ const NAV = [
   { href: '/api-keys', label: 'API Keys', icon: KeyRound },
   { href: '/users', label: 'Users', icon: Users },
   { href: '/logs', label: 'Logs', icon: ScrollText },
+  { href: '/console', label: 'Console', icon: Terminal },
   { href: '/playground', label: 'Chat Playground', icon: MessageSquare },
   { href: '/playground/media', label: 'Media Lab', icon: Clapperboard },
   { href: '/settings', label: 'Settings', icon: Settings },
