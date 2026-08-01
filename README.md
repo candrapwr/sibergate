@@ -79,7 +79,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🛡️ Anti-HTML error page** — saat upstream (lewat Cloudflare/CDN/proxy) membalas halaman HTML error (status 5xx atau bahkan `200 OK` interstitial), SiberGate menangkapnya di sumber dan mengembalikan error JSON OpenAI-compat yang rapi ke klien — **tidak ada HTML mentah yang bocor**. Failover tetap jalan; body HTML tersimpan di log untuk debugging.
 - **🖥️ Console real-time** — panel "Console" menampilkan **semua event gateway** secara live via SSE streaming: request masuk, failover per target, auth failure, config changes, error sistem — semuanya <1 detik, bukan polling. In-memory ring buffer (hilang saat restart), tidak duplikasi tabel SQLite.
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli (default maupun tambahan) di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log. Plaintext tidak pernah dikembalikan API — hanya label + prefix redacted.
-- **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa.
+- **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa. Saat upstream error terjadi (termasuk yg sukses failover), **raw request lengkap** (URL client, headers teredact, body, upstream call) disimpan otomatis ke file per-request di `request_traces/` — bukan DB, jadi DB tetap ramping. Di drawer Logs, klik **"View raw request"** untuk membuka modal berisi request asli + respons upstream yg gagal.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
@@ -496,6 +496,59 @@ Log ditulis ke `./logs/` (sudah di-gitignore). Port admin tetap dibaca dari
 seperti mode dev.
 
 ---
+
+## 🗂️ Raw request trace (debugging upstream error)
+
+Saat terjadi **upstream error** — baik gagal total (status 5xx/4xx) maupun
+**sukses setelah failover** (ada target gagal di trail) — SiberGate otomatis
+menyimpan **raw request lengkap** ke file per-request di disk. Ini membantu
+operator mereproduksi & mendiagnosa error provider tanpa harus meneak isi
+request dari log DB.
+
+### Kenapa file, bukan DB?
+Raw request body (messages, tools, header) bisa besar. Menyimpannya per-request
+di SQLite akan membuat DB membengkak dengan cepat. Solusinya: **satu file `.json`
+per request**, disimpan di `<cwd>/request_traces/` (override via
+`SIBERGATE_TRACE_DIR`). DB tetap ramping — hanya menyimpan flag `metadata.hasTrace`
+agar UI tahu kapan menampilkan link "View raw request".
+
+### Isi file `request_traces/<requestId>.json`
+```json
+{
+  "requestId": "uuid",
+  "ts": "2026-08-02T...",
+  "client": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "ip": "1.2.3.4",
+    "headers": { "authorization": "Bearer ***", "content-type": "..." }
+  },
+  "body": { "model": "...", "messages": [...], "tools": [...] },
+  "upstream": { "url": "https://api.gemini.com/...?key=***", "status": 400, "responseBody": "..." },
+  "route": "nebula/ds-flash"
+}
+```
+**Secrets di-redact:** `Authorization`, `x-api-key`, `cookie`, dan query param
+`api_key`/`key`/`token` diubah jadi `***` sebelum ditulis. Mode file `0o600`.
+
+### Cara akses
+Di **Logs → klik row → drawer detail**, tombol **"View raw request"** muncul
+hanya saat `hasTrace` true. Klik → modal menampilkan request client (method,
+path, headers, body) + upstream call (URL, status, response body).
+
+Endpoint internal: `GET /admin/requests/:id/trace` (di-proxy via `/api/admin/*`,
+admin key di-inject server-side). `:id` bisa numeric row id atau requestId UUID.
+
+### Siklus hidup & cleanup
+File dibuat **hanya saat error** (bukan setiap request). Saat operator melakukan:
+- **Clear logs** (Settings → Maintenance) → semua file `request_traces/` dihapus.
+- **Reset stats** → sama (inherit dari clearLogs).
+- **Reset all data** → ikut dibersihkan.
+
+Tidak ada file orphaned yg menetap setelah log bersih.
+
+---
+
 
 ## 🤝 Berkontribusi
 

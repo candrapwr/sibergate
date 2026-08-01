@@ -5,6 +5,7 @@ import { generateApiKey } from './api-key.js';
 import { providerEndpoints } from './known-providers.js';
 import { resetLatency } from './latency.js';
 import { listSignatures as listSigs, resetSignatures as resetSigs, type SignatureList } from './signatures.js';
+import { clearRequestTraces as clearTraces } from './request-trace.js';
 
 /**
  * Admin repository — CRUD operations over the master-data tables.
@@ -934,6 +935,9 @@ export function clearAllData(): { providers: number; models: number; routes: num
     db.exec('DELETE FROM providers');
     db.exec('DELETE FROM api_keys');
   })();
+  // Trace files (raw request captures) are paired with log rows — purge them too
+  // so no orphaned traces survive a full wipe.
+  clearTraces();
   return before;
 }
 
@@ -943,14 +947,17 @@ export function clearAllData(): { providers: number; models: number; routes: num
  * Settings. Master data tetap, tapi usage/stats (yg dihitung dari requests
  * saat runtime) otomatis ikut kosong.
  */
-export function clearLogs(): { logs: number } {
+export function clearLogs(): { logs: number; traces: number } {
   const db = getDb();
   const before = (db.prepare('SELECT COUNT(*) as c FROM requests').get() as { c: number }).c;
   db.exec('DELETE FROM requests');
   // Reset autoincrement counter supaya log baru mulai dari id 1 lagi (cosmetic,
   // dan menjaga id tetap kecil setelah purge besar).
   db.exec("DELETE FROM sqlite_sequence WHERE name = 'requests'");
-  return { logs: before };
+  // Raw request trace files live alongside log rows — wipe them together so the
+  // "View raw request" link never points at a stale file after a clear.
+  const traces = clearTraces();
+  return { logs: before, traces: traces.removed };
 }
 
 /**

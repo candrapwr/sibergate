@@ -32,3 +32,4 @@ dist/
 .idea/
 *.swp
 logs/
+request_traces/

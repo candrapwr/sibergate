@@ -36,6 +36,12 @@ export {
   reasoningKeyFor,
   reasoningCacheSize,
 } from './reasoning.js';
+export {
+  saveRequestTrace,
+  readRequestTrace,
+  clearRequestTraces,
+  type RequestTraceData,
+} from './request-trace.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
 export {
   pushConsoleLog,

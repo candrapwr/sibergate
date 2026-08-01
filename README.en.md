@@ -64,7 +64,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🛡️ HTML error page protection** — when an upstream (via Cloudflare/CDN/proxy) replies with an HTML error page (5xx status, or even a `200 OK` interstitial), SiberGate catches it at the source and returns a clean OpenAI-compat JSON error to the client — **no raw HTML leaks through**. Failover still kicks in; the HTML body is kept in the logs for debugging.
 - **🖥️ Real-time Console** — a "Console" panel shows **every gateway event** live via SSE streaming: incoming requests, per-target failover, auth failures, config changes, system errors — all under 1s, not polled. In-memory ring buffer (cleared on restart), no SQLite duplication.
 - **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys (default and additional) are encrypted at rest (AES-256-GCM), decrypted transiently at request time, and never logged. Plaintext is never returned by the API — only the label + a redacted prefix.
-- **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose.
+- **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose. When an upstream error occurs (including recovered failovers), a **full raw request** (client URL, redacted headers, body, upstream call) is auto-saved to a per-request file in `request_traces/` — not the DB, so the DB stays lean. In the Logs drawer, click **"View raw request"** to open a modal with the original request + the failing upstream response.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
 - **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
 - **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
@@ -455,6 +455,61 @@ from `packages/admin/.env.local` (`SIBERGATE_ADMIN_PORT`), so changing the port
 works the same as in dev mode.
 
 ---
+
+## 🗂️ Raw request trace (debugging upstream errors)
+
+When an **upstream error** occurs — whether a terminal failure (5xx/4xx status)
+or a **recovered failover** (a target failed in the trail) — SiberGate
+automatically saves the **full raw request** to a per-request file on disk. This
+helps operators reproduce and diagnose provider errors without guessing the
+request contents from the DB log.
+
+### Why files, not the DB?
+Raw request bodies (messages, tools, headers) can be large. Storing them
+per-request in SQLite would bloat the DB fast. The solution: **one `.json` file
+per request**, stored in `<cwd>/request_traces/` (override via
+`SIBERGATE_TRACE_DIR`). The DB stays lean — it only stores a `metadata.hasTrace`
+flag so the UI knows when to show the "View raw request" link.
+
+### Contents of `request_traces/<requestId>.json`
+```json
+{
+  "requestId": "uuid",
+  "ts": "2026-08-02T...",
+  "client": {
+    "method": "POST",
+    "path": "/v1/chat/completions",
+    "ip": "1.2.3.4",
+    "headers": { "authorization": "Bearer ***", "content-type": "..." }
+  },
+  "body": { "model": "...", "messages": [...], "tools": [...] },
+  "upstream": { "url": "https://api.gemini.com/...?key=***", "status": 400, "responseBody": "..." },
+  "route": "nebula/ds-flash"
+}
+```
+**Secrets are redacted:** `Authorization`, `x-api-key`, `cookie`, and the
+`api_key`/`key`/`token` query params are replaced with `***` before writing.
+File mode is `0o600`.
+
+### How to access
+In **Logs → click a row → detail drawer**, a **"View raw request"** button
+appears only when `hasTrace` is true. Click it → a modal shows the client request
+(method, path, headers, body) + the upstream call (URL, status, response body).
+
+Internal endpoint: `GET /admin/requests/:id/trace` (proxied via `/api/admin/*`,
+admin key injected server-side). `:id` can be a numeric row id or the requestId
+UUID.
+
+### Lifecycle & cleanup
+Files are created **only on error** (not on every request). When an operator:
+- **Clears logs** (Settings → Maintenance) → all `request_traces/` files are deleted.
+- **Resets stats** → same (inherits from clearLogs).
+- **Resets all data** → cleaned up too.
+
+No orphaned files linger after logs are cleared.
+
+---
+
 
 ## 🤝 Contributing
 

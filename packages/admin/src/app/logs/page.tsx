@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { ScrollText, X, ArrowRight, CheckCircle2, XCircle, GitBranch } from 'lucide-react';
+import { ScrollText, X, ArrowRight, CheckCircle2, XCircle, GitBranch, FileJson, Loader2 } from 'lucide-react';
 import { useLogs, useProviders, useRoutes } from '@/lib/queries';
 import type { RequestLog, TrailStep, UpstreamDiagnostics } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -165,6 +165,15 @@ function StatusBadge({ status }: { status: number | null }) {
 }
 
 function DetailDrawer({ log, onClose }: { log: RequestLog; onClose: () => void }) {
+  // metadata.hasTrace is set by the gateway when a raw request trace file was
+  // written for this request (i.e. an upstream error occurred).
+  let hasTrace = false;
+  try {
+    const parsed = JSON.parse(log.metadata ?? '{}');
+    hasTrace = parsed.hasTrace === true;
+  } catch {
+    /* ignore */
+  }
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
@@ -200,6 +209,10 @@ function DetailDrawer({ log, onClose }: { log: RequestLog; onClose: () => void }
           <FailoverTrail metadata={log.metadata} />
           {/* Upstream response — URL + status + body of the failing call */}
           <UpstreamResponse metadata={log.metadata} />
+          {/* Raw request trace — full client request + upstream call, stored as a
+              file on disk (kept out of the DB to avoid bloat). Only shown when an
+              upstream error was captured for this request. */}
+          {hasTrace && <RawRequestLink requestId={log.request_id} />}
         </div>
       </div>
     </div>
@@ -324,4 +337,142 @@ function UpstreamResponse({ metadata }: { metadata: string | null }) {
       )}
     </div>
   );
+}
+
+/**
+ * Link that opens a modal showing the full raw request trace (client request +
+ * upstream call). The trace lives in a file on disk (per-request), fetched via
+ * the admin proxy → gateway /admin/requests/:id/trace.
+ */
+interface TraceData {
+  requestId: string;
+  ts: string;
+  client?: {
+    method?: string;
+    path?: string;
+    query?: string;
+    ip?: string | null;
+    headers?: Record<string, string>;
+  };
+  body?: unknown;
+  upstream?: { url?: string; status?: number; responseBody?: string | null };
+  route?: string | null;
+  provider?: string | null;
+  model?: string | null;
+}
+
+function RawRequestLink({ requestId }: { requestId: string | null }) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<TraceData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    if (!requestId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      // Resolve by requestId directly (the gateway endpoint accepts it as :id).
+      const res = await fetch(`/api/admin/requests/${encodeURIComponent(requestId)}/trace`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.error?.message ?? `Failed (${res.status})`);
+      }
+      setData((await res.json()) as TraceData);
+      setOpen(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load trace');
+      setOpen(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={load}
+        disabled={loading}
+        className="mt-2 flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+      >
+        {loading ? <Loader2 size={12} className="animate-spin" /> : <FileJson size={12} />}
+        View raw request
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <div className="relative max-h-[85vh] w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+              <h3 className="flex items-center gap-1.5 text-[13px] font-semibold">
+                <FileJson size={14} /> Raw request trace
+              </h3>
+              <button onClick={() => setOpen(false)} className="text-muted-foreground hover:text-foreground"><X size={16} /></button>
+            </div>
+            <div className="max-h-[calc(85vh-3rem)] overflow-y-auto p-4">
+              {error ? (
+                <p className="text-[12px] text-destructive">{error}</p>
+              ) : data ? (
+                <div className="space-y-4 text-[12px]">
+                  {data.client && (
+                    <Section title="Client request">
+                      <TraceRow k="Method · Path" v={`${data.client.method ?? '—'} ${data.client.path ?? ''}${data.client.query ?? ''}`} mono />
+                      {data.client.ip && <TraceRow k="Client IP" v={data.client.ip} mono />}
+                      <TraceRow k="Headers" v={<CodeBlock>{JSON.stringify(data.client.headers ?? {}, null, 2)}</CodeBlock>} />
+                      {data.body !== undefined && <TraceRow k="Body" v={<CodeBlock>{safeStringify(data.body)}</CodeBlock>} />}
+                    </Section>
+                  )}
+                  {data.upstream && (
+                    <Section title="Upstream call (failing)">
+                      {data.upstream.url && <TraceRow k="URL" v={data.upstream.url} mono />}
+                      {data.upstream.status != null && <TraceRow k="Status" v={`HTTP ${data.upstream.status}`} mono />}
+                      {data.upstream.responseBody && (
+                        <TraceRow k="Response body" v={<CodeBlock className="text-destructive">{data.upstream.responseBody}</CodeBlock>} />
+                      )}
+                    </Section>
+                  )}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">Loading…</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">{title}</div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  );
+}
+
+function TraceRow({ k, v, mono }: { k: string; v: React.ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex flex-col gap-1 border-b border-border/40 pb-1.5">
+      <span className="text-[11px] text-muted-foreground">{k}</span>
+      <span className={mono ? 'font-mono text-[11px] break-all' : 'text-[11px] break-all'}>{v}</span>
+    </div>
+  );
+}
+
+function CodeBlock({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return (
+    <pre className={`max-h-60 overflow-auto whitespace-pre-wrap break-all rounded border border-border/50 bg-background p-2 font-mono text-[11px] ${className}`}>
+      {children}
+    </pre>
+  );
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
 }

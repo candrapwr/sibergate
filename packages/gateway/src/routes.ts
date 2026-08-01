@@ -15,6 +15,8 @@ import {
   storeReasoning,
   getReasoning,
   reasoningKeyFor,
+  saveRequestTrace,
+  type RequestTraceData,
   type RouteModality,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
@@ -36,6 +38,83 @@ function errorMetadata(
   if (trail) meta.trail = trail;
   if (up) meta.upstream = up;
   return meta;
+}
+
+/* ─── Raw request trace (disk) ────────────────────────────────────────────
+ * Saat upstream error (termasuk failover-recovered), simpan raw request lengkap
+ * ke file per-request (request_traces/<id>.json). DB tetap ramping — file hanya
+ * dibuat saat error & dihapus saat clear logs. Diakses via link "View raw" di
+ * drawer Logs. Secrets (Authorization/api_key) di-redact sebelum ditulis.
+ */
+
+/** Header names whose values must be redacted from trace files. */
+const REDACT_HEADERS = new Set([
+  'authorization', 'x-api-key', 'api-key', 'cookie', 'set-cookie',
+  'proxy-authorization', 'x-auth-token',
+]);
+
+/** Copy a Headers object into a plain record, redacting secret values. */
+function redactHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    const lk = key.toLowerCase();
+    if (REDACT_HEADERS.has(lk)) {
+      // Keep a hint of the scheme (Bearer ***) without leaking the secret.
+      const scheme = value.split(' ')[0];
+      out[key] = scheme && scheme !== value ? `${scheme} ***` : '***';
+    } else {
+      out[key] = value;
+    }
+  });
+  return out;
+}
+
+/**
+ * Persist a raw request trace when there was an upstream error — either a
+ * terminal failure OR a failover that recovered (trail contains a failed step).
+ * Returns true when a trace file was written (so callers can flag metadata).
+ * Fire-and-forget internally; never throws.
+ */
+function maybeSaveRequestTrace(opts: {
+  requestId: string;
+  c: Context;
+  body: unknown;
+  route?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  upstreamUrl?: string;
+  upstreamStatus?: number;
+  upstreamBody?: string | null;
+  hadFailover: boolean;
+}): boolean {
+  // Only capture when there was an actual upstream error (final failure or a
+  // recovered failover). Success requests are not traced (disk hygiene).
+  const upstreamPresent = opts.upstreamUrl || opts.upstreamStatus != null;
+  if (!opts.hadFailover && !upstreamPresent) return false;
+  try {
+    const data: RequestTraceData = {
+      requestId: opts.requestId,
+      ts: new Date().toISOString(),
+      client: {
+        method: opts.c.req.method,
+        path: opts.c.req.path,
+        query: opts.c.req.url.includes('?') ? opts.c.req.url.slice(opts.c.req.url.indexOf('?')) : '',
+        ip: opts.c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+        headers: redactHeaders(opts.c.req.raw.headers),
+      },
+      body: opts.body,
+      upstream: upstreamPresent
+        ? { url: opts.upstreamUrl, status: opts.upstreamStatus, responseBody: opts.upstreamBody }
+        : undefined,
+      route: opts.route ?? null,
+      provider: opts.provider ?? null,
+      model: opts.model ?? null,
+    };
+    saveRequestTrace(data);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* ─── Gemini thought_signature preservation ───────────────────────────────
@@ -222,6 +301,10 @@ export function createApp(configStore: ConfigStore) {
 
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) return errorResponse(c, 400, 'Request body must be valid JSON.', 'invalid_request_error');
+    // Snapshot the pristine client body BEFORE any mutation (inject signatures/
+    // reasoning mutates body.messages in place). The snapshot is used only for
+    // the raw request trace when an error occurs.
+    const rawClientBody = structuredClone(body);
 
     const routeId = String(body.model ?? '');
     let route;
@@ -318,8 +401,17 @@ export function createApp(configStore: ConfigStore) {
       };
 
       const logStreamFailure = (err: unknown) => {
-        const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
+        const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[]; upstream?: { url?: string; status?: number; body?: string | null } };
         const status = mapUpstreamErrorStatus(e, clientAborted);
+        const hadFailover = !!e.trail && e.trail.some((s) => s.outcome === 'failed');
+        const traced = maybeSaveRequestTrace({
+          requestId, c, body: rawClientBody, route: route.id,
+          provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+          upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body,
+          hadFailover,
+        });
+        const meta = errorMetadata(e);
+        if (traced && meta) meta.hasTrace = true;
         logRequest({
           ...baseLog,
           status,
@@ -329,7 +421,7 @@ export function createApp(configStore: ConfigStore) {
           upstreamKeyId: e.servedBy?.keyId ?? null,
           errorCode: clientAborted ? 'client_closed_request' : e.code ?? null,
           errorMessage: (clientAborted ? 'Client disconnected before the request completed.' : e.message ?? String(e)).slice(0, 500),
-          metadata: errorMetadata(e),
+          metadata: meta,
         });
       };
 
@@ -527,9 +619,18 @@ export function createApp(configStore: ConfigStore) {
       });
       return c.json(json);
     } catch (err) {
-      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[] };
+      const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; trail?: import('@sibergate/core').FailoverStep[]; upstream?: { url?: string; status?: number; body?: string | null } };
       const status = mapUpstreamErrorStatus(e, clientAborted);
       const latencyMs = Math.round(performance.now() - startedAt);
+      const hadFailover = !!e.trail && e.trail.some((s) => s.outcome === 'failed');
+      const traced = maybeSaveRequestTrace({
+        requestId, c, body: rawClientBody, route: route.id,
+        provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+        upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body,
+        hadFailover,
+      });
+      const meta = errorMetadata(e);
+      if (traced && meta) meta.hasTrace = true;
       logRequest({
         ...baseLog,
         status,
@@ -539,7 +640,7 @@ export function createApp(configStore: ConfigStore) {
         upstreamKeyId: e.servedBy?.keyId ?? null,
         errorCode: clientAborted ? 'client_closed_request' : e.code ?? null,
         errorMessage: (clientAborted ? 'Client disconnected before the request completed.' : e.message ?? String(e)).slice(0, 500),
-        metadata: errorMetadata(e),
+        metadata: meta,
       });
       const type =
         clientAborted ? 'client_closed_request' : e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
@@ -674,9 +775,15 @@ async function modalityHandler(
       headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; upstream?: { url?: string; status?: number; body?: string | null } };
     const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
+    const traced = maybeSaveRequestTrace({
+      requestId, c, body, route: route.id,
+      provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+      upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body,
+      hadFailover: false,
+    });
     logRequest({
       ...baseLog,
       status,
@@ -686,6 +793,7 @@ async function modalityHandler(
       upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: (e.message ?? String(e)).slice(0, 500),
+      metadata: traced ? { hasTrace: true } : undefined,
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
@@ -839,9 +947,15 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; upstream?: { url?: string; status?: number; body?: string | null } };
     const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
+    const traced = maybeSaveRequestTrace({
+      requestId, c, body, route: route.id,
+      provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+      upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body,
+      hadFailover: false,
+    });
     logRequest({
       ...baseLog,
       status,
@@ -851,6 +965,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: e.message?.slice(0, 300),
+      metadata: traced ? { hasTrace: true } : undefined,
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null, 'image_generation');
@@ -1002,9 +1117,15 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       headers: respHeaders,
     });
   } catch (err) {
-    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null } };
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; upstream?: { url?: string; status?: number; body?: string | null } };
     const status = mapUpstreamErrorStatus(e);
     const latencyMs = Math.round(performance.now() - startedAt);
+    const traced = maybeSaveRequestTrace({
+      requestId, c, body, route: route.id,
+      provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+      upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body,
+      hadFailover: false,
+    });
     logRequest({
       ...baseLog,
       status,
@@ -1014,6 +1135,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       upstreamKeyId: e.servedBy?.keyId ?? null,
       errorCode: e.code ?? null,
       errorMessage: (e.message ?? String(e)).slice(0, 500),
+      metadata: traced ? { hasTrace: true } : undefined,
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);

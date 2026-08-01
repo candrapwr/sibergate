@@ -9,9 +9,11 @@ import {
   createBackup,
   createUser,
   deleteUser,
+  getDb,
   listUsers,
   parseBackup,
   pushConsoleLog,
+  readRequestTrace,
   recentConsoleLogs,
   restoreBackup,
   setUserStatus,
@@ -320,6 +322,24 @@ export function createAdminRouter(configStore: ConfigStore) {
   app.get('/logs', (c) => {
     const limit = Math.min(Number(c.req.query('limit') ?? 50), 500);
     return c.json({ data: admin.recentRequests(limit) });
+  });
+
+  // Read a raw request trace file (saved when an upstream error occurred). The
+  // :id can be either the numeric log row id or the requestId (UUID). We resolve
+  // the row id → requestId first, then read the trace file off disk. Returns 404
+  // when no trace exists for that request (success requests aren't traced).
+  app.get('/requests/:id/trace', (c) => {
+    const idParam = c.req.param('id');
+    let requestId = idParam;
+    // If it looks like a numeric row id, resolve it to the requestId column.
+    if (/^\d+$/.test(idParam)) {
+      const row = getDb().prepare('SELECT request_id FROM requests WHERE id = ?').get(Number(idParam)) as { request_id?: string } | undefined;
+      if (!row?.request_id) return c.json({ error: { message: 'No such request.', type: 'not_found_error' } }, 404);
+      requestId = row.request_id;
+    }
+    const trace = readRequestTrace(requestId);
+    if (!trace) return c.json({ error: { message: 'No trace captured for this request.', type: 'not_found_error' } }, 404);
+    return c.json(trace);
   });
 
   // Live console stream (SSE). Sends the ring-buffer snapshot first, then each
