@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
-import { ScrollText, X, ArrowRight, CheckCircle2, XCircle } from 'lucide-react';
+import { ScrollText, X, ArrowRight, CheckCircle2, XCircle, GitBranch } from 'lucide-react';
 import { useLogs, useProviders, useRoutes } from '@/lib/queries';
 import type { RequestLog, TrailStep, UpstreamDiagnostics } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -17,7 +17,7 @@ export default function LogsPage() {
   const { data: routesData } = useRoutes();
   const { data: providersData } = useProviders();
   const logs = data?.data ?? [];
-  const [filter, setFilter] = useState({ status: '', route: '', provider: '', q: '' });
+  const [filter, setFilter] = useState({ status: '', route: '', provider: '', q: '', failoverOnly: false });
   const [selected, setSelected] = useState<RequestLog | null>(null);
 
   // Lookup maps: id → display name, so filter dropdowns show friendly labels.
@@ -37,6 +37,7 @@ export default function LogsPage() {
       if (filter.status && String(l.status) !== filter.status) return false;
       if (filter.route && l.route !== filter.route) return false;
       if (filter.provider && l.provider !== filter.provider) return false;
+      if (filter.failoverOnly && !l.had_failover) return false;
       if (filter.q) {
         const hay = `${l.request_id} ${l.route} ${l.provider} ${l.model} ${l.error_message}`.toLowerCase();
         if (!hay.includes(filter.q.toLowerCase())) return false;
@@ -52,7 +53,7 @@ export default function LogsPage() {
   const filteredLen = filtered.length;
   useEffect(() => {
     setPage(0);
-  }, [filter.status, filter.route, filter.provider, filter.q, filteredLen]);
+  }, [filter.status, filter.route, filter.provider, filter.q, filter.failoverOnly, filteredLen]);
 
   const routes = [...new Set(logs.map((l) => l.route).filter(Boolean))] as string[];
   const providers = [...new Set(logs.map((l) => l.provider).filter(Boolean))] as string[];
@@ -81,6 +82,19 @@ export default function LogsPage() {
           {providers.map((p) => <option key={p} value={p}>{providerNames.get(p) ?? p}</option>)}
         </select>
         <Input value={filter.q} onChange={(e) => setFilter({ ...filter, q: e.target.value })} placeholder="Search…" className="h-9 w-48 text-[12px]" />
+        <button
+          type="button"
+          onClick={() => setFilter({ ...filter, failoverOnly: !filter.failoverOnly })}
+          title="Show only requests recovered via failover"
+          className={
+            'flex h-9 items-center gap-1 rounded-md border px-2.5 text-[12px] transition-colors ' +
+            (filter.failoverOnly
+              ? 'border-warning/40 bg-warning/15 text-warning'
+              : 'border-border text-muted-foreground hover:bg-secondary')
+          }
+        >
+          <GitBranch size={13} /> failover
+        </button>
       </div>
 
       {isLoading ? (
@@ -107,7 +121,16 @@ export default function LogsPage() {
                 <TableCell className="whitespace-nowrap text-[12px] text-muted-foreground">{formatTs(l.ts)}</TableCell>
                 <TableCell className="font-mono text-[12px]">{l.route ?? '—'}</TableCell>
                 <TableCell className="font-mono text-[12px] text-muted-foreground">{l.provider ? `${l.provider}:${l.model}` : '—'}</TableCell>
-                <TableCell><StatusBadge status={l.status} /></TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-1">
+                    <StatusBadge status={l.status} />
+                    {l.had_failover === 1 && (
+                      <span title="Recovered via failover — at least one upstream target failed before this succeeded" className="inline-flex items-center text-warning">
+                        <GitBranch size={12} />
+                      </span>
+                    )}
+                  </div>
+                </TableCell>
                 <TableCell className="text-muted-foreground">{formatMs(l.latency_ms)}</TableCell>
                 <TableCell className="text-muted-foreground">{l.total_tokens ? formatNum(l.total_tokens) : '—'}</TableCell>
                 <TableCell className="text-muted-foreground">{formatUsd(l.cost_usd)}</TableCell>

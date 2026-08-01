@@ -28,6 +28,8 @@ export interface LogRequest {
   apiKeyId?: string | null;
   /** ID upstream key (provider_keys.id) yg melayani request ini (multi-account). Null = default key. */
   upstreamKeyId?: string | null;
+  /** True bila request ini sempat gagal di ≥1 target lalu recovered via failover (status final 200). */
+  hadFailover?: boolean;
   /** JSON-serializable metadata (e.g. failover trail). */
   metadata?: Record<string, unknown>;
 }
@@ -36,13 +38,23 @@ const insertStmt = `
   INSERT INTO requests
     (request_id, method, path, status, latency_ms, route, provider, model, strategy,
      streamed, prompt_tokens, completion_tokens, total_tokens, cost_usd, error_code,
-     error_message, client_ip, api_key_id, upstream_key_id, metadata)
+     error_message, client_ip, api_key_id, upstream_key_id, metadata, had_failover)
   VALUES (@requestId, @method, @path, @status, @latencyMs, @route, @provider, @model,
           @strategy, @streamed, @promptTokens, @completionTokens, @totalTokens, @costUsd,
-          @errorCode, @errorMessage, @clientIp, @apiKeyId, @upstreamKeyId, @metadata)
+          @errorCode, @errorMessage, @clientIp, @apiKeyId, @upstreamKeyId, @metadata, @hadFailover)
 `;
 
 export function logRequest(entry: LogRequest): void {
+  // Auto-detect failover from metadata.trail bila caller tidak set explicit:
+  // request recovered (final 200) tapi sempat gagal di ≥1 target. Ini supaya
+  // upstream-error yg terkubur di trail tetap terlihat di Logs/stats tanpa
+  // harus ubah setiap call site secara manual.
+  let hadFailover = entry.hadFailover;
+  if (hadFailover === undefined && Array.isArray(entry.metadata?.trail)) {
+    hadFailover = (entry.metadata!.trail as Array<{ outcome?: string }>).some(
+      (s) => s.outcome === 'failed',
+    );
+  }
   try {
     getDb()
       .prepare(insertStmt)
@@ -67,6 +79,7 @@ export function logRequest(entry: LogRequest): void {
         apiKeyId: entry.apiKeyId ?? null,
         upstreamKeyId: entry.upstreamKeyId ?? null,
         metadata: JSON.stringify(entry.metadata ?? {}),
+        hadFailover: hadFailover ? 1 : 0,
       });
   } catch (err) {
     console.error('[sibergate] failed to write log:', (err as Error).message);

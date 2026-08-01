@@ -20,6 +20,8 @@ import { createResponsesStreamConverter, createToolsTextStreamConverter, storeSi
  */
 export interface ProxyResult {
   content: string;
+  /** Accumulated DeepSeek `reasoning_content` (delta-reasoning_content), if any. */
+  reasoning?: string;
   usage: { prompt_tokens: number; completion_tokens?: number; total_tokens: number } | null;
   status: 'completed' | 'client_aborted' | 'upstream_error';
   errorMessage?: string;
@@ -84,13 +86,16 @@ export function proxySSEStream(
       if (!data || data === '[DONE]') continue;
       try {
         const chunk = JSON.parse(data) as {
-          choices?: Array<{ delta?: { content?: string } }>;
+          choices?: Array<{ delta?: { content?: string; reasoning_content?: string } }>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
           usage_metadata?: Record<string, unknown>;
           usageMetadata?: Record<string, unknown>;
         };
         const delta = chunk.choices?.[0]?.delta?.content;
         if (typeof delta === 'string') result.content += delta;
+        // DeepSeek thinking-mode: akumulasi reasoning_content utk capture saat selesai.
+        const rDelta = chunk.choices?.[0]?.delta?.reasoning_content;
+        if (typeof rDelta === 'string') result.reasoning = (result.reasoning ?? '') + rDelta;
         const usage = normalizeChatUsage(chunk);
         if (usage) result.usage = usage;
       } catch {
@@ -144,12 +149,16 @@ export function proxySSEStream(
           if (!tc) continue;
           const sig = tc.extra_content?.google?.thought_signature;
           if (typeof sig === 'string' && sig && tc.id) {
+            // Custom tool dgn stable id → cache + strip, re-inject by id nanti.
             storeSignature(tc.id, sig, providerId ?? 'unknown');
+            if (tc.extra_content) {
+              delete tc.extra_content;
+              changed = true;
+            }
           }
-          if (tc.extra_content) {
-            delete tc.extra_content;
-            changed = true;
-          }
+          // Built-in tool tanpa id: biarkan extra_content tertinggal → round-trip
+          // alami via client. (Strip unconditional sebelumnya menghapus signature
+          // yg tak bisa di-cache → 400 multi-turn utk web_search/pdf_script.)
           // Inject index: pakai posisi dlm delta bila ada, atau map by id utk
           // konsistensi antar chunk (argumen parsial datang dgn id sama).
           if (tc.index === undefined) {

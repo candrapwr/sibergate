@@ -30,6 +30,12 @@ export {
   type SignatureList,
   type SignatureListEntry,
 } from './signatures.js';
+export {
+  storeReasoning,
+  getReasoning,
+  reasoningKeyFor,
+  reasoningCacheSize,
+} from './reasoning.js';
 export { logRequest, touchApiKey, type LogRequest } from './logger.js';
 export {
   pushConsoleLog,

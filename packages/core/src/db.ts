@@ -232,6 +232,10 @@ function migrate(db: DB): void {
 
   // Failover audit trail stored as JSON (array of {provider, model, outcome, error}).
   addColumnIfMissing(db, 'requests', 'metadata', "TEXT NOT NULL DEFAULT '{}'");
+  // 1 bila request ini sempat gagal di ≥1 target lalu recovered via failover
+  // (status final tetap 200). Supaya upstream-error yg terkubur di trail terlihat
+  // di Logs list & stats, bukan cuma di drawer detail.
+  addColumnIfMissing(db, 'requests', 'had_failover', 'INTEGER NOT NULL DEFAULT 0');
 
   // ── migrasi: composite PK (provider_id, id) untuk models ──────────────
   // Skema lama memakai `id TEXT PRIMARY KEY` global unik, sehingga menambah

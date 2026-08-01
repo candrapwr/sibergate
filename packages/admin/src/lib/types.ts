@@ -119,6 +119,8 @@ export interface RequestLog {
   error_message: string | null;
   client_ip: string | null;
   metadata: string | null;
+  /** 1 bila request recovered via failover (sempat gagal di ≥1 target, final 200). */
+  had_failover: number | null;
 }
 
 /** One step in the failover trail (stored in request metadata JSON). */

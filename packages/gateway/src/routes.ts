@@ -12,6 +12,9 @@ import {
   convertToolsTextToChat,
   storeSignature,
   getSignature,
+  storeReasoning,
+  getReasoning,
+  reasoningKeyFor,
   type RouteModality,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
@@ -81,6 +84,42 @@ function injectSignaturesIntoMessages(messages: unknown): void {
   }
 }
 
+/* ─── DeepSeek reasoning_content preservation ──────────────────────────────
+ * Analog dgn Gemini thought_signature, tapi utk field `reasoning_content` di
+ * level assistant MESSAGE (bukan tool_call). DeepSeek thinking-mode WAJIB
+ * kirim balik field ini di multi-turn, jika tidak → 400.
+ * Capture di response → cache by hash(content) → inject balik di request.
+ * No-op utk provider non-DeepSeek (cache kosong utk mereka).
+ */
+
+/** Capture reasoning_content dari response message, strip supaya client format OpenAI murni. */
+function captureAndStripReasoning(message: Record<string, unknown> | undefined | null, providerId: string): void {
+  if (!message) return;
+  const reasoning = message.reasoning_content;
+  if (typeof reasoning === 'string' && reasoning) {
+    const key = reasoningKeyFor(message.content);
+    if (key) storeReasoning(key, reasoning, providerId);
+  }
+  // Selalu strip reasoning_content dari response ke client (field non-OpenAI).
+  // Bila provider bukan thinking-mode, field ini undefined → no-op.
+  if (message.reasoning_content !== undefined) delete message.reasoning_content;
+}
+
+/** Inject reasoning_content balik ke assistant messages (request multi-turn) by content hash. */
+function injectReasoningIntoMessages(messages: unknown): void {
+  if (!Array.isArray(messages)) return;
+  for (const m of messages) {
+    const msg = m as { role?: string; content?: unknown };
+    if (msg?.role !== 'assistant') continue;
+    const key = reasoningKeyFor(msg.content);
+    if (!key) continue;
+    const reasoning = getReasoning(key);
+    if (reasoning) {
+      (msg as { reasoning_content?: string }).reasoning_content = reasoning;
+    }
+  }
+}
+
 /**
  * Capture + strip signature dari sebuah tool_call list (response non-stream).
  * Simpan ke cache, hapus extra_content supaya client dapat format murni.
@@ -89,8 +128,16 @@ function captureAndStripToolCalls(toolCalls: ToolCall[] | undefined, providerId:
   if (!Array.isArray(toolCalls)) return;
   for (const tc of toolCalls) {
     const sig = extractSignature(tc);
-    if (sig && tc.id) storeSignature(tc.id, sig, providerId);
-    stripSignature(tc);
+    if (sig && tc.id) {
+      // Custom tools punya stable id → cache + strip, re-inject by id di turn berikutnya.
+      storeSignature(tc.id, sig, providerId);
+      stripSignature(tc);
+    }
+    // Built-in tools (web_search, pdf_script, code_execution) sering TIDAK punya
+    // stable id → signature tidak bisa di-cache by id. Biarkan extra_content
+    // tertinggal di response: client akan round-trip apa adanya di turn 2, jadi
+    // signature tetap sampai ke Gemini tanpa perlu inject. (Sebelumnya signature
+    // di-strip unconditional walau gagal di-cache → hilang → 400 multi-turn.)
   }
 }
 
@@ -244,6 +291,13 @@ export function createApp(configStore: ConfigStore) {
         const promptTokens = res.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
         const completionTokens = res.usage?.completion_tokens ?? estimateTokens(res.content);
         const totalTokens = res.usage?.total_tokens ?? promptTokens + completionTokens;
+        // DeepSeek streaming reasoning_content: capture by content-hash agar bisa
+        // di-inject balik di request multi-turn berikutnya. (Non-stream di-capture
+        // di captureAndStripReasoning; streaming di sini krn content baru lengkap.)
+        if (res.reasoning) {
+          const rKey = reasoningKeyFor(res.content);
+          if (rKey) storeReasoning(rKey, res.reasoning, servedBy.providerId);
+        }
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
         logRequest({
@@ -308,6 +362,7 @@ export function createApp(configStore: ConfigStore) {
             // before upstream sends headers. The heartbeat above keeps the
             // client/proxy connection from looking idle during that phase.
             injectSignaturesIntoMessages(body.messages);
+            injectReasoningIntoMessages(body.messages);
             const { response, servedBy, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
             const upstreamKeyId = servedByKeyId ?? null;
             const effectiveModality = servedBy.modality ?? route.modality ?? 'chat';
@@ -371,6 +426,7 @@ export function createApp(configStore: ConfigStore) {
       // Inject Gemini thought_signature balik ke body.messages utk multi-turn
       // tool calling. No-op bila cache kosong (provider non-Gemini / turn pertama).
       injectSignaturesIntoMessages(body.messages);
+      injectReasoningIntoMessages(body.messages);
       const { response, servedBy, latencyMs, trail, servedByKeyId } = await executeRoute(config, route, body, controller.signal);
       const upstreamKeyId = servedByKeyId ?? null;
 
@@ -450,6 +506,8 @@ export function createApp(configStore: ConfigStore) {
         captureAndStripToolCalls(choice?.message?.tool_calls, servedBy.providerId);
         // Strip extra_content di top-level message juga (Gemini reasoning signature).
         stripMessageExtraContent(choice?.message);
+        // DeepSeek reasoning_content: capture by content-hash + strip dari response.
+        captureAndStripReasoning(choice?.message, servedBy.providerId);
       }
       const promptTokens = json.usage?.prompt_tokens ?? estimateTokens(JSON.stringify(body.messages ?? ''));
       const completionTokens = json.usage?.completion_tokens ?? 0;
