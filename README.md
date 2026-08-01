@@ -433,6 +433,23 @@ mengikuti envelope OpenAI: `{ "error": { message, type, param, code } }`.
 > dan lainnya yg langsung balas URL) tetap diteruskan verbatim — deteksi otomatis
 > lewat ada/tidaknya field `data.task_id`.
 
+> **Header passthrough ke LLM** — secara default gateway hanya mengirim header
+> esensial ke upstream (`Content-Type` + kredensial provider). Header client
+> (`Authorization sg_live_*`, cookie, dll) **tidak diteruskan** demi keamanan &
+> isolasi. Tapi sebagian header client boleh di-**forward** ke provider via
+> allowlist, berguna saat provider butuh header kustom (mis. `HTTP-Referer` /
+> `X-Title` buat OpenRouter attribution, atau `User-Agent` kustom).
+>
+> Allowlist default: `user-agent`, `http-referer`, `x-title`, `x-request-id`,
+> `accept-language`. Override via env:
+> ```bash
+> SIBERGATE_PASSTHROUGH_HEADERS=user-agent,x-my-custom-header,x-app-name
+> ```
+> Header sensitif (`authorization`, `cookie`, `api-key`, `x-api-key`) **tidak
+> pernah** diteruskan meskipun dicantumkan di env. Untuk header statis per
+> provider (nilai tetap), gunakan field `headers` (JSON) di konfigurasi provider
+> (Admin → Providers → edit → headers).
+
 ---
 
 ## 🧱 Tech stack

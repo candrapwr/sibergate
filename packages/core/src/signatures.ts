@@ -39,8 +39,8 @@ const cache = new Map<string, CachedSignature>(); // key: tool_call.id
  * berasal dari provider yg sama lebih mungkin diterima drpd placeholder acak.
  *
  * Ini mekanisme anti-restart: signature asli (by-id) = fidelity tinggi;
- * default fallback = safety net. Mirip strategi 9Router (static default) tapi
- * dynamic — nilai default didapat dari provider sendiri, bukan hardcode.
+ * default fallback = safety net. Dynamic — nilai default didapat dari
+ * provider sendiri, bukan hardcode.
  */
 const defaultByProvider = new Map<string, { signature: string; createdAt: number }>();
 

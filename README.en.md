@@ -392,6 +392,24 @@ follow the OpenAI envelope: `{ "error": { message, type, param, code } }`.
 > and response are returned verbatim. Ideal for proxying REST APIs, webhooks, or
 > internal microservices with the same routing + failover.
 
+> **Header passthrough to the LLM** — by default the gateway sends only
+> essential headers upstream (`Content-Type` + provider credentials). Client
+> headers (`Authorization sg_live_*`, cookies, …) are **not forwarded**, for
+> security and isolation. However, a selected set of client headers can be
+> **forwarded** to the provider via an allowlist — useful when a provider needs
+> custom headers (e.g. `HTTP-Referer` / `X-Title` for OpenRouter attribution,
+> or a custom `User-Agent`).
+>
+> Default allowlist: `user-agent`, `http-referer`, `x-title`, `x-request-id`,
+> `accept-language`. Override via env:
+> ```bash
+> SIBERGATE_PASSTHROUGH_HEADERS=user-agent,x-my-custom-header,x-app-name
+> ```
+> Sensitive headers (`authorization`, `cookie`, `api-key`, `x-api-key`) are
+> **never** forwarded even if listed in the env. For static per-provider headers
+> (fixed values), use the `headers` (JSON) field in the provider config
+> (Admin → Providers → edit → headers).
+
 ---
 
 ## 🧱 Tech stack

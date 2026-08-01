@@ -259,7 +259,7 @@ function injectSignaturesIntoMessages(messages: unknown): void {
  * multi-turn berikutnya. Kalau hilang → 400 "reasoning_content must be passed
  * back".
  *
- * Pendekatan sederhana & stateless (mirip 9Router):
+ * Pendekatan sederhana & stateless:
  *   1. Response: STRIP reasoning_content dari response ke client (format
  *      OpenAI murni). Tidak di-cache.
  *   2. Request: utk SEMUA assistant messages DENGAN tool_calls, inject
