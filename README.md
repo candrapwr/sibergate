@@ -13,7 +13,6 @@ infrastruktur Anda sendiri, tanpa markup.
 [![Provider](https://img.shields.io/badge/provider-18-orange.svg)](#-katalog-bawaan)
 [![Model](https://img.shields.io/badge/model-206-orange.svg)](#-katalog-bawaan)
 [![PR diterima](https://img.shields.io/badge/PR-diterima-brightgreen.svg)](#-berkontribusi)
-[![Status](https://img.shields.io/badge/status-aktif-maintained-success.svg)](#-roadmap)
 [![Bintang](https://img.shields.io/github/stars/candrapwr/sibergate?style=social&label=Star)](https://github.com/candrapwr/sibergate/stargazers)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 
@@ -75,6 +74,9 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
+- **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
+- **🛡️ Anti-HTML error page** — saat upstream (lewat Cloudflare/CDN/proxy) membalas halaman HTML error (status 5xx atau bahkan `200 OK` interstitial), SiberGate menangkapnya di sumber dan mengembalikan error JSON OpenAI-compat yang rapi ke klien — **tidak ada HTML mentah yang bocor**. Failover tetap jalan; body HTML tersimpan di log untuk debugging.
+- **🖥️ Console real-time** — panel "Console" menampilkan **semua event gateway** secara live via SSE streaming: request masuk, failover per target, auth failure, config changes, error sistem — semuanya <1 detik, bukan polling. In-memory ring buffer (hilang saat restart), tidak duplikasi tabel SQLite.
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli (default maupun tambahan) di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log. Plaintext tidak pernah dikembalikan API — hanya label + prefix redacted.
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
@@ -150,6 +152,7 @@ Atau buka **http://localhost:3000** (atau port `SIBERGATE_ADMIN_PORT` yang Anda 
 - **Route** — endpoint virtual untuk klien (`smart`, `chat`, `image-fast`, …) diberi tag modalitas
 - **Route target** — pemetaan `(provider, model, weight, key)` berurutan; difilter ke provider yang benar-benar support modalitas route tersebut; `key` opsional menunjuk key spesifik di provider (multi-account)
 - **Strategi** — `fallback`, `fastest` (EMA latency), `weighted`
+- **Timeout per-target** — `route.timeoutMs` berlaku untuk **tiap target failover** penuh (bukan dibagi rata). Tiap target dapat `AbortController` sendiri, dan client disconnect dipropagasi ke semua target. Failover benar-benar pindah ke target berikutnya, bukan ilusi.
 - **Signature cache** — in-memory cache `thought_signature` Gemini (per `tool_call.id`) utk multi-turn tool calling; TTL 1 jam, cap 5000, auto-evict
 - **Request** — log per-request (latency, token, biaya, error, served-by, **key upstream mana yg melayani**)
 
@@ -214,6 +217,7 @@ Dashboard bertema gelap (Next.js + shadcn/ui) di `http://localhost:3000`:
 | **Routes** — endpoint virtual, modality + target builder | <img src="images/routes.png" width="600" alt="Routes" /> |
 | **API Keys** — terbitkan & kelola key klien | <img src="images/api_keys.png" width="600" alt="API Keys" /> |
 | **Logs** — tabel request terfilter + drawer detail | <img src="images/logs.png" width="600" alt="Logs" /> |
+| **Console** — live event stream (request, routing, auth) | <img src="images/console.png" width="600" alt="Console" /> |
 | **Chat Playground** — uji streaming SSE live | <img src="images/chat_playGround.png" width="600" alt="Chat Playground" /> |
 | **Media Lab** — generasi gambar, suara & musik | <img src="images/media_lab.png" width="600" alt="Media Lab" /> |
 | **Settings** — import katalog & danger zone | <img src="images/settings.png" width="600" alt="Settings" /> |
@@ -226,6 +230,7 @@ Dashboard bertema gelap (Next.js + shadcn/ui) di `http://localhost:3000`:
 - **Usage** — monitoring token & biaya lintas provider, model, route, **client API key**, dan **upstream key**; matriks provider×model
 - **Providers / Models / Routes / API Keys** — CRUD penuh dengan form inline; form route memfilter model berdasarkan modalitas terpilih. Provider punya section **API keys** (multi-account) — tambah/hapus/set-default per key
 - **Logs** — tabel request terfilter + drawer detail; tiap error upstream menampilkan panel **URL + response body** lengkap + trail failover (termasuk key upstream mana yg dipakai/gagal)
+- **Console** — **live event stream** real-time via SSE: request masuk, failover per-target, auth failure, config changes, error sistem. Tampilan terminal-style dengan filter per-kategori, auto-scroll, expandable detail JSON. Lifecycle lengkap tiap request: `incoming → upstream → routing (served/failed) → request (completed)`
 - **Chat Playground** — uji route dengan streaming SSE live
 - **Media Lab** — generate & pratinjau gambar, suara, dan musik secara inline
 - **Route testing** — probe route apa pun dan visualisasi path failover
@@ -439,20 +444,6 @@ seperti mode dev.
 
 ---
 
-## 🗺️ Roadmap
-
-- [x] Gateway inti (chat) + routing engine (fallback/fastest/weighted)
-- [x] Multi-modalitas (image, speech, transcribe, embed, music)
-- [x] Dashboard admin (CRUD, log, usage, playground, media lab)
-- [x] Katalog provider bawaan (18 provider, 206 model)
-- [ ] Response caching (exact-match)
-- [ ] Budget guard (cap spend bulanan per key)
-- [ ] Generasi video (Runway/Pika)
-- [ ] Export metrik OpenTelemetry
-- [ ] Helm chart untuk Kubernetes
-
----
-
 ## 🤝 Berkontribusi
 
 Kontribusi diterima! Ini bagian dari **ekosistem Siber** dan kami senang
@@ -492,6 +483,4 @@ SiberGate berguna? ⭐ Star repo-nya dan bagikan ke sesama builder!
 
 <!-- repo: sibergate · dataSiberLab · 2026 -->
 
-<!-- 2026-07-28T13:26:44Z -->
-
-<!-- updated: 2026-07-28T13:52:50Z -->
+<!-- updated: 2026-08-01T09:00:00Z -->

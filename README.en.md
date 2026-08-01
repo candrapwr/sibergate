@@ -59,6 +59,9 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
+- **⏱️ Per-target timeout** — `route.timeoutMs` applies to **each failover target**, not divided. A 30s route with 4 targets gives each target the full 30s. Failover is real: a slow target no longer eats into the next one's budget.
+- **🛡️ HTML error page protection** — when an upstream (via Cloudflare/CDN/proxy) replies with an HTML error page (5xx status, or even a `200 OK` interstitial), SiberGate catches it at the source and returns a clean OpenAI-compat JSON error to the client — **no raw HTML leaks through**. Failover still kicks in; the HTML body is kept in the logs for debugging.
+- **🖥️ Real-time Console** — a "Console" panel shows **every gateway event** live via SSE streaming: incoming requests, per-target failover, auth failures, config changes, system errors — all under 1s, not polled. In-memory ring buffer (cleared on restart), no SQLite duplication.
 - **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys (default and additional) are encrypted at rest (AES-256-GCM), decrypted transiently at request time, and never logged. Plaintext is never returned by the API — only the label + a redacted prefix.
 - **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
@@ -135,6 +138,7 @@ Or open **http://localhost:3000** (or whatever `SIBERGATE_ADMIN_PORT` you set) f
 - **Routes** — virtual client-facing endpoints (`smart`, `chat`, `image-fast`, …) tagged with a modality
 - **Route targets** — ordered `(provider, model, weight, key)` mappings; filtered to providers that actually support the route's modality; the optional `key` points to a specific key on the provider (multi-account)
 - **Strategies** — `fallback`, `fastest` (EMA latency), `weighted`
+- **Per-target timeout** — `route.timeoutMs` applies **per failover target** in full (not divided). Each target gets its own `AbortController`, and client disconnects propagate to all targets. Failover actually moves to the next target instead of being an illusion.
 - **Signature cache** — in-memory cache of Gemini `thought_signature` (per `tool_call.id`) for multi-turn tool calling; 1h TTL, 5000-entry cap, auto-evict
 - **Requests** — per-request log (latency, tokens, cost, errors, served-by, **which upstream key served it**)
 
@@ -200,6 +204,7 @@ A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
 | **Routes** — virtual endpoints, modality + target builder | <img src="images/routes.png" width="600" alt="Routes" /> |
 | **API Keys** — issue & manage client keys | <img src="images/api_keys.png" width="600" alt="API Keys" /> |
 | **Logs** — filterable request table + detail drawer | <img src="images/logs.png" width="600" alt="Logs" /> |
+| **Console** — live event stream (request, routing, auth) | <img src="images/console.png" width="600" alt="Console" /> |
 | **Chat Playground** — live SSE streaming test | <img src="images/chat_playGround.png" width="600" alt="Chat Playground" /> |
 | **Media Lab** — image, speech & music generation | <img src="images/media_lab.png" width="600" alt="Media Lab" /> |
 | **Settings** — import catalog & danger zone | <img src="images/settings.png" width="600" alt="Settings" /> |
@@ -212,6 +217,7 @@ A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
 - **Usage** — token & cost monitoring across providers, models, routes, **client API keys**, and **upstream keys**; provider×model matrix
 - **Providers / Models / Routes / API Keys** — full CRUD with inline forms; route form filters models by selected modality. Providers have an **API keys** section (multi-account) — add/remove/set-default per key
 - **Logs** — filterable request table + detail drawer; every upstream error shows a **URL + response body** panel in full, plus the failover trail (including which upstream key was used/failed)
+- **Console** — **live event stream** in real time via SSE: incoming requests, per-target failover, auth failures, config changes, system errors. Terminal-style view with per-category filters, auto-scroll, expandable JSON details. Full per-request lifecycle: `incoming → upstream → routing (served/failed) → request (completed)`
 - **Chat Playground** — test routes with live SSE streaming
 - **Media Lab** — generate & preview images, speech, and music inline
 - **Route testing** — probe any route and visualize the failover path
@@ -392,20 +398,6 @@ pm2 save && pm2 startup           # auto-start on server reboot (once)
 Logs are written to `./logs/` (already gitignored). The admin port is still read
 from `packages/admin/.env.local` (`SIBERGATE_ADMIN_PORT`), so changing the port
 works the same as in dev mode.
-
----
-
-## 🗺️ Roadmap
-
-- [x] Core gateway (chat) + routing engine (fallback/fastest/weighted)
-- [x] Multi-modality (image, speech, transcribe, embed, music)
-- [x] Admin dashboard (CRUD, logs, usage, playground, media lab)
-- [x] Built-in provider catalog (18 providers, 206 models)
-- [ ] Response caching (exact-match)
-- [ ] Budget guards (monthly spend caps per key)
-- [ ] Video generation (Runway/Pika)
-- [ ] OpenTelemetry metrics export
-- [ ] Helm chart for Kubernetes
 
 ---
 
