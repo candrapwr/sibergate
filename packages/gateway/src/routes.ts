@@ -118,6 +118,40 @@ function maybeSaveRequestTrace(opts: {
   }
 }
 
+/**
+ * Save a trace on the SUCCESS path when the request recovered via failover
+ * (trail has ≥1 failed step). This is the case the catch-block can't cover:
+ * the request ultimately succeeded (200), so it never enters the error path,
+ * but an upstream target still failed — operators need that error captured.
+ *
+ * Extracts the failing step's upstream diagnostics from the trail so the trace
+ * shows WHY failover happened, not just THAT it happened.
+ */
+function traceOnSuccess(opts: {
+  requestId: string;
+  c: Context;
+  body: unknown;
+  route?: string | null;
+  trail: import('@sibergate/core').FailoverStep[];
+  servedBy: import('@sibergate/core').RouteTarget;
+}): boolean {
+  const failedStep = opts.trail.find((s) => s.outcome === 'failed');
+  if (!failedStep) return false; // no failover — nothing to trace
+  return maybeSaveRequestTrace({
+    requestId: opts.requestId,
+    c: opts.c,
+    body: opts.body,
+    route: opts.route ?? null,
+    provider: opts.servedBy.providerId,
+    model: opts.servedBy.modelId,
+    // The failing target's diagnostics live in the trail step (captured by
+    // engine.ts), not on the success-path error (there is none).
+    upstreamBody: failedStep.upstreamBody,
+    upstreamStatus: failedStep.status,
+    hadFailover: true,
+  });
+}
+
 /* ─── Gemini thought_signature preservation ───────────────────────────────
  * Gemini 3.x menyertakan `extra_content.google.thought_signature` di setiap
  * tool_call (response) & WAJIB dikirim balik di multi-turn. Gateway CAPTURE dari
@@ -398,6 +432,12 @@ export function createApp(configStore: ConfigStore) {
         }
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        // Capture a trace on the success path too when this stream recovered via
+        // failover — the catch-block won't fire for a 200, but operators still
+        // need to see why a target failed before this one served the request.
+        const successTraced = streamStatus === 'completed'
+          ? traceOnSuccess({ requestId, c, body: rawClientBody, route: route.id, trail, servedBy })
+          : false;
         logRequest({
           ...baseLog,
           status,
@@ -411,7 +451,11 @@ export function createApp(configStore: ConfigStore) {
           costUsd,
           errorCode,
           errorMessage,
-          metadata: { trail, streamStatus, ...(res.errorMessage ? { streamError: res.errorMessage } : {}) },
+          metadata: {
+            trail, streamStatus,
+            ...(res.errorMessage ? { streamError: res.errorMessage } : {}),
+            ...(successTraced ? { hasTrace: true } : {}),
+          },
         });
       };
 
@@ -562,6 +606,7 @@ export function createApp(configStore: ConfigStore) {
         const totalTokens = chatJson.usage?.total_tokens ?? promptTokens + completionTokens;
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        const successTraced = traceOnSuccess({ requestId, c, body: rawClientBody, route: route.id, trail, servedBy });
         logRequest({
           ...baseLog,
           provider: servedBy.providerId,
@@ -572,7 +617,7 @@ export function createApp(configStore: ConfigStore) {
           completionTokens,
           totalTokens,
           costUsd,
-          metadata: { trail },
+          metadata: successTraced ? { trail, hasTrace: true } : { trail },
         });
         return c.json(chatJson);
       }
@@ -587,6 +632,7 @@ export function createApp(configStore: ConfigStore) {
         const totalTokens = chatJson.usage?.total_tokens ?? promptTokens + completionTokens;
         const model = config.models.find((m) => m.id === servedBy.modelId);
         const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+        const successTraced = traceOnSuccess({ requestId, c, body: rawClientBody, route: route.id, trail, servedBy });
         logRequest({
           ...baseLog,
           provider: servedBy.providerId,
@@ -597,7 +643,7 @@ export function createApp(configStore: ConfigStore) {
           completionTokens,
           totalTokens,
           costUsd,
-          metadata: { trail },
+          metadata: successTraced ? { trail, hasTrace: true } : { trail },
         });
         return c.json(chatJson);
       }
@@ -621,6 +667,7 @@ export function createApp(configStore: ConfigStore) {
       const totalTokens = json.usage?.total_tokens ?? promptTokens + completionTokens;
       const model = config.models.find((m) => m.id === servedBy.modelId);
       const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, promptTokens, completionTokens);
+      const successTraced = traceOnSuccess({ requestId, c, body: rawClientBody, route: route.id, trail, servedBy });
       logRequest({
         ...baseLog,
         provider: servedBy.providerId,
@@ -630,7 +677,7 @@ export function createApp(configStore: ConfigStore) {
         completionTokens,
         totalTokens,
         costUsd,
-        metadata: { trail },
+        metadata: successTraced ? { trail, hasTrace: true } : { trail },
       });
       return c.json(json);
     } catch (err) {
