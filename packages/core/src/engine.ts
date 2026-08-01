@@ -58,6 +58,9 @@ export interface FailoverStep {
   /** Body response upstream lengkap (JSON/handle) saat step ini gagal — utk audit
    *  di log drawer supaya operator bisa lihat pesan error asli provider. */
   upstreamBody?: string | null;
+  /** Body REQUEST asli yg dikirim ke upstream saat step ini gagal (model asli,
+   *  bukan route id). Captured langsung dr adapter, bukan direkonstruksi. */
+  requestBody?: string | null;
   latencyMs: number;
   /** Upstream key id yg dipakai/langkah ini gagal (provider_keys.id), bila ada. */
   keyId?: string | null;
@@ -203,6 +206,7 @@ export async function executeRoute(
         errorCode: ge.code,
         errorMessage: ge.message?.slice(0, 300),
         upstreamBody: ge.upstream?.body ?? null,
+        requestBody: ge.upstream?.requestBody ?? null,
         latencyMs,
         keyId: key?.id ?? null,
       });

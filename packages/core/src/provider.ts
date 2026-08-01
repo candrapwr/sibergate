@@ -191,7 +191,7 @@ export async function sendUpstream(opts: {
       code,
       `${provider.id} returned ${res.status}${detail ? `: ${detail}` : ''}`.slice(0, 400),
       res.status,
-      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null },
+      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null, upstreamRequestBody: typeof body === 'string' ? body : null },
     );
   }
 
@@ -220,7 +220,7 @@ export async function sendUpstream(opts: {
       'server_error',
       `${provider.id} returned an HTML page instead of an API response${title ? `: ${title}` : ''} (likely a proxy/CDN error page)`.slice(0, 400),
       res.status,
-      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null },
+      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null, upstreamRequestBody: typeof body === 'string' ? body : null },
     );
   }
   return res;
@@ -240,13 +240,18 @@ export class GatewayCallError extends Error {
   servedBy?: { provider: string; model: string; keyId?: string | null };
   /** Failover trail accumulated before this error was thrown (for audit logging). */
   trail?: import('./engine.js').FailoverStep[];
-  /** Diagnostics from the failing upstream call (URL, status, response body). */
-  upstream?: { url?: string; status?: number; body?: string | null };
+  /** Diagnostics from the failing upstream call (URL, status, response & request body). */
+  upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null };
   constructor(
     code: string,
     message: string,
     status?: number,
-    upstream?: { upstreamUrl?: string; upstreamStatus?: number; upstreamBody?: string | null },
+    upstream?: {
+      upstreamUrl?: string;
+      upstreamStatus?: number;
+      upstreamBody?: string | null;
+      upstreamRequestBody?: string | null;
+    },
   ) {
     super(message);
     this.name = 'GatewayCallError';
@@ -257,6 +262,7 @@ export class GatewayCallError extends Error {
         url: upstream.upstreamUrl,
         status: upstream.upstreamStatus,
         body: upstream.upstreamBody,
+        requestBody: upstream.upstreamRequestBody,
       };
     }
   }
