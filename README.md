@@ -72,6 +72,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔀 Modality per-target** — dalam satu route chat, tiap target boleh punya modality sendiri (mis. OpenAI via Responses, DeepSeek via chat). Failover antar-modality berfungsi penuh — gateway ganti converter di tengah jalan.
 - **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
+- **🔀 Tool calling lintas-vendor (cross-vendor) anti-error** — agentic loop dgn failover antar model beda vendor (mis. Gemini ↔ DeepSeek) biasanya crash di multi-turn krn setiap vendor punya token internal sendiri (Gemini `thought_signature`, DeepSeek `reasoning_content`) yg tidak kompatibel & wajib di round-trip. SiberGate menyelesaikannya: set modality target Gemini ke `tools-text` → gateway ubah tool_calls + role:tool menjadi text XML universal di awal, lalu re-parse balik ke format OpenAI di akhir. Klien tetap pegang `tool_calls` asli bersih, tidak ada signature vendor-specific yg bocor, tidak ada error `400 missing signature`. Lihat [Tool calling lintas-vendor](#-tool-calling-lintas-vendor-cross-vendor).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
@@ -323,6 +324,58 @@ Kalau client `stream:false`, semua varian `tools-text*` memakai jalur non-stream
 - Parser gateway toleran terhadap beberapa output model yg tidak rapi: `</args>` hilang, closing tag rusak/split, whitespace setelah JSON, dan teks mirip tag XML di dalam string JSON.
 - Streaming tetap tidak bisa memperbaiki sempurna argumen yg sudah terkirim parsial bila model membuat JSON invalid berat (mis. quote mentah di dalam string). Untuk argumen panjang seperti script/code, beri `max_tokens` cukup supaya model sempat menutup `<tool_call>`.
 - Utk provider yg native-nya sudah chunk + reliable (OpenAI, DeepSeek), modality `chat` default tetap opsi terbaik
+
+---
+
+## 🔀 Tool calling lintas-vendor (cross-vendor)
+
+Agentic loop (LLM memanggil tool berulang sampai selesai) sering melibatkan
+**failover antar model beda vendor**. Ini menjadi masalah krn setiap vendor
+memiliki token internal wajib yg **tidak kompatibel** satu sama lain:
+
+| Vendor | Token internal | Wajib di multi-turn? |
+|---|---|---|
+| Gemini 3.x | `thought_signature` (di setiap `tool_call`) | Ya — hilang → `400 missing signature` |
+| DeepSeek (thinking) | `reasoning_content` (di `assistant` message) | Ya — hilang → `400 must be passed back` |
+
+Saat loop pindah dari DeepSeek ke Gemini, `tool_call` yg di-generate DeepSeek
+**tidak punya** `thought_signature` → saat history itu dibawa ke Gemini lagi di
+turn berikutnya → **crash**. Begitu juga sebaliknya.
+
+### Solusi: gabungkan `chat` + `tools-text` per target
+
+Set modality per-target sesuai karakteristik vendor. Aturan praktisnya:
+
+```
+Provider dgn native function calling reliable (DeepSeek, OpenAI, dll)  → chat
+Provider dgn signature/quirk (Gemini 3.x)                              → tools-text
+```
+
+Dengan konfigurasi ini, gateway menjadi **penerjemah dua arah**:
+
+```
+Klien (format OpenAI)   ←→  Gateway (translate)  ←→  DeepSeek (native tool_calls)
+  tool_calls bersih           convert 2 arah         text biasa, gak peduli signature
+                             (transparan)       ←→  Gemini  (text XML via tools-text)
+```
+
+**Kenapa `tools-text` solve masalahnya:**
+- Tool definition & history (`tool_calls` + role `tool`) di-convert jadi **text XML universal** — tidak ada native function call, tidak ada `thought_signature`, tidak ada `extra_content`.
+- Klien tetap menerima/mengirim format OpenAI `tool_calls` asli — gateway re-parse text XML balik ke `tool_calls` di response.
+- Karena formatnya text universal, **tidak ada token vendor-specific yg bocor** saat failover. Gemini menerima history sebagai text biasa → tidak komplain signature.
+
+### Cara set di dashboard
+
+1. **Admin → Routes → edit route chat** (yg dipakai utk tool calling dgn failover cross-vendor)
+2. Di target builder, untuk setiap target:
+   - Target DeepSeek/OpenAI/dll → pilih modality **`Chat`** (default)
+   - Target Gemini → pilih modality **`Tools (text/XML)`** (atau varian stream/nonstream)
+3. Simpan. Selesai — tidak perlu restart, hot-reload otomatis.
+
+> Catatan: aturan ini berlaku utk route yg **dipakai untuk tool calling**. Route
+> chat biasa (tanpa `tools`) tetap aman pakai modality `chat` di semua target.
+> Signature cache (`thought_signature` & `reasoning_content`) tetap jalan otomatis
+> utk skenario single-vendor native, sebagai lapisan pertahanan tambahan.
 
 ---
 
