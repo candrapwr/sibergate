@@ -30,6 +30,8 @@ export interface RequestTraceData {
   };
   /** The original client request body (messages, tools, model, …). */
   body?: unknown;
+  /** Headers actually sent to the upstream (Authorization/api-key redacted). */
+  headers?: Record<string, string> | null;
   /** The failing upstream call, when available (absent on timeout/network). */
   upstream?: {
     url?: string;

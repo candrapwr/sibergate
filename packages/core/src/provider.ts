@@ -89,6 +89,21 @@ export function upstreamUrl(
   return `${base}${ep.startsWith('/') ? '' : '/'}${ep}`;
 }
 
+/** Redact secret header values for safe storage in trace files. */
+function redactUpstreamHeaders(headers: Record<string, string>): Record<string, string> {
+  const REDACT = /^(authorization|x-api-key|api-key|proxy-authorization|x-auth-token)$/i;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (REDACT.test(k)) {
+      const scheme = v.split(' ')[0];
+      out[k] = scheme && scheme !== v ? `${scheme} ***` : '***';
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 /** Common request builder shared by all adapters. */
 export async function sendUpstream(opts: {
   url: string;
@@ -191,7 +206,7 @@ export async function sendUpstream(opts: {
       code,
       `${provider.id} returned ${res.status}${detail ? `: ${detail}` : ''}`.slice(0, 400),
       res.status,
-      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null, upstreamRequestBody: typeof body === 'string' ? body : null },
+      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null, upstreamRequestBody: typeof body === 'string' ? body : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
     );
   }
 
@@ -220,7 +235,7 @@ export async function sendUpstream(opts: {
       'server_error',
       `${provider.id} returned an HTML page instead of an API response${title ? `: ${title}` : ''} (likely a proxy/CDN error page)`.slice(0, 400),
       res.status,
-      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null, upstreamRequestBody: typeof body === 'string' ? body : null },
+      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null, upstreamRequestBody: typeof body === 'string' ? body : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
     );
   }
   return res;
@@ -240,8 +255,8 @@ export class GatewayCallError extends Error {
   servedBy?: { provider: string; model: string; keyId?: string | null };
   /** Failover trail accumulated before this error was thrown (for audit logging). */
   trail?: import('./engine.js').FailoverStep[];
-  /** Diagnostics from the failing upstream call (URL, status, response & request body). */
-  upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null };
+  /** Diagnostics from the failing upstream call (URL, status, response & request body & headers). */
+  upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null; requestHeaders?: Record<string, string> | null };
   constructor(
     code: string,
     message: string,
@@ -251,6 +266,7 @@ export class GatewayCallError extends Error {
       upstreamStatus?: number;
       upstreamBody?: string | null;
       upstreamRequestBody?: string | null;
+      upstreamRequestHeaders?: Record<string, string> | null;
     },
   ) {
     super(message);
@@ -263,6 +279,7 @@ export class GatewayCallError extends Error {
         status: upstream.upstreamStatus,
         body: upstream.upstreamBody,
         requestBody: upstream.upstreamRequestBody,
+        requestHeaders: upstream.upstreamRequestHeaders,
       };
     }
   }

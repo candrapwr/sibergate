@@ -61,6 +61,8 @@ export interface FailoverStep {
   /** Body REQUEST asli yg dikirim ke upstream saat step ini gagal (model asli,
    *  bukan route id). Captured langsung dr adapter, bukan direkonstruksi. */
   requestBody?: string | null;
+  /** Header REQUEST asli yg dikirim ke upstream (Authorization redacted). */
+  requestHeaders?: Record<string, string> | null;
   latencyMs: number;
   /** Upstream key id yg dipakai/langkah ini gagal (provider_keys.id), bila ada. */
   keyId?: string | null;
@@ -207,6 +209,7 @@ export async function executeRoute(
         errorMessage: ge.message?.slice(0, 300),
         upstreamBody: ge.upstream?.body ?? null,
         requestBody: ge.upstream?.requestBody ?? null,
+        requestHeaders: ge.upstream?.requestHeaders ?? null,
         latencyMs,
         keyId: key?.id ?? null,
       });
