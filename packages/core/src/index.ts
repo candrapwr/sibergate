@@ -85,3 +85,19 @@ export {
   parseBackup,
   type BackupPayload,
 } from './backup.js';
+export {
+  createScript,
+  updateScript,
+  getScript,
+  getScriptByName,
+  listScripts,
+  deleteScript,
+  executeScript,
+  assertValidScriptId,
+  type CustomScript,
+  type CustomScriptSummary,
+  type ScriptInput,
+  type ScriptRequestInput,
+  type ScriptRunResult,
+  type ExecuteScriptOptions,
+} from './custom-scripts.js';

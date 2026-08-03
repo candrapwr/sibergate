@@ -81,6 +81,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔐 Brankas key terpusat** — klien hanya lihat key `sg_live_*`. Key provider asli (default maupun tambahan) di-encrypt saat disimpan (AES-256-GCM), didekripsi sesaat saat request, tidak pernah di-log. Plaintext tidak pernah dikembalikan API — hanya label + prefix redacted.
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa. Saat upstream error terjadi (termasuk yg sukses failover), **raw request lengkap** (URL client, headers teredact, body, upstream call) disimpan otomatis ke file per-request di `request_traces/` — bukan DB, jadi DB tetap ramping. Di drawer Logs, klik **"View raw request"** untuk membuka modal berisi request asli + respons upstream yg gagal.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
+- **🧩 Custom Scripts (build-your-own provider)** — tulis script Node.js di dashboard, dan output `console.log` script otomatis jadi endpoint HTTP (`/api/custom/<nama>`) yg masuk ke alur routing/failover SiberGate sama persis seperti provider lain. Satu provider bisa serve banyak script. Bungkus API lama, scraper, atau microservice internal jadi provider OpenAI-compat tanpa sentuh kode gateway. Lihat [Custom Scripts](#-custom-scripts-build-your-own-provider).
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
 
@@ -240,6 +241,121 @@ Dashboard bertema gelap (Next.js + shadcn/ui) di `http://localhost:3000`:
 
 Key admin di-inject server-side lewat route proxy — tidak pernah sampai browser.
 Playground memakai key klien terpisah (`sg_live_*`).
+
+---
+
+## 🧩 Custom Scripts (build-your-own provider)
+
+**Tulis script Node.js, output `console.log`-nya jadi provider.** SiberGate
+mengeksekusi script lewat `child_process` dan menjadikan stdout-nya sebagai
+response body endpoint `/api/custom/<nama-script>`. Endpoint itu lalu
+didaftarkan sebagai provider HTTP biasa (baseUrl → gateway sendiri) — shg
+**alur routing/failover SiberGate sama sekali tidak berubah**, murni tambahan.
+
+Mengapa ini berguna? Anda bisa membungkus APA PUN menjadi provider
+OpenAI-compat tanpa menyentuh kode gateway atau rebuild:
+
+- **API legacy / internal** — SOAP, GraphQL internal, microservice backend →
+  dibungkus script jadi endpoint dgn format OpenAI, langsung bisa dipakai route.
+- **Scraper / agregator** — ambil data dari sumber non-API, format ulang jadi
+  JSON chat/response.
+- **Logika bisnis kustom** — validasi, transformasi, atau mock provider untuk
+  testing/pengembangan.
+- **Bridge non-LLM** — webhook handler, third-party REST, atau fungsi stateless
+  apa pun yg ingin masuk ke alur routing yg sama.
+
+```
+Klien ──▶ Route ──▶ Engine ──▶ Adapter HTTP ──▶ Provider "my-script"
+                                                    │ baseUrl: gateway sendiri
+                                                    │ endpoint: /api/custom/{model}
+                                                    ▼
+                                          Gateway (loopback)
+                                                    │ child_process spawn node
+                                                    ▼
+                                          stdout script = response body
+```
+
+### Cara pakai
+
+1. Buka **Admin → Custom Scripts → New script**.
+2. Tulis script di **editor kode** (CodeMirror, dgn syntax highlight + template
+   bawaan: chat JSON, plain text, call external API). Output `console.log` =
+   response body.
+3. Klik **Test** utk menjalankan dgn input sample — lihat stdout, stderr, exit
+   code, dan durasi real-time.
+4. Klik **Register as provider** — popup muncul, Anda bisa:
+   - Pilih/edit **Provider ID** & **nama provider**
+   - Pilih **modality** (generic/chat/image/…)
+   - **Reuse provider yg sudah ada** — satu provider bisa serve banyak script
+     (tiap script jadi model terpisah dgn endpoint template `/api/custom/{model}`)
+5. Buka **Routes** → tambah target → pilih provider + model script tsb.
+
+### Input yg tersedia untuk script
+
+Script menerima request via dua saluran:
+
+- **stdin** — raw request body (string). Untuk request bodyless (GET), kosong.
+- **Env vars** — metadata request:
+  - `SIBERGATE_REQUEST_METHOD` — HTTP method (`POST`, `GET`, …)
+  - `SIBERGATE_REQUEST_PATH` — path request
+  - `SIBERGATE_REQUEST_QUERY` — query string (tanpa `?`)
+  - `SIBERGATE_REQUEST_HEADERS` — JSON header (auth di-redact)
+
+### Keamanan & isolasi
+
+- Eksekusi via **`child_process`** — isolasi penuh: script crash, infinite loop,
+  atau OOM **tidak memengaruhi proses gateway**.
+- **Timeout** per script (default 10 detik, bisa atur 500ms–300000ms) → script
+  di-kill paksa (SIGKILL).
+- **Buffer cap** stdout/stderr 5 MB masing-masing (cegah OOM gateway).
+- **Client disconnect** (AbortSignal) langsung mematikan script yg sedang jalan.
+- Header sensitif (`Authorization`, `cookie`, `api-key`, dst) di-redact sebelum
+  diteruskan ke env script.
+
+> ⚠️ Script punya **full Node capability** (`require`, `import`, `fetch`,
+> baca/tulis file, dll). Cocok untuk self-hosted single-operator. Jangan
+> ekspos editor script ke pengguna tidak tepercaya tanpa sandboxing tambahan.
+
+### Contoh script (chat JSON)
+
+```js
+// Format respons OpenAI chat/completions — siap dipakai sbg target route 'chat'.
+let raw = '';
+process.stdin.on('data', (c) => (raw += c));
+process.stdin.on('end', () => {
+  const body = raw ? JSON.parse(raw) : {};
+  const userMsg = body.messages?.at(-1)?.content ?? '';
+  console.log(JSON.stringify({
+    id: 'chat-' + Date.now(),
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: body.model ?? 'custom',
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: `Halo! Anda bilang: ${userMsg}` },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+  }));
+});
+```
+
+### 🗺️ Roadmap performa
+
+Eksekusi saat ini memakai **`child_process`** (spawn per request) demi isolasi
+penuh & determinisme. Overhead bootstrap Node ~30–50ms per panggilan — bisa
+dirasakan pada throughput tinggi. Rencana ke depan:
+
+- **Worker pool** (`worker_threads`) — reuse compiled module, overhead turun
+  ke ~3–5ms. Trade-off: state antar-request bisa bocor (worker dipakai ulang),
+  shg script harus stateless pure function.
+- **Streaming native** — emit SSE chunk baris-per-baris dari `console.log`, shg
+  script bisa jadi provider LLM streaming (bukan hanya REST).
+- **Sandboxing** (`isolated-vm` / QuickJS) — isolasi memori tingkat lanjut untuk
+  skenario multi-tenant, walau membatasi `require`/`fetch`.
+
+Optimisasi akan dipandu data real: tunggu sampai log menunjukkan spawn overhead
+dominan (>40% waktu request) sebelum bermigrasi dari `child_process`.
 
 ---
 

@@ -15,7 +15,8 @@ export type ConsoleLogCategory =
   | 'config'
   | 'system'
   | 'incoming'
-  | 'upstream';
+  | 'upstream'
+  | 'custom-script';
 
 export interface ConsoleLogEntry {
   id: string;

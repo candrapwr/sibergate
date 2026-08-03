@@ -98,6 +98,34 @@ export interface ApiKey {
   plaintext?: string;
 }
 
+/** A custom script record (list view — script source omitted). */
+export interface CustomScriptSummary {
+  id: string;
+  name: string;
+  description: string | null;
+  timeoutMs: number;
+  language: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Full custom script incl. source (returned by GET /:id and create/update). */
+export interface CustomScript extends CustomScriptSummary {
+  script: string;
+}
+
+/** Result of running a script once (POST /admin/custom-scripts/:id/test). */
+export interface ScriptRunResult {
+  ok: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
 export interface RequestLog {
   id: number;
   ts: string;
