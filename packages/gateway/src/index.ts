@@ -4,6 +4,7 @@ import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js'
 import { createApp } from './routes.js';
 import { createAdminRouter } from './admin-routes.js';
 import { createAuthRouter } from './auth-routes.js';
+import { createCustomScriptPublicRouter, createCustomScriptAdminRouter } from './custom-routes.js';
 import { getOrCreateAdminKey } from './admin-middleware.js';
 
 function readTimeoutMs(name: string, fallback: number): number {
@@ -46,6 +47,14 @@ async function main() {
   // these issue a session cookie that gates the Next.js UI. Mounted under /auth
   // (separate from /admin) so the admin-key middleware never intercepts them.
   app.route('/auth', createAuthRouter());
+
+  // Custom Scripts — user-built Node.js scripts exposed as HTTP endpoints.
+  // Public execution surface (needs a client sg_live_* key via authMiddleware)
+  // + admin CRUD/test surface (needs admin key). Each script becomes a URL
+  // (/api/custom/<id>) you can register as a provider target, reusing the
+  // engine + failover unchanged.
+  app.route('/api/custom', createCustomScriptPublicRouter());
+  app.route('/admin/custom-scripts', createCustomScriptAdminRouter(configStore));
 
   app.notFound((c) =>
     c.json(

@@ -17,6 +17,7 @@ import {
   LogOut,
   Users,
   Terminal,
+  FileCode2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSystem, useReload } from '@/lib/queries';
@@ -29,6 +30,7 @@ const NAV = [
   { href: '/providers', label: 'Providers', icon: Boxes },
   { href: '/models', label: 'Models', icon: Cpu },
   { href: '/routes', label: 'Routes', icon: Route },
+  { href: '/custom-scripts', label: 'Custom Scripts', icon: FileCode2 },
   { href: '/api-keys', label: 'API Keys', icon: KeyRound },
   { href: '/users', label: 'Users', icon: Users },
   { href: '/logs', label: 'Logs', icon: ScrollText },

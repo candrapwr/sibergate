@@ -284,11 +284,32 @@ function migrate(db: DB): void {
 
   // ── migrasi: kolom is_default di provider_keys + pindah credentials lama ──
   // Pengelolaan key disatukan di provider_keys (UI hanya punya satu tempat). Key
-  // default provider (yg lama disimpan di providers.credentials) dipindah otomatis
+  // default provider (yg lalu disimpan di providers.credentials) dipindah otomatis
   // ke sini sebagai satu baris dgn is_default=1 — idempoten: skip provider yg
   // sudah punya default key di tabel provider_keys.
   addColumnIfMissing(db, 'provider_keys', 'is_default', 'INTEGER NOT NULL DEFAULT 0');
   migrateLegacyCredentialsToProviderKeys(db);
+
+  // ── Custom Scripts (build-your-own provider via Node.js script) ────────
+  // Tiap script jadi endpoint publik di /api/custom/<id>. Response endpoint =
+  // stdout script (bebas format). Script endpoint didaftarkan sebagai provider
+  // HTTP biasa (baseUrl → gateway sendiri), shg alur routing tetap utuh.
+  // `script` disimpan plain (bukan encrypted) krn bukan secret; executor menulis
+  // ke temp file saat runtime. `language` disediakan utk future (python, dll).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_scripts (
+      id          TEXT PRIMARY KEY,            -- slug, dipakai di URL /api/custom/<id>
+      name        TEXT NOT NULL,               -- display name
+      description TEXT,
+      script      TEXT NOT NULL,               -- source code (Node.js)
+      timeout_ms  INTEGER NOT NULL DEFAULT 10000,
+      language    TEXT NOT NULL DEFAULT 'javascript',
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_custom_scripts_name ON custom_scripts(name);
+  `);
 }
 
 /**

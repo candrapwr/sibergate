@@ -66,6 +66,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔐 Centralized key vault** — clients only ever see a `sg_live_*` key. Real provider keys (default and additional) are encrypted at rest (AES-256-GCM), decrypted transiently at request time, and never logged. Plaintext is never returned by the API — only the label + a redacted prefix.
 - **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose. When an upstream error occurs (including recovered failovers), a **full raw request** (client URL, redacted headers, body, upstream call) is auto-saved to a per-request file in `request_traces/` — not the DB, so the DB stays lean. In the Logs drawer, click **"View raw request"** to open a modal with the original request + the failing upstream response.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
+- **🧩 Custom Scripts (build-your-own provider)** — write a Node.js script in the dashboard and its `console.log` output automatically becomes an HTTP endpoint (`/api/custom/<name>`) that flows through SiberGate's routing/failover exactly like any other provider. One provider can serve many scripts. Wrap legacy APIs, scrapers, or internal microservices into OpenAI-compatible providers without touching gateway code. See [Custom Scripts](#-custom-scripts-build-your-own-provider).
 - **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
 - **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
 
@@ -227,6 +228,122 @@ A dark-themed dashboard (Next.js + shadcn/ui) at `http://localhost:3000`:
 
 The admin key is injected server-side via a proxy route — it never reaches the
 browser. The playground uses a separate client key (`sg_live_*`).
+
+---
+
+## 🧩 Custom Scripts (build-your-own provider)
+
+**Write a Node.js script, its `console.log` output becomes a provider.** SiberGate
+executes the script via `child_process` and turns its stdout into the response
+body of the `/api/custom/<script-name>` endpoint. That endpoint is then
+registered as an ordinary HTTP provider (baseUrl → the gateway itself), so
+**SiberGate's routing/failover flow is entirely unchanged** — purely additive.
+
+Why is this useful? You can wrap ANYTHING into an OpenAI-compatible provider
+without touching gateway code or rebuilding:
+
+- **Legacy / internal APIs** — SOAP, internal GraphQL, backend microservices →
+  a script wraps them into an OpenAI-shaped endpoint, instantly usable by routes.
+- **Scrapers / aggregators** — pull data from non-API sources, reformat into
+  chat/response JSON.
+- **Custom business logic** — validation, transformation, or a mock provider
+  for testing/development.
+- **Non-LLM bridges** — webhook handlers, third-party REST, or any stateless
+  function you want inside the same routing flow.
+
+```
+Client ──▶ Route ──▶ Engine ──▶ HTTP Adapter ──▶ Provider "my-script"
+                                                    │ baseUrl: gateway itself
+                                                    │ endpoint: /api/custom/{model}
+                                                    ▼
+                                          Gateway (loopback)
+                                                    │ child_process spawn node
+                                                    ▼
+                                          script stdout = response body
+```
+
+### How to use
+
+1. Open **Admin → Custom Scripts → New script**.
+2. Write the script in the **code editor** (CodeMirror, with syntax highlighting
+   and built-in templates: chat JSON, plain text, call external API). The
+   `console.log` output is the response body.
+3. Click **Test** to run it with a sample input — see stdout, stderr, exit code,
+   and duration in real time.
+4. Click **Register as provider** — a popup lets you:
+   - Choose/edit the **Provider ID** and **provider display name**
+   - Choose the **modality** (generic/chat/image/…)
+   - **Reuse an existing provider** — one provider can serve many scripts
+     (each script becomes a separate model with the `/api/custom/{model}`
+     endpoint template)
+5. Open **Routes** → add a target → pick the script's provider + model.
+
+### Inputs available to a script
+
+A script receives the request over two channels:
+
+- **stdin** — the raw request body (string). Empty for bodyless requests (GET).
+- **Env vars** — request metadata:
+  - `SIBERGATE_REQUEST_METHOD` — HTTP method (`POST`, `GET`, …)
+  - `SIBERGATE_REQUEST_PATH` — the request path
+  - `SIBERGATE_REQUEST_QUERY` — query string (without the leading `?`)
+  - `SIBERGATE_REQUEST_HEADERS` — JSON of headers (auth redacted)
+
+### Security & isolation
+
+- Execution via **`child_process`** — full isolation: a script crash, infinite
+  loop, or OOM **does not affect the gateway process**.
+- **Timeout** per script (default 10s, configurable 500ms–300000ms) → the
+  script is force-killed (SIGKILL).
+- **Buffer cap** of 5 MB each on stdout/stderr (prevents gateway OOM).
+- **Client disconnect** (AbortSignal) immediately kills the running script.
+- Sensitive headers (`Authorization`, `cookie`, `api-key`, …) are redacted
+  before being passed to the script env.
+
+> ⚠️ Scripts have **full Node capability** (`require`, `import`, `fetch`,
+> file I/O, etc.). Suitable for self-hosted single-operator use. Do not expose
+> the script editor to untrusted users without additional sandboxing.
+
+### Example script (chat JSON)
+
+```js
+// Format an OpenAI chat/completions response — ready to be a 'chat' route target.
+let raw = '';
+process.stdin.on('data', (c) => (raw += c));
+process.stdin.on('end', () => {
+  const body = raw ? JSON.parse(raw) : {};
+  const userMsg = body.messages?.at(-1)?.content ?? '';
+  console.log(JSON.stringify({
+    id: 'chat-' + Date.now(),
+    object: 'chat.completion',
+    created: Math.floor(Date.now() / 1000),
+    model: body.model ?? 'custom',
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content: `Hi! You said: ${userMsg}` },
+      finish_reason: 'stop',
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+  }));
+});
+```
+
+### 🗺️ Performance roadmap
+
+Execution currently uses **`child_process`** (spawn per request) for full
+isolation and determinism. Node bootstrap overhead is ~30–50ms per call —
+noticeable at high throughput. Planned:
+
+- **Worker pool** (`worker_threads`) — reuse compiled modules, dropping overhead
+  to ~3–5ms. Trade-off: state may leak between requests (workers are reused),
+  so scripts must be stateless pure functions.
+- **Native streaming** — emit SSE chunks line-by-line from `console.log`, so
+  scripts can act as streaming LLM providers (not just REST).
+- **Sandboxing** (`isolated-vm` / QuickJS) — advanced memory isolation for
+  multi-tenant scenarios, at the cost of restricting `require`/`fetch`.
+
+Optimization will be data-driven: wait until logs show spawn overhead
+dominating (>40% of request time) before migrating away from `child_process`.
 
 ---
 

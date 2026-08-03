@@ -8,12 +8,15 @@ import {
 import { api } from './api-client';
 import type {
   ApiKey,
+  CustomScript,
+  CustomScriptSummary,
   ListResponse,
   Model,
   Provider,
   ProviderKey,
   RequestLog,
   Route,
+  ScriptRunResult,
   SystemInfo,
   User,
   UsageMatrixRow,
@@ -450,5 +453,66 @@ export function useClearSignatures() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['signatures'] });
     },
+  });
+}
+
+/* ──────────────────────────── Custom Scripts ──────────────────────────── */
+
+export function useCustomScripts() {
+  return useQuery({
+    queryKey: ['custom-scripts'],
+    queryFn: () => api.get<ListResponse<CustomScriptSummary>>('custom-scripts'),
+  });
+}
+
+export function useCustomScript(id: string | null | undefined) {
+  return useQuery({
+    queryKey: ['custom-scripts', id],
+    queryFn: () => api.get<CustomScript>(`custom-scripts/${id}`),
+    enabled: !!id,
+  });
+}
+
+export function useCreateCustomScript() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<CustomScript> & { id: string; script: string }) =>
+      api.post<CustomScript>('custom-scripts', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['custom-scripts'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+export function useUpdateCustomScript() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<CustomScript> }) =>
+      api.patch<CustomScript>(`custom-scripts/${id}`, data),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ['custom-scripts'] });
+      qc.invalidateQueries({ queryKey: ['custom-scripts', vars.id] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+export function useDeleteCustomScript() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`custom-scripts/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['custom-scripts'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+/** Run a saved script with a test input (used by the editor Test panel). */
+export function useTestCustomScript() {
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: string }) =>
+      api.post<ScriptRunResult>(`custom-scripts/${id}/test`, { input }),
   });
 }

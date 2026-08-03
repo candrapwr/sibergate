@@ -26,7 +26,8 @@ export type ConsoleLogCategory =
   | 'config'
   | 'system'
   | 'incoming'
-  | 'upstream';
+  | 'upstream'
+  | 'custom-script';
 
 export interface ConsoleLogEntry {
   /** Stable unique id (used as React key + dedupe on reconnect). */

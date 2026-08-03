@@ -33,17 +33,22 @@ export function RouteTestDialog({ route }: { route: Route }) {
   const [method, setMethod] = useState(defaultMethod);
 
   // Proxy path: route through /api/v1/* (admin-key fallback when no Authorization).
+  // Routes under /v1/* are proxied via /api/v1/*; any other absolute proxy path
+  // (e.g. a custom absolute path typed by the operator) is used as-is.
   const defaultProxyPath = useMemo(() => {
     const p = ep.proxyPath.replace('{routeId}', route.id);
     return p.startsWith('/v1/') ? `/api${p}` : p;
   }, [ep.proxyPath, route.id]);
   const [path, setPath] = useState(defaultProxyPath);
 
-  // The "external" URL shown in the curl preview (gateway base + the /v1 path).
+  // The "external" URL shown in the curl preview (gateway base + the real path).
+  // Only the /api/v1/ prefix is a dashboard proxy → strip it to expose the real
+  // gateway /v1/ path. Other /api/* paths (e.g. /api/custom/<script>) are REAL
+  // gateway paths and must NOT be stripped, or the curl preview lies.
   const baseUrl = detectBaseUrl();
   const externalUrl = useMemo(() => {
-    const v1Path = path.replace(/^\/api\//, '/');
-    return `${baseUrl}${v1Path}`;
+    const realPath = path.replace(/^\/api\/v1\//, '/v1/');
+    return `${baseUrl}${realPath}`;
   }, [path, baseUrl]);
 
   const [headers, setHeaders] = useState<Array<{ key: string; value: string }>>([
