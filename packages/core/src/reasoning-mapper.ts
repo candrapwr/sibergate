@@ -23,11 +23,11 @@
  * (`thinking`, `thinkingConfig`, `reasoning`), we RESPECT it and skip mapping.
  */
 
-/** The OpenAI-style effort values a client may send. */
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/** The effort values a client may send (the OpenAI super-set). */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 const VALID_EFFORTS: ReadonlySet<ReasoningEffort> = new Set([
-  'none', 'minimal', 'low', 'medium', 'high', 'xhigh',
+  'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
 ]);
 
 /**
@@ -43,6 +43,7 @@ const EFFORT_TO_BUDGET: Record<Exclude<ReasoningEffort, 'none'>, number> = {
   medium: 4096,
   high: 16_384,
   xhigh: 32_768,
+  max: 65_536,
 };
 
 /** Map an effort value to a token budget (used by Gemini 2.5 / Claude 3.7). */
@@ -307,18 +308,45 @@ function mapForDeepSeek(effort: ReasoningEffort): Record<string, unknown> {
   }
   let ds: 'low' | 'high' | 'max';
   if (effort === 'low') ds = 'low';
-  else if (effort === 'xhigh') ds = 'max';
+  else if (effort === 'xhigh' || effort === 'max') ds = 'max';
   else ds = 'high'; // medium + high
   return { reasoning_effort: ds };
 }
 
 /**
- * Default (OpenAI / OpenAI-compat): keep the top-level `reasoning_effort`.
- * Clamp `xhigh` → `high` (only the very newest OpenAI models accept xhigh;
- * older ones reject it). Keeps the wire field as the client sent it otherwise.
+ * Detect OpenAI's newest reasoning models that use the nested `reasoning.effort`
+ * syntax (gpt-5.2+, including 5.4, 5.6, sol/terra/luna variants). These moved
+ * away from the flat `reasoning_effort` top-level field.
+ */
+function isOpenAiNewReasoningModel(model: string): boolean {
+  // gpt-5.2, gpt-5.4, gpt-5.6, gpt-5.6-sol/terra/luna, and any higher 5.x.
+  return /^gpt-5[._-]?([2-9]|[1-9][0-9])/i.test(model)
+    || /^gpt-5\.\d/i.test(model);
+}
+
+/**
+ * Map for OpenAI itself. GPT-5.2+ uses the nested `reasoning: { effort }` shape
+ * (and accepts the full value set incl. none/minimal/xhigh/max); older reasoning
+ * models (o1, o3-mini, early GPT-5) use the flat `reasoning_effort` and only
+ * support low/medium/high, so xhigh/max clamp to high.
+ */
+function mapForOpenAi(effort: ReasoningEffort, model: string): Record<string, unknown> {
+  if (isOpenAiNewReasoningModel(model)) {
+    return { reasoning: { effort } };
+  }
+  // Legacy reasoning models: flat field, clamp xhigh/max → high.
+  const e = effort === 'xhigh' || effort === 'max' ? 'high' : effort;
+  return { reasoning_effort: e };
+}
+
+/**
+ * Default for OpenAI-compatible providers that are NOT OpenAI itself (Mistral,
+ * Groq gpt-oss, Together, Fireworks, Novita, Z.AI, Perplexity, Ollama, vLLM,
+ * Cohere, unknowns). These follow the flat `reasoning_effort` convention and
+ * generally do not support xhigh/max, so clamp to high.
  */
 function mapForOpenAiCompat(effort: ReasoningEffort): Record<string, unknown> {
-  const e = effort === 'xhigh' ? 'high' : effort;
+  const e = effort === 'xhigh' || effort === 'max' ? 'high' : effort;
   return { reasoning_effort: e };
 }
 
@@ -420,9 +448,12 @@ function mapByProvider(
     case 'qwencloud':
     case 'qwen':
       return mapForQwen(effort);
-    // OpenAI-compat providers: keep reasoning_effort (Mistral, Groq gpt-oss,
-    // Together, Fireworks, Novita, Z.AI, Perplexity, Ollama, vLLM, ...).
     case 'openai':
+      // Hybrid: GPT-5.2+ → nested reasoning.effort; older → flat reasoning_effort.
+      return mapForOpenAi(effort, model);
+    // OpenAI-compatible providers (NOT OpenAI itself): flat reasoning_effort.
+    // Mistral, Groq gpt-oss, Together, Fireworks, Novita, Z.AI, Perplexity,
+    // Ollama, vLLM, Cohere, and unknowns.
     case 'mistral':
     case 'groq':
     case 'together':

@@ -523,7 +523,8 @@ Field tingkat atas gaya OpenAI, di salah satu nilai berikut:
 | `"low"` | Reasoning dangkal |
 | `"medium"` | Seimbang (default) |
 | `"high"` | Mendalam |
-| `"xhigh"` | Sedalam mungkin (OpenAI/Gemini3) |
+| `"xhigh"` | Sangat dalam (OpenAI GPT-5.2+, DeepSeek→`max`) |
+| `"max"` | Maksimal (OpenAI GPT-5.2+, DeepSeek) |
 
 Selain itu, gateway juga menerima bentuk nested OpenAI `reasoning: { effort: ... }`.
 
@@ -533,7 +534,7 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 
 | Provider tujuan | Bentuk native yg dikirim upstream |
 |---|---|
-| **OpenAI** (o3, GPT-5.x) & kompatibel (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (tingkat atas, `xhigh`→`high`) |
+| **OpenAI** (o3, GPT-5.x) & kompatibel (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (tingkat atas, `xhigh`→`high`); GPT-5.2+ memakai nested `reasoning:{effort}` & menerima `none`/`minimal`/`xhigh`/`max` |
 | **Anthropic** Claude 4.x/5 | `thinking: { type: "adaptive" }` + `effort: <e>` |
 | **Anthropic** Claude 3.7 (legacy) | `thinking: { type: "enabled", budget_tokens: <N> }` |
 | **Anthropic** Claude 3.5 & lebih lama | (tidak support) — field di-strip |
