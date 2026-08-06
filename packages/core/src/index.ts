@@ -101,3 +101,8 @@ export {
   type ScriptRunResult,
   type ExecuteScriptOptions,
 } from './custom-scripts.js';
+export {
+  mapReasoning,
+  effortToBudget,
+  type ReasoningEffort,
+} from './reasoning-mapper.js';

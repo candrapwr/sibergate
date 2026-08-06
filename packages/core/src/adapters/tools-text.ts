@@ -22,6 +22,7 @@
  */
 
 import { sendUpstream, upstreamUrl, type AdapterCall } from '../provider.js';
+import { mapReasoning } from '../reasoning-mapper.js';
 
 /* ───────────────────────────── Types ───────────────────────────── */
 
@@ -848,7 +849,9 @@ export async function toolsText(call: AdapterCall): Promise<Response> {
       : {};
     converted.stream_options = { ...streamOptions, include_usage: true };
   }
-  const upstreamBody = JSON.stringify(converted);
+  // Map reasoning intent ke native provider. Fresh object — tidak mutate body.
+  const mapped = mapReasoning(converted as Record<string, unknown>, provider.id, model);
+  const upstreamBody = JSON.stringify(mapped);
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';
   return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders });

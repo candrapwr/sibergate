@@ -73,6 +73,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🔀 Tool calling lintas-vendor (cross-vendor) anti-error** — agentic loop dgn failover antar model beda vendor (mis. Gemini ↔ DeepSeek) biasanya crash di multi-turn krn setiap vendor punya token internal sendiri (Gemini `thought_signature`, DeepSeek `reasoning_content`) yg tidak kompatibel & wajib di round-trip. SiberGate menyelesaikannya: set modality target Gemini ke `tools-text` → gateway ubah tool_calls + role:tool menjadi text XML universal di awal, lalu re-parse balik ke format OpenAI di akhir. Klien tetap pegang `tool_calls` asli bersih, tidak ada signature vendor-specific yg bocor, tidak ada error `400 missing signature`. Lihat [Tool calling lintas-vendor](#-tool-calling-lintas-vendor-cross-vendor).
+- **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `thinking`+`effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|minimal|low|medium|high|xhigh`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
@@ -492,6 +493,91 @@ Klien (format OpenAI)   ←→  Gateway (translate)  ←→  DeepSeek (native to
 > chat biasa (tanpa `tools`) tetap aman pakai modality `chat` di semua target.
 > Signature cache (`thought_signature` & `reasoning_content`) tetap jalan otomatis
 > utk skenario single-vendor native, sebagai lapisan pertahanan tambahan.
+
+---
+
+## 🧠 Reasoning/thinking mapping
+
+Setiap vendor AI punya cara berbeda mengatur "berpikir" (reasoning/thinking),
+dan nilai yg didukung pun berbeda antar generasi model. SiberGate menyatukannya:
+klien cukup kirim **satu format kanonik** dan gateway otomatis menerjemahkannya
+ke dialek native provider tujuan — termasuk saat failover pindah vendor di tengah
+jalan (tiap target di-mapping independen).
+
+### Format kanonik (yang klien kirim)
+
+Field tingkat atas gaya OpenAI, di salah satu nilai berikut:
+
+```json
+{
+  "model": "smart",
+  "reasoning_effort": "high",
+  "messages": [...]
+}
+```
+
+| Nilai | Arti |
+|---|---|
+| `"none"` | Matikan reasoning (bila model mendukung) |
+| `"minimal"` | Sedikit reasoning |
+| `"low"` | Reasoning dangkal |
+| `"medium"` | Seimbang (default) |
+| `"high"` | Mendalam |
+| `"xhigh"` | Sedalam mungkin (OpenAI/Gemini3) |
+
+Selain itu, gateway juga menerima bentuk nested OpenAI `reasoning: { effort: ... }`.
+
+### Kamus penerjemahan
+
+Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
+
+| Provider tujuan | Bentuk native yg dikirim upstream |
+|---|---|
+| **OpenAI** (o3, GPT-5.x) & kompatibel (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (tingkat atas, `xhigh`→`high`) |
+| **Anthropic** Claude 4.x/5 | `thinking: { type: "adaptive" }` + `effort: <e>` |
+| **Anthropic** Claude 3.7 (legacy) | `thinking: { type: "enabled", budget_tokens: <N> }` |
+| **Anthropic** Claude 3.5 & lebih lama | (tidak support) — field di-strip |
+| **Gemini** 3.x | `generationConfig.thinkingConfig.thinkingLevel: LOW/MEDIUM/HIGH` |
+| **Gemini** 2.5 | `generationConfig.thinkingConfig.thinkingBudget: <N>` |
+| **OpenRouter** | `reasoning: { effort: <e> }` (OR normalisasi ke provider di belakang) |
+| **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` di-clamp ke `low` — Grok tak bisa benar-benar mati) |
+| **DeepSeek** | (implicit, tak ada field) — field di-strip (reasoner/v4-pro mikir otomatis) |
+
+**`none`** diterjemahkan ke field "mati" native tiap provider bila ada
+(Anthropic `thinking:{type:"disabled"}`, Gemini `thinkingBudget:0`), sehingga
+klien bisa mematikan reasoning pada model yg default-nya aktif.
+
+Budget token nominal utk format budget-based: `minimal`→512, `low`→1024,
+`medium`→4096, `high`→16384, `xhigh`→32768.
+
+### Aturan prioritas
+
+- **Klien tidak kirim `reasoning_effort`** → gateway tidak mengubah apa pun
+  (provider default berlaku — backward compatible).
+- **Klien kirim field native sendiri** (`thinking`, `thinkingConfig`, atau
+  `reasoning` tanpa `effort`) → gateway **menghormati** field itu dan tidak
+  menimpa (precedence: native > `reasoning_effort`). Hanya field `reasoning_effort`
+  OpenAI yg di-strip supaya tidak ada dua bentuk bertentangan.
+- **Failover lintas-vendor** → tiap target di-mapping ulang dgn formatnya
+  sendiri (krn gateway tidak memutasi body asli — selalu bangun objek baru).
+
+### Cara kerja
+
+```
+Klien: { model: "smart", reasoning_effort: "high", messages: [...] }
+  │
+  ▼ executeRoute → target Claude → adapter → MAPPER
+  │                                        ↓
+  │   { ..., thinking: { type: "adaptive" }, effort: "high" }
+  │
+  ▼ failover → target Gemini → MAPPER ulang (format berbeda)
+                 { ..., generationConfig: { thinkingConfig: { thinkingLevel: "HIGH" } } }
+```
+
+Mapping berjalan di tiap adapter chat-relevant (`chat`, `responses`,
+`tools-text`) tepat sebelum body diserialisasi ke upstream — shg tidak ada
+perubahan di engine, routing, atau SSE streaming. Tanpa DB/konfigurasi;
+fitur murni logic, transparan, dan langsung aktif.
 
 ---
 
