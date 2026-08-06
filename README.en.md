@@ -531,7 +531,11 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 | **Anthropic** Claude 3.5 & older | (unsupported) — field stripped |
 | **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google maps it internally to thinking_level/thinking_budget). `none` clamped: 3.x & 2.5 Pro → `minimal` (cannot disable); 2.5 Flash/Flash-Lite → `none` (off) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalizes to the backing provider) |
-| **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` clamped to `low` — Grok can't truly disable) |
+| **xAI Grok** 4.5+ | nested `reasoning:{effort}` (low/medium/high); `none`→`low` (cannot disable) |
+| **Mistral** | `reasoning_effort` (`high`/`none` only; medium/low→high) |
+| **Cohere** (compat) | `reasoning_effort` (`none`/`high` only; medium/low→high) |
+| **Z.AI GLM** 4.6+ | `thinking:{type:"enabled"\|"disabled"}` (on/off toggle) |
+| **Kimi/Moonshot** (K2.5+) | `thinking:{type:"enabled"\|"disabled"}` (on/off toggle) |
 | **Qwen Cloud** (qwen3.x) | `enable_thinking: true\|false` + `thinking_budget` (`none`→false, others→true+budget) |
 | **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
 
