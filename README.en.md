@@ -514,7 +514,8 @@ A top-level OpenAI-style field, set to one of:
 | `"low"` | Shallow reasoning |
 | `"medium"` | Balanced (default) |
 | `"high"` | Deep |
-| `"xhigh"` | As deep as possible (OpenAI/Gemini3) |
+| `"xhigh"` | Extra deep (OpenAI GPT-5.2+, DeepSeek→`max`) |
+| `"max"` | Maximum (OpenAI GPT-5.2+, DeepSeek) |
 
 The OpenAI nested form `reasoning: { effort: ... }` is also accepted.
 
@@ -524,7 +525,7 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 
 | Target provider | Native shape sent upstream |
 |---|---|
-| **OpenAI** (o3, GPT-5.x) & compat (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (top-level, `xhigh`→`high`) |
+| **OpenAI** (o3, GPT-5.x) & compat (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (top-level, `xhigh`→`high`); GPT-5.2+ uses nested `reasoning:{effort}` & accepts `none`/`minimal`/`xhigh`/`max` |
 | **Anthropic** Claude 4.x/5 | `thinking: { type: "adaptive" }` + `effort: <e>` |
 | **Anthropic** Claude 3.7 (legacy) | `thinking: { type: "enabled", budget_tokens: <N> }` |
 | **Anthropic** Claude 3.5 & older | (unsupported) — field stripped |
