@@ -572,6 +572,12 @@ asli) dan failover bisa pindah vendor di tengah proses. Contoh: klien kirim
 mendarat di Gemini, gateway ubah jadi `thinkingConfig:{thinkingBudget:16384}`.
 Begitu juga sebaliknya. Klien tidak perlu tahu target akhirnya vendor mana.
 
+### Deteksi target (hybrid)
+
+Gateway pilih format dgn strategi 2 lapis:
+1. **`provider.id` dikenal** (openai/anthropic/gemini/deepseek/xai/mistral/cohere/zai/kimi/qwen/openrouter) → mapping native spesifik vendor.
+2. **Inference host / provider tak dikenal** (Groq/Novita/Together/Fireworks/Ollama/vLLM/unknown) → deteksi **nama model** (`glm-*`, `deepseek-*`, `kimi-*`, `qwen*`, `claude`, `grok-*`, `gemini-*`, `mistral*`, `command-*`) lalu pakai mapping native model tsb. Ini penting: model asli (mis. GLM) butuh format native (`thinking:{type}`) walau di-host di Novita/Fireworks. Model OpenAI-famili (`gpt-*`, `o3`) & model tak dikenal → flat `reasoning_effort` (aman utk host OpenAI-compat yg translate sendiri).
+
 ### Cara kerja
 
 ```
