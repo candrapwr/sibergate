@@ -1,4 +1,5 @@
 import { sendUpstream, upstreamUrl, type AdapterCall } from '../provider.js';
+import { mapReasoning } from '../reasoning-mapper.js';
 
 /**
  * OpenAI Responses API adapter — /v1/responses.
@@ -353,7 +354,10 @@ export async function responses(call: AdapterCall): Promise<Response> {
   const converted = convertChatRequestToResponses(body);
   // Pastikan model upstream selalu di-set (sama seperti adapter chat).
   converted.model = model;
-  const upstreamBody = JSON.stringify(converted);
+  // Map reasoning intent ke native provider (utk per-target modality override
+  // yg menunjuk ke non-OpenAI provider). Fresh object — tidak mutate body.
+  const mapped = mapReasoning(converted as Record<string, unknown>, provider.id, model);
+  const upstreamBody = JSON.stringify(mapped);
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';
   return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders });
