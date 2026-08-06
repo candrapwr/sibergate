@@ -447,7 +447,7 @@ export function mapReasoning(
   // Strip every reasoning-ish input field so the original dialect never leaks
   // to the upstream. We preserve any OTHER generationConfig keys the client
   // may have set (temperature in generationConfig, etc.) by shallow-merging.
-  const mapped = effort === null ? null : mapByProvider(effort, providerId, model);
+  const mapped = effort === null ? null : mapByProvider(effort, providerId, stripModelPath(model));
 
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
@@ -474,6 +474,22 @@ export function mapReasoning(
 }
 
 /**
+ * Strip path prefixes from a model id, returning the bare model name. Inference
+ * hosts namespace models with the owning vendor (or their own account path):
+ *   'novita/deepseek/deepseek-v4-flash'     → 'deepseek-v4-flash'
+ *   'zai/glm-4.6'                           → 'glm-4.6'
+ *   'fireworks/accounts/fireworks/models/deepseek-v4-flash' → 'deepseek-v4-flash'
+ * We take the LAST '/' segment — the actual model name — so vendor-detection
+ * regexes (which anchor on the start of the model name) work regardless of how
+ * many prefix segments the host added. Using substring alone is unsafe (e.g.
+ * 'hunyuan-glm' would falsely match 'glm'), so we anchor ^ AFTER stripping.
+ */
+function stripModelPath(model: string): string {
+  const i = model.lastIndexOf('/');
+  return (i >= 0 ? model.slice(i + 1) : model).toLowerCase();
+}
+
+/**
  * Detect the model "family" from its name — used as a FALLBACK when the
  * provider is an inference host (Novita, Fireworks, Together, …) that serves a
  * model owned by another vendor. Most such hosts expose an OpenAI-compat
@@ -488,14 +504,16 @@ export function mapReasoning(
  * reasoning_effort default, the safe OpenAI-compat fallback).
  */
 function detectModelFamily(model: string): string | null {
-  const m = model.toLowerCase();
-  // Anthropic Claude (covers cross-host: 'anthropic/claude-…', 'claude-3-7-…')
-  if (/claude/i.test(m)) return 'anthropic';
+  // mapByProvider passes an already-stripped model, but strip again defensively
+  // (idempotent) in case this is called directly.
+  const m = stripModelPath(model);
+  // Anthropic Claude (claude-3-7-…, claude-sonnet-4-6)
+  if (/^claude/i.test(m)) return 'anthropic';
   // Z.AI / Zhipu GLM (glm-4.6, glm-5, glm-z1, …)
   if (/^glm[-_]/i.test(m)) return 'zai';
-  // DeepSeek (deepseek-v4, deepseek-reasoner, deepseek-ai/…)
-  if (/deepseek/i.test(m)) return 'deepseek';
-  // Kimi / Moonshot (kimi-k2, moonshot-…)
+  // DeepSeek (deepseek-v4, deepseek-reasoner, deepseek-chat)
+  if (/^deepseek/i.test(m)) return 'deepseek';
+  // Kimi / Moonshot (kimi-k2, moonshot-kimi)
   if (/^(kimi|moonshot)/i.test(m)) return 'kimi';
   // Qwen (qwen3, qwen2.5, qwen-…)
   if (/^qwen/i.test(m)) return 'qwen';
