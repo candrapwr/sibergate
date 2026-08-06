@@ -532,7 +532,7 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 | **Gemini** 2.5 | `generationConfig.thinkingConfig.thinkingBudget: <N>` |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalizes to the backing provider) |
 | **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` clamped to `low` — Grok can't truly disable) |
-| **DeepSeek** | (implicit, no field) — field stripped (reasoner/v4-pro think automatically) |
+| **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
 
 **`none`** is translated to each provider's native "off" field when one exists
 (Anthropic `thinking:{type:"disabled"}`, Gemini `thinkingBudget:0`), so the

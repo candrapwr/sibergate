@@ -541,7 +541,7 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 | **Gemini** 2.5 | `generationConfig.thinkingConfig.thinkingBudget: <N>` |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalisasi ke provider di belakang) |
 | **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` di-clamp ke `low` — Grok tak bisa benar-benar mati) |
-| **DeepSeek** | (implicit, tak ada field) — field di-strip (reasoner/v4-pro mikir otomatis) |
+| **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
 
 **`none`** diterjemahkan ke field "mati" native tiap provider bila ada
 (Anthropic `thinking:{type:"disabled"}`, Gemini `thinkingBudget:0`), sehingga

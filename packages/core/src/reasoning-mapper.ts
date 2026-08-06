@@ -9,7 +9,7 @@
  *   - Google Gemini 3.x: `generationConfig.thinkingConfig.thinkingLevel`
  *   - Google Gemini 2.5:  `generationConfig.thinkingConfig.thinkingBudget`
  *   - OpenRouter: `reasoning.effort` (OR normalizes downstream)
- *   - DeepSeek: implicit (no field — reasoner/v4-pro think automatically)
+ *   - DeepSeek V4-Pro/Flash: `reasoning_effort` (low/high/max) + `thinking` toggle
  *
  * The client sends ONE shape (`reasoning_effort`), and SiberGate maps it to
  * whatever the selected target speaks. Failover across vendors works because
@@ -259,12 +259,30 @@ function mapForGrok(effort: ReasoningEffort): Record<string, unknown> {
 }
 
 /**
- * Translate for DeepSeek. Reasoner/v4-pro think automatically; there is no
- * request-side field. `none` cannot disable it. We just drop the OpenAI field
- * so it isn't rejected as unknown.
+ * Translate for DeepSeek (V4-Pro / V4-Flash). Per the official thinking-mode
+ * guide (api-docs.deepseek.com/guides/thinking_mode), DeepSeek accepts the
+ * OpenAI-style `reasoning_effort` (low/high/max — no medium/minimal/none) and
+ * a `thinking` object toggle.
+ *
+ *   none / minimal → thinking: { type: "disabled" }  (truly off)
+ *   low            → reasoning_effort: "low"
+ *   medium         → reasoning_effort: "high"        (DeepSeek default; no medium)
+ *   high           → reasoning_effort: "high"
+ *   xhigh          → reasoning_effort: "max"
+ *
+ * Thinking mode is enabled by default at "high"; sending nothing lets the
+ * provider default apply (backward compatible — the body is untouched when the
+ * client sends no reasoning intent).
  */
-function mapForDeepSeek(): Record<string, unknown> | null {
-  return { stripReasoningEffort: true };
+function mapForDeepSeek(effort: ReasoningEffort): Record<string, unknown> {
+  if (effort === 'none' || effort === 'minimal') {
+    return { thinking: { type: 'disabled' } };
+  }
+  let ds: 'low' | 'high' | 'max';
+  if (effort === 'low') ds = 'low';
+  else if (effort === 'xhigh') ds = 'max';
+  else ds = 'high'; // medium + high
+  return { reasoning_effort: ds };
 }
 
 /**
@@ -367,7 +385,7 @@ function mapByProvider(
     case 'openrouter':
       return mapForOpenRouter(effort);
     case 'deepseek':
-      return mapForDeepSeek();
+      return mapForDeepSeek(effort);
     case 'xai':
     case 'grok':
       return mapForGrok(effort);
