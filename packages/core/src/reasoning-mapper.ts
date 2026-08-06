@@ -473,11 +473,52 @@ export function mapReasoning(
   return { ...clean, ...mapped };
 }
 
+/**
+ * Detect the model "family" from its name — used as a FALLBACK when the
+ * provider is an inference host (Novita, Fireworks, Together, …) that serves a
+ * model owned by another vendor. Most such hosts expose an OpenAI-compat
+ * endpoint and accept flat `reasoning_effort`, but some pass the request
+ * through to the model's native API, which needs the model's own reasoning
+ * shape (e.g. a GLM model needs `thinking:{type}` regardless of who hosts it).
+ *
+ * Conservative signatures only — only models with a clear, well-known id
+ * prefix are detected, to avoid false positives that would send a native field
+ * to a host that translates itself (causing a 400). Returns a provider-like
+ * id ('zai', 'deepseek', …) or null if no family is recognized (→ flat
+ * reasoning_effort default, the safe OpenAI-compat fallback).
+ */
+function detectModelFamily(model: string): string | null {
+  const m = model.toLowerCase();
+  // Anthropic Claude (covers cross-host: 'anthropic/claude-…', 'claude-3-7-…')
+  if (/claude/i.test(m)) return 'anthropic';
+  // Z.AI / Zhipu GLM (glm-4.6, glm-5, glm-z1, …)
+  if (/^glm[-_]/i.test(m)) return 'zai';
+  // DeepSeek (deepseek-v4, deepseek-reasoner, deepseek-ai/…)
+  if (/deepseek/i.test(m)) return 'deepseek';
+  // Kimi / Moonshot (kimi-k2, moonshot-…)
+  if (/^(kimi|moonshot)/i.test(m)) return 'kimi';
+  // Qwen (qwen3, qwen2.5, qwen-…)
+  if (/^qwen/i.test(m)) return 'qwen';
+  // xAI Grok (grok-4, grok-4.5, …)
+  if (/^grok[-_]/i.test(m)) return 'xai';
+  // Google Gemini (gemini-2.5, gemini-3.x, …)
+  if (/^gemini[-_]/i.test(m)) return 'gemini';
+  // Mistral / Magistral
+  if (/^(mistral|magistral)/i.test(m)) return 'mistral';
+  // Cohere Command
+  if (/^command[-_]/i.test(m)) return 'cohere';
+  // OpenAI GPT (gpt-4o, gpt-5, o1, o3, …)
+  if (/^(gpt|o[13])/i.test(m)) return 'openai';
+  return null;
+}
+
 function mapByProvider(
   effort: ReasoningEffort,
   providerId: string,
   model: string,
 ): Record<string, unknown> | null {
+  // Primary: the known provider id (most reliable — the route target names the
+  // actual upstream vendor). Covers direct-provider cases.
   switch (providerId) {
     case 'anthropic':
       return mapForAnthropic(effort, model);
@@ -509,18 +550,24 @@ function mapByProvider(
     case 'moonshot':
       // Kimi/Moonshot use a thinking:{type} toggle (same shape as Z.AI).
       return mapForKimi(effort);
-    // Pure OpenAI-compatible inference hosts (NOT model-owning providers):
-    // flat reasoning_effort. These host third-party models and follow the
-    // OpenAI convention — Groq gpt-oss, Together, Fireworks, Novita, Ollama,
-    // vLLM, Perplexity, and unknowns.
-    case 'groq':
-    case 'together':
-    case 'fireworks':
-    case 'novita':
-    case 'perplexity':
-    case 'ollama':
-    case 'vllm':
-    default:
-      return mapForOpenAiCompat(effort);
   }
+
+  // Fallback for inference hosts & unknown providers: detect the model family
+  // from its name. If the model belongs to a vendor whose native reasoning
+  // shape differs from flat reasoning_effort (GLM, DeepSeek, Kimi, Qwen, …),
+  // use that vendor's mapping — the model needs its native field regardless of
+  // who hosts it. OpenAI-family models and unrecognized models fall through to
+  // the safe flat reasoning_effort default.
+  const family = detectModelFamily(model);
+  if (family && family !== 'openai') {
+    // Re-enter mapByProvider with the detected vendor id, so the vendor's own
+    // clamps/shape apply (e.g. GLM→thinking toggle, DeepSeek→low/high/max).
+    return mapByProvider(effort, family, model);
+  }
+
+  // Pure OpenAI-compatible inference hosts (NOT model-owning providers):
+  // flat reasoning_effort. These host third-party models and follow the
+  // OpenAI convention — Groq gpt-oss, Together, Fireworks, Novita, Ollama,
+  // vLLM, Perplexity, and unknowns. OpenAI-family models also land here.
+  return mapForOpenAiCompat(effort);
 }

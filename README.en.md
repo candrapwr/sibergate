@@ -564,6 +564,12 @@ if the route lands on Gemini, the gateway rewrites it to
 `thinkingConfig:{thinkingBudget:16384}`, and vice-versa. The client never needs
 to know which vendor ends up serving the request.
 
+### Target detection (hybrid)
+
+The gateway picks the format in two layers:
+1. **Known `provider.id`** (openai/anthropic/gemini/deepseek/xai/mistral/cohere/zai/kimi/qwen/openrouter) → that vendor's native mapping.
+2. **Inference host / unknown provider** (Groq/Novita/Together/Fireworks/Ollama/vLLM/unknown) → detect the **model name** (`glm-*`, `deepseek-*`, `kimi-*`, `qwen*`, `claude`, `grok-*`, `gemini-*`, `mistral*`, `command-*`) and use that model's native mapping. This matters: a vendor-owned model (e.g. GLM) needs its native field (`thinking:{type}`) even when hosted on Novita/Fireworks. OpenAI-family models (`gpt-*`, `o3`) and unrecognized models → flat `reasoning_effort` (safe for OpenAI-compat hosts that translate themselves).
+
 ### How it works
 
 ```
