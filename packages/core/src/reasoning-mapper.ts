@@ -113,6 +113,19 @@ function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
     }
   }
 
+  // 6. Qwen Cloud: enable_thinking (boolean) + optional thinking_budget (token cap).
+  //    enable_thinking:true  → thinking on (default depth = medium)
+  //    enable_thinking:false → thinking off (none)
+  //    thinking_budget:N     → infer effort from token budget
+  if (typeof body.enable_thinking === 'boolean') {
+    if (!body.enable_thinking) return 'none';
+    if (typeof body.thinking_budget === 'number') return budgetToEffort(body.thinking_budget);
+    return 'medium'; // on, no explicit depth
+  }
+  if (typeof body.thinking_budget === 'number') {
+    return body.thinking_budget === 0 ? 'none' : budgetToEffort(body.thinking_budget);
+  }
+
   return null;
 }
 
@@ -257,6 +270,22 @@ function mapForGrok(effort: ReasoningEffort): Record<string, unknown> {
 }
 
 /**
+ * Translate for Qwen Cloud (qwen3.x). Qwen uses a boolean `enable_thinking`
+ * toggle plus an optional `thinking_budget` (token cap on thinking).
+ *
+ *   none / minimal → enable_thinking: false                 (off)
+ *   other          → enable_thinking: true + thinking_budget: <N>
+ *
+ * The thinking_budget gives a coarse depth mapping (Qwen has no effort levels).
+ */
+function mapForQwen(effort: ReasoningEffort): Record<string, unknown> {
+  if (effort === 'none' || effort === 'minimal') {
+    return { enable_thinking: false };
+  }
+  return { enable_thinking: true, thinking_budget: effortToBudget(effort) };
+}
+
+/**
  * Translate for DeepSeek (V4-Pro / V4-Flash). Per the official thinking-mode
  * guide (api-docs.deepseek.com/guides/thinking_mode), DeepSeek accepts the
  * OpenAI-style `reasoning_effort` (low/high/max — no medium/minimal/none) and
@@ -298,6 +327,7 @@ function mapForOpenAiCompat(effort: ReasoningEffort): Record<string, unknown> {
 /** All reasoning-ish input fields that get stripped before re-mapping. */
 const REASONING_INPUT_FIELDS = [
   'reasoning_effort', 'reasoning', 'thinking', 'thinkingConfig', 'generationConfig',
+  'enable_thinking', 'thinking_budget', // Qwen Cloud
 ] as const;
 
 /**
@@ -387,6 +417,9 @@ function mapByProvider(
     case 'xai':
     case 'grok':
       return mapForGrok(effort);
+    case 'qwencloud':
+    case 'qwen':
+      return mapForQwen(effort);
     // OpenAI-compat providers: keep reasoning_effort (Mistral, Groq gpt-oss,
     // Together, Fireworks, Novita, Z.AI, Perplexity, Ollama, vLLM, ...).
     case 'openai':
