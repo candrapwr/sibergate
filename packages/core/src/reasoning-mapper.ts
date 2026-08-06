@@ -263,11 +263,13 @@ function mapForOpenRouter(effort: ReasoningEffort): Record<string, unknown> {
 }
 
 /**
- * Translate for xAI Grok. Grok is reasoning-first; `none` clamps to `low`
- * (can't truly disable on reasoning-focused variants).
+ * Translate for xAI Grok (grok-4.5+). Per xAI's docs, Grok uses the nested
+ * `reasoning: { effort }` shape (like new OpenAI). Reasoning CANNOT be
+ * disabled on reasoning-first variants, so `none`/`minimal` clamp to `low`.
+ * Accepted values: low / medium / high.
  */
 function mapForGrok(effort: ReasoningEffort): Record<string, unknown> {
-  return { reasoning_effort: effortToGrok(effort) };
+  return { reasoning: { effort: effortToGrok(effort) } };
 }
 
 /**
@@ -284,6 +286,49 @@ function mapForQwen(effort: ReasoningEffort): Record<string, unknown> {
     return { enable_thinking: false };
   }
   return { enable_thinking: true, thinking_budget: effortToBudget(effort) };
+}
+
+/**
+ * Translate for Mistral (mistral-small/medium-latest). Per Mistral's docs, the
+ * reasoning API is intentionally minimal: `reasoning_effort` accepts ONLY
+ * `"high"` or `"none"`. Anything else clamps to `high` (on) or `none` (off).
+ */
+function mapForMistral(effort: ReasoningEffort): Record<string, unknown> {
+  const e = effort === 'none' || effort === 'minimal' ? 'none' : 'high';
+  return { reasoning_effort: e };
+}
+
+/**
+ * Translate for Cohere (Command A Reasoning via the OpenAI-compat endpoint).
+ * Cohere's compat API accepts `reasoning_effort` but ONLY `"none"` and `"high"`
+ * (mapping to its native thinking toggle). medium/low/xhigh/max clamp to high.
+ */
+function mapForCohere(effort: ReasoningEffort): Record<string, unknown> {
+  const e = effort === 'none' || effort === 'minimal' ? 'none' : 'high';
+  return { reasoning_effort: e };
+}
+
+/**
+ * Translate for Z.AI GLM (GLM-4.6 / GLM-5 / GLM-Z1). Per Z.AI's docs, GLM uses a
+ * `thinking` object with `type: "enabled" | "disabled"`. Thinking is enabled by
+ * default; there is no effort granularity (just on/off).
+ *   none / minimal → thinking: { type: "disabled" }
+ *   other          → thinking: { type: "enabled" }
+ */
+function mapForZai(effort: ReasoningEffort): Record<string, unknown> {
+  const type = effort === 'none' || effort === 'minimal' ? 'disabled' : 'enabled';
+  return { thinking: { type } };
+}
+
+/**
+ * Translate for Moonshot / Kimi (kimi-k2.6, kimi-k2.5). Per Kimi's docs, the
+ * `thinking` object accepts `type: "enabled" | "disabled"`. Thinking is enabled
+ * by default; `kimi-k2.7-code` is always-on and cannot be disabled. Same shape
+ * as Z.AI GLM.
+ */
+function mapForKimi(effort: ReasoningEffort): Record<string, unknown> {
+  const type = effort === 'none' || effort === 'minimal' ? 'disabled' : 'enabled';
+  return { thinking: { type } };
 }
 
 /**
@@ -451,19 +496,30 @@ function mapByProvider(
     case 'openai':
       // Hybrid: GPT-5.2+ → nested reasoning.effort; older → flat reasoning_effort.
       return mapForOpenAi(effort, model);
-    // OpenAI-compatible providers (NOT OpenAI itself): flat reasoning_effort.
-    // Mistral, Groq gpt-oss, Together, Fireworks, Novita, Z.AI, Perplexity,
-    // Ollama, vLLM, Cohere, and unknowns.
     case 'mistral':
+      // Mistral accepts only reasoning_effort "high" or "none".
+      return mapForMistral(effort);
+    case 'cohere':
+      // Cohere compat API accepts only reasoning_effort "none" or "high".
+      return mapForCohere(effort);
+    case 'zai':
+      // Z.AI GLM uses a thinking:{type} toggle (no effort granularity).
+      return mapForZai(effort);
+    case 'kimi':
+    case 'moonshot':
+      // Kimi/Moonshot use a thinking:{type} toggle (same shape as Z.AI).
+      return mapForKimi(effort);
+    // Pure OpenAI-compatible inference hosts (NOT model-owning providers):
+    // flat reasoning_effort. These host third-party models and follow the
+    // OpenAI convention — Groq gpt-oss, Together, Fireworks, Novita, Ollama,
+    // vLLM, Perplexity, and unknowns.
     case 'groq':
     case 'together':
     case 'fireworks':
     case 'novita':
-    case 'zai':
     case 'perplexity':
     case 'ollama':
     case 'vllm':
-    case 'cohere':
     default:
       return mapForOpenAiCompat(effort);
   }

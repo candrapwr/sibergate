@@ -540,7 +540,11 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 | **Anthropic** Claude 3.5 & lebih lama | (tidak support) — field di-strip |
 | **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google petakan internal ke thinking_level/thinking_budget). `none` di-clamp: 3.x & 2.5 Pro → `minimal` (tidak bisa mati); 2.5 Flash/Flash-Lite → `none` (mati) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalisasi ke provider di belakang) |
-| **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` di-clamp ke `low` — Grok tak bisa benar-benar mati) |
+| **xAI Grok** 4.5+ | nested `reasoning:{effort}` (low/medium/high); `none`→`low` (tdk bisa dimatikan) |
+| **Mistral** | `reasoning_effort` (`high`/`none` saja; medium/low→high) |
+| **Cohere** (compat) | `reasoning_effort` (`none`/`high` saja; medium/low→high) |
+| **Z.AI GLM** 4.6+ | `thinking:{type:"enabled"\|"disabled"}` (toggle on/off) |
+| **Kimi/Moonshot** (K2.5+) | `thinking:{type:"enabled"\|"disabled"}` (toggle on/off) |
 | **Qwen Cloud** (qwen3.x) | `enable_thinking: true\|false` + `thinking_budget` (`none`→false, lainnya→true+budget) |
 | **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
 
