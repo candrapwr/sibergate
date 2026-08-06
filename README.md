@@ -537,8 +537,7 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 | **Anthropic** Claude 4.x/5 | `thinking: { type: "adaptive" }` + `effort: <e>` |
 | **Anthropic** Claude 3.7 (legacy) | `thinking: { type: "enabled", budget_tokens: <N> }` |
 | **Anthropic** Claude 3.5 & lebih lama | (tidak support) — field di-strip |
-| **Gemini** 3.x | `generationConfig.thinkingConfig.thinkingLevel: LOW/MEDIUM/HIGH` |
-| **Gemini** 2.5 | `generationConfig.thinkingConfig.thinkingBudget: <N>` |
+| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google petakan internal ke thinking_level/thinking_budget). `none` di-clamp: 3.x & 2.5 Pro → `minimal` (tidak bisa mati); 2.5 Flash/Flash-Lite → `none` (mati) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalisasi ke provider di belakang) |
 | **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` di-clamp ke `low` — Grok tak bisa benar-benar mati) |
 | **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
