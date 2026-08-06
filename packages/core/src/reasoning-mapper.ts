@@ -145,31 +145,24 @@ function isAnthropicLegacyModel(model: string): boolean {
   return /^claude-3-7/i.test(model);
 }
 
-/** Gemini 3.x uses thinkingLevel (LOW/MEDIUM/HIGH). */
+/** Gemini 3.x (3.5, 3.6, 3.1, …). */
 function isGemini3Model(model: string): boolean {
   return /^gemini-3/i.test(model);
 }
 
-/** Gemini 2.5 uses thinkingBudget (numeric token count). Accepts both
- *  dotted (gemini-2.5-pro) and dashed (gemini-2-5-pro) id conventions. */
+/** Gemini 2.5 (Pro / Flash / Flash-Lite). Accepts both dotted (gemini-2.5-pro)
+ *  and dashed (gemini-2-5-pro) id conventions. */
 function isGemini25Model(model: string): boolean {
   return /^gemini-2[.-]5/i.test(model);
 }
 
-/* ─────────────────────────── per-provider mapping ───────────────────── */
-
-/** Gemini thinkingLevel accepts only LOW/MEDIUM/HIGH (no none/minimal/xhigh). */
-function effortToGeminiLevel(effort: ReasoningEffort): 'LOW' | 'MEDIUM' | 'HIGH' {
-  switch (effort) {
-    case 'none':
-    case 'minimal':
-    case 'low': return 'LOW';
-    case 'xhigh':
-    case 'high': return 'HIGH';
-    case 'medium':
-    default: return 'MEDIUM';
-  }
+/** Gemini 2.5 Pro specifically — unlike 2.5 Flash / Flash-Lite, it cannot
+ *  disable thinking (only Flash variants accept reasoning_effort:"none"). */
+function isGemini25ProModel(model: string): boolean {
+  return /^gemini-2[.-]5-pro/i.test(model);
 }
+
+/* ─────────────────────────── per-provider mapping ───────────────────── */
 
 /** Grok is reasoning-first; "none" can't truly disable, so clamp to "low". */
 function effortToGrok(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
@@ -213,31 +206,36 @@ function mapForAnthropic(effort: ReasoningEffort, model: string): Record<string,
 }
 
 /**
- * Translate for a Google Gemini target (via the OpenAI-compat shim endpoint).
- * Places the native config under `generationConfig.thinkingConfig`.
+ * Translate for a Google Gemini target. SiberGate talks to Gemini via its
+ * OpenAI-compatible shim (`/v1beta/openai/chat/completions`), NOT the native
+ * `:generateContent` endpoint. The shim does NOT accept the native
+ * `generationConfig` field — sending it yields:
+ *   400 "Unknown name 'generationConfig': Cannot find field."
  *
- *   none  → thinkingBudget: 0        (disable)
- *   Gemini 3.x → thinkingLevel: LOW/MEDIUM/HIGH
- *   Gemini 2.5 → thinkingBudget: <N>
+ * The correct, model-agnostic control on the OpenAI-compat endpoint is the
+ * top-level `reasoning_effort` (minimal|low|medium|high|none). Google maps it
+ * internally to `thinking_level` (Gemini 3.x) or `thinking_budget` (Gemini 2.5).
+ *
+ * Model-specific clamps (per Google's reasoning docs):
+ *   - Gemini 3.x: cannot truly disable; lowest is "minimal". `none` → `minimal`.
+ *   - Gemini 2.5 Flash / Flash-Lite: support `none` (thinking off). 2.5 Pro does not.
+ *   - `xhigh` is not a Gemini value → clamp to `high`.
  */
-function mapForGemini(effort: ReasoningEffort, model: string): Record<string, unknown> | null {
-  if (effort === 'none') {
-    return {
-      generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
-    };
+function mapForGemini(effort: ReasoningEffort, model: string): Record<string, unknown> {
+  // Clamp xhigh → high (Gemini has no xhigh).
+  let e: ReasoningEffort = effort === 'xhigh' ? 'high' : effort;
+
+  // Gemini 3.x cannot disable thinking — clamp none/minimal → minimal.
+  if (e === 'none' && isGemini3Model(model)) {
+    e = 'minimal';
   }
-  if (isGemini3Model(model)) {
-    return {
-      generationConfig: { thinkingConfig: { thinkingLevel: effortToGeminiLevel(effort) } },
-    };
+  // Gemini 2.5 Pro cannot disable thinking either; only Flash / Flash-Lite can.
+  if (e === 'none' && isGemini25ProModel(model)) {
+    e = 'minimal';
   }
-  if (isGemini25Model(model)) {
-    return {
-      generationConfig: { thinkingConfig: { thinkingBudget: effortToBudget(effort) } },
-    };
-  }
-  // Older Gemini (2.0 and below) — no thinking controls. Strip the OpenAI field.
-  return { stripReasoningEffort: true };
+  // 'none' passes through as-is for 2.5 Flash / Flash-Lite (genuinely off).
+
+  return { reasoning_effort: e };
 }
 
 /**

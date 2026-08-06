@@ -528,8 +528,7 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 | **Anthropic** Claude 4.x/5 | `thinking: { type: "adaptive" }` + `effort: <e>` |
 | **Anthropic** Claude 3.7 (legacy) | `thinking: { type: "enabled", budget_tokens: <N> }` |
 | **Anthropic** Claude 3.5 & older | (unsupported) — field stripped |
-| **Gemini** 3.x | `generationConfig.thinkingConfig.thinkingLevel: LOW/MEDIUM/HIGH` |
-| **Gemini** 2.5 | `generationConfig.thinkingConfig.thinkingBudget: <N>` |
+| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google maps it internally to thinking_level/thinking_budget). `none` clamped: 3.x & 2.5 Pro → `minimal` (cannot disable); 2.5 Flash/Flash-Lite → `none` (off) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalizes to the backing provider) |
 | **xAI Grok** (reasoning-first) | `reasoning_effort` (`none` clamped to `low` — Grok can't truly disable) |
 | **DeepSeek** V4-Pro/Flash | `reasoning_effort` (`low`/`high`/`max`); `none`→`thinking:{type:"disabled"}` |
