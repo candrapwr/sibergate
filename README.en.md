@@ -541,16 +541,23 @@ client can turn off reasoning on models that are reasoning-on by default.
 Token budgets for budget-based formats: `minimal`→512, `low`→1024,
 `medium`→4096, `high`→16384, `xhigh`→32768.
 
-### Precedence rules
+### Precedence rules & two-way translation
 
-- **Client sends no `reasoning_effort`** → the gateway changes nothing
-  (provider defaults apply — backward compatible).
-- **Client sends its own native field** (`thinking`, `thinkingConfig`, or a
-  `reasoning` object without `effort`) → the gateway **respects** it and does
-  not override (precedence: native > `reasoning_effort`). Only the OpenAI
-  `reasoning_effort` field is stripped, to avoid sending two conflicting shapes.
+- **Client sends no reasoning intent** → the gateway changes nothing (provider
+  defaults apply — backward compatible).
+- **Client sends a provider-A native field** (`thinking`, `thinkingConfig`,
+  `reasoning.max_tokens`, …) → the gateway **normalizes** it to the canonical
+  effort level, then re-translates to the **target's** native format. The
+  original field is stripped so no two conflicting shapes are sent.
 - **Cross-vendor failover** → each target is re-mapped to its own format (the
   gateway never mutates the original body — it always builds a fresh object).
+
+This matters because routes are masked (the client sends a virtual route id,
+not a real model) and failover can switch vendors mid-flight. Example: the
+client sends `thinking:{type:"adaptive", effort:"high"}` (Anthropic-style) —
+if the route lands on Gemini, the gateway rewrites it to
+`thinkingConfig:{thinkingBudget:16384}`, and vice-versa. The client never needs
+to know which vendor ends up serving the request.
 
 ### How it works
 

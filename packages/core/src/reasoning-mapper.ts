@@ -52,19 +52,78 @@ export function effortToBudget(effort: ReasoningEffort): number {
 }
 
 /**
- * Pull a client intent from the body. Accepts the canonical `reasoning_effort`
- * (string) and OpenAI's nested `reasoning.effort` shape. Returns null when the
- * client expressed no reasoning intent (→ no mapping, provider default).
+ * Pull a client intent from the body. Accepts MULTIPLE input dialects and
+ * normalizes them to the canonical effort level:
+ *
+ *   1. OpenAI top-level: `reasoning_effort: "high"`
+ *   2. OpenAI nested:    `reasoning: { effort: "high" }`
+ *   3. OpenRouter:       `reasoning: { effort: "high", max_tokens: N }`
+ *   4. Anthropic:        `thinking: { type: "adaptive"|"enabled"|"disabled" }`
+ *                        (+ optional `effort:` sibling or `budget_tokens:`)
+ *   5. Gemini:           `generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}`
+ *
+ * This two-way parsing is critical because the client doesn't know the real
+ * target — routes are masked (virtual ids), and failover can switch vendors
+ * mid-flight. So a `thinking` object aimed at Anthropic must be re-translated
+ * if the route ends up at Gemini, otherwise Gemini rejects the foreign field.
+ *
+ * Returns null when the client expressed no reasoning intent (→ no mapping).
  */
 function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
+  // 1. OpenAI top-level string.
   const top = body.reasoning_effort;
   if (typeof top === 'string') return normalizeEffort(top);
+
+  // 2-3. OpenAI nested / OpenRouter: reasoning: { effort: "..." }
   const nested = body.reasoning;
   if (nested && typeof nested === 'object') {
     const e = (nested as { effort?: unknown }).effort;
     if (typeof e === 'string') return normalizeEffort(e);
+    // OpenRouter reasoning.max_tokens → infer effort from token budget.
+    const mt = (nested as { max_tokens?: unknown }).max_tokens;
+    if (typeof mt === 'number') return budgetToEffort(mt);
   }
+
+  // 4. Anthropic: thinking: { type, budget_tokens?, effort? }
+  const thinking = body.thinking;
+  if (thinking && typeof thinking === 'object') {
+    const t = thinking as { type?: unknown; budget_tokens?: unknown; effort?: unknown };
+    if (typeof t.effort === 'string') return normalizeEffort(t.effort);
+    if (typeof t.budget_tokens === 'number') return budgetToEffort(t.budget_tokens);
+    if (t.type === 'disabled') return 'none';
+    if (t.type === 'adaptive' || t.type === 'enabled') return 'medium'; // on, unknown depth → default medium
+  }
+
+  // 5. Gemini: generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}
+  const gc = body.generationConfig;
+  if (gc && typeof gc === 'object') {
+    const tc = (gc as { thinkingConfig?: unknown }).thinkingConfig;
+    if (tc && typeof tc === 'object') {
+      const cfg = tc as { thinkingLevel?: unknown; thinkingBudget?: unknown };
+      if (typeof cfg.thinkingBudget === 'number') {
+        if (cfg.thinkingBudget === 0) return 'none';
+        return budgetToEffort(cfg.thinkingBudget);
+      }
+      if (typeof cfg.thinkingLevel === 'string') {
+        const lvl = cfg.thinkingLevel.toLowerCase();
+        if (lvl === 'low') return 'low';
+        if (lvl === 'medium') return 'medium';
+        if (lvl === 'high') return 'high';
+      }
+    }
+  }
+
   return null;
+}
+
+/** Map a token budget back to an effort level (inverse of effortToBudget). */
+function budgetToEffort(budget: number): ReasoningEffort {
+  if (budget <= 0) return 'none';
+  if (budget <= 700) return 'minimal';
+  if (budget <= 1500) return 'low';
+  if (budget <= 8000) return 'medium';
+  if (budget <= 20000) return 'high';
+  return 'xhigh';
 }
 
 function normalizeEffort(raw: string): ReasoningEffort | null {
@@ -220,16 +279,31 @@ function mapForOpenAiCompat(effort: ReasoningEffort): Record<string, unknown> {
 
 /* ─────────────────────────────── main entry ─────────────────────────── */
 
+/** All reasoning-ish input fields that get stripped before re-mapping. */
+const REASONING_INPUT_FIELDS = [
+  'reasoning_effort', 'reasoning', 'thinking', 'thinkingConfig', 'generationConfig',
+] as const;
+
 /**
  * Map a client request body's reasoning intent to the target provider's native
  * format. Returns a FRESH body object (never mutates the input — the same body
  * is reused across failover targets, so in-place mutation would leak).
  *
+ * TWO-WAY translation: ANY reasoning dialect the client sent — OpenAI
+ * `reasoning_effort`, nested `reasoning.effort`, Anthropic `thinking`,
+ * Gemini `generationConfig.thinkingConfig`, OpenRouter `reasoning.max_tokens` —
+ * is first normalized to a canonical effort level, then re-translated to the
+ * TARGET provider's native shape. This is essential because routes are masked
+ * (the client sends a virtual route id, not a real model) and failover can
+ * switch vendors mid-flight: a `thinking` object meant for Anthropic must be
+ * re-spoken as `thinkingConfig` if the route lands on Gemini, otherwise Gemini
+ * rejects the foreign field.
+ *
  * Rules:
- *  - No `reasoning_effort` (and no `reasoning.effort`) → body unchanged.
- *  - Client already sent a NATIVE field (`thinking`/`thinkingConfig`/`reasoning`)
- *    → respect it; do not overwrite (precedence: native > effort).
- *  - Otherwise → translate per provider.id + model name.
+ *  - No reasoning intent detectable in any form → body unchanged (provider
+ *    defaults apply, backward compatible).
+ *  - Intent found → strip ALL input reasoning fields, then emit ONLY the
+ *    target's native shape. The original dialect never reaches the upstream.
  */
 export function mapReasoning(
   body: Record<string, unknown>,
@@ -239,32 +313,30 @@ export function mapReasoning(
   const effort = parseEffort(body);
   if (effort === null) return body; // no client intent → no-op
 
-  // Precedence: a provider-NATIVE field the client already set wins. But note
-  // `reasoning.effort` is the OpenAI *input* dialect (also parseEffort's source),
-  // NOT a native override — so we only treat a bare `reasoning` object WITHOUT
-  // an `effort` child, or `thinking`/`thinkingConfig`, as native overrides.
-  const hasNativeOverride =
-    !!body.thinking
-    || !!body.thinkingConfig
-    || (!!body.reasoning && typeof body.reasoning === 'object'
-        && (body.reasoning as { effort?: unknown }).effort === undefined);
-  if (hasNativeOverride) {
-    const { reasoning_effort: _drop, ...rest } = body;
-    return rest;
-  }
-
   const mapped = mapByProvider(effort, providerId, model);
 
-  // Sentinel: provider doesn't support reasoning — strip the OpenAI field only.
-  if (mapped && mapped.stripReasoningEffort) {
-    const { reasoning_effort: _drop, ...rest } = body;
-    return rest;
+  // Strip every reasoning-ish input field so the original dialect never leaks
+  // to the upstream alongside the re-mapped native shape. We preserve any
+  // OTHER generationConfig keys the client may have set (temperature in
+  // generationConfig, etc.) by shallow-merging.
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body)) {
+    if ((REASONING_INPUT_FIELDS as readonly string[]).includes(k)) continue;
+    clean[k] = v;
+  }
+  // generationConfig may carry non-reasoning keys (temperature, topP, …) on
+  // Gemini. Re-merge the original minus its thinkingConfig, then let the
+  // mapped shape (which may include a fresh generationConfig) win.
+  if (body.generationConfig && typeof body.generationConfig === 'object') {
+    const { thinkingConfig: _drop, ...gcRest } = body.generationConfig as Record<string, unknown>;
+    if (Object.keys(gcRest).length > 0) {
+      clean.generationConfig = { ...gcRest, ...((mapped as Record<string, unknown>).generationConfig as Record<string, unknown> ?? {}) };
+    }
   }
 
-  // Merge mapped fields onto a fresh copy. We also drop the original
-  // `reasoning_effort` (and nested `reasoning`) so we don't send both the
-  // OpenAI shape AND the native shape to the upstream.
-  const { reasoning_effort: _drop1, reasoning: _drop2, ...clean } = body;
+  // Sentinel: provider doesn't support reasoning — nothing to add (already stripped).
+  if (mapped && mapped.stripReasoningEffort) return clean;
+
   return { ...clean, ...mapped };
 }
 

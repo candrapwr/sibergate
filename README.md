@@ -550,16 +550,22 @@ klien bisa mematikan reasoning pada model yg default-nya aktif.
 Budget token nominal utk format budget-based: `minimal`→512, `low`→1024,
 `medium`→4096, `high`→16384, `xhigh`→32768.
 
-### Aturan prioritas
+### Aturan prioritas & two-way translation
 
-- **Klien tidak kirim `reasoning_effort`** → gateway tidak mengubah apa pun
-  (provider default berlaku — backward compatible).
-- **Klien kirim field native sendiri** (`thinking`, `thinkingConfig`, atau
-  `reasoning` tanpa `effort`) → gateway **menghormati** field itu dan tidak
-  menimpa (precedence: native > `reasoning_effort`). Hanya field `reasoning_effort`
-  OpenAI yg di-strip supaya tidak ada dua bentuk bertentangan.
+- **Klien tidak kirim intent reasoning apa pun** → gateway tidak mengubah apa
+  pun (provider default berlaku — backward compatible).
+- **Klien kirim field native provider A** (`thinking`, `thinkingConfig`,
+  `reasoning.max_tokens`, dll) → gateway **menormalisasi** field itu ke level
+  effort kanonik, lalu menerjemahkan ulang ke format native **target**. Field
+  asli di-strip supaya tidak ada dua bentuk bertentangan.
 - **Failover lintas-vendor** → tiap target di-mapping ulang dgn formatnya
   sendiri (krn gateway tidak memutasi body asli — selalu bangun objek baru).
+
+Ini penting karena route di-mask (klien kirim route id virtual, bukan model
+asli) dan failover bisa pindah vendor di tengah proses. Contoh: klien kirim
+`thinking:{type:"adaptive", effort:"high"}` (gaya Anthropic) — kalau route
+mendarat di Gemini, gateway ubah jadi `thinkingConfig:{thinkingBudget:16384}`.
+Begitu juga sebaliknya. Klien tidak perlu tahu target akhirnya vendor mana.
 
 ### Cara kerja
 
