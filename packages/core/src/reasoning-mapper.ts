@@ -310,15 +310,26 @@ export function mapReasoning(
   providerId: string,
   model: string,
 ): Record<string, unknown> {
-  const effort = parseEffort(body);
-  if (effort === null) return body; // no client intent → no-op
+  // Detect whether the client sent ANY reasoning-ish field at all (regardless
+  // of whether we can parse it). If they did, the field MUST be stripped or
+  // re-mapped — never passed through verbatim, because:
+  //   - the route target is masked (the client doesn't know the real vendor),
+  //   - an unrecognized/foreign field (e.g. Anthropic `thinking` sent to a
+  //     route that lands on Gemini) gets rejected upstream.
+  // So: presence of a reasoning field triggers the strip path; parse success
+  // additionally triggers re-mapping. A parseable-but-unknown-value field
+  // (e.g. `reasoning_effort:"ultra"`) is stripped silently (effort=null → no
+  // re-map) rather than leaked.
+  const hasReasoningField = REASONING_INPUT_FIELDS.some((f) => f in body);
+  if (!hasReasoningField) return body; // no reasoning field at all → untouched
 
-  const mapped = mapByProvider(effort, providerId, model);
+  const effort = parseEffort(body); // may be null if value/format unrecognized
 
   // Strip every reasoning-ish input field so the original dialect never leaks
-  // to the upstream alongside the re-mapped native shape. We preserve any
-  // OTHER generationConfig keys the client may have set (temperature in
-  // generationConfig, etc.) by shallow-merging.
+  // to the upstream. We preserve any OTHER generationConfig keys the client
+  // may have set (temperature in generationConfig, etc.) by shallow-merging.
+  const mapped = effort === null ? null : mapByProvider(effort, providerId, model);
+
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
     if ((REASONING_INPUT_FIELDS as readonly string[]).includes(k)) continue;
@@ -330,12 +341,15 @@ export function mapReasoning(
   if (body.generationConfig && typeof body.generationConfig === 'object') {
     const { thinkingConfig: _drop, ...gcRest } = body.generationConfig as Record<string, unknown>;
     if (Object.keys(gcRest).length > 0) {
-      clean.generationConfig = { ...gcRest, ...((mapped as Record<string, unknown>).generationConfig as Record<string, unknown> ?? {}) };
+      clean.generationConfig = { ...gcRest, ...((mapped as Record<string, unknown> | null)?.generationConfig as Record<string, unknown> ?? {}) };
     }
   }
 
-  // Sentinel: provider doesn't support reasoning — nothing to add (already stripped).
-  if (mapped && mapped.stripReasoningEffort) return clean;
+  // No parseable effort → nothing to re-map. Return the cleaned body (all
+  // reasoning fields stripped, other fields preserved). This is the fix for
+  // the leak: even an unrecognized reasoning field is removed rather than
+  // forwarded to a provider that would reject it.
+  if (effort === null || !mapped || mapped.stripReasoningEffort) return clean;
 
   return { ...clean, ...mapped };
 }
