@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Trash2, Pencil, Network, Globe, Activity, Zap, CheckCircle2, XCircle } from 'lucide-react';
+import Link from 'next/link';
+import { Plus, Trash2, Pencil, Network, Globe, Activity, Zap, CheckCircle2, XCircle, Loader2, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   useProxyPools,
@@ -59,7 +60,14 @@ export default function ProxyPage() {
       <PageHeader
         title="Proxy Layer"
         subtitle="Outbound proxy pools — rutekan request provider tertentu lewat HTTP/HTTPS/SOCKS5 proxy. Selektif per provider."
-        actions={<CreatePoolButton />}
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href="/proxy/logs" className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-[12px] text-muted-foreground hover:bg-secondary hover:text-foreground">
+              <ExternalLink size={13} /> Logs
+            </Link>
+            <CreatePoolButton />
+          </div>
+        }
       />
       <div className="rounded-lg border border-border bg-secondary/20 p-3 text-[12px] text-muted-foreground">
         <p className="font-medium text-foreground">Cara kerja</p>
@@ -274,66 +282,153 @@ function PoolFormDialog({
 
 /* ─────────────────────────── Members ─────────────────────────── */
 
+const PROXY_TYPES = [
+  { value: 'http:', label: 'HTTP', scheme: 'http' },
+  { value: 'https:', label: 'HTTPS', scheme: 'https' },
+  { value: 'socks5:', label: 'SOCKS5', scheme: 'socks5' },
+  { value: 'socks5h:', label: 'SOCKS5 (DNS remote)', scheme: 'socks5h' },
+  { value: 'socks4:', label: 'SOCKS4', scheme: 'socks4' },
+  { value: 'socks4a:', label: 'SOCKS4a', scheme: 'socks4a' },
+] as const;
+
+/** Bangun proxy URL dari field terstruktur. Auth opsional. */
+function buildProxyUrl(t: { type: string; host: string; port: string; user: string; pass: string }): string | null {
+  const host = t.host.trim();
+  const port = t.port.trim();
+  if (!host || !port) return null;
+  const auth = t.user.trim() ? `${encodeURIComponent(t.user.trim())}:${encodeURIComponent(t.pass)}@` : '';
+  return `${t.type}//${auth}${host}:${port}`;
+}
+
 function MembersSection({ poolId }: { poolId: string }) {
   const { data } = usePoolMembers(poolId);
   const members = data?.data ?? [];
   const add = useAddPoolMember(poolId);
   const del = useDeletePoolMember(poolId);
   const test = useTestPoolMember(poolId);
-  const [newUrl, setNewUrl] = useState('');
-  const [newLabel, setNewLabel] = useState('');
-  const [newWeight, setNewWeight] = useState(1);
+  // Form state (terstruktur, bukan URL mentah)
+  const [type, setType] = useState<string>('socks5:');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('');
+  const [user, setUser] = useState('');
+  const [pass, setPass] = useState('');
+  const [label, setLabel] = useState('');
+  const [weight, setWeight] = useState(1);
+
+  const canAdd = host.trim() && port.trim() && !add.isPending;
 
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
-      <Label className="flex items-center gap-1"><Activity size={13} /> Members</Label>
+      <div className="flex items-center justify-between">
+        <Label className="flex items-center gap-1"><Activity size={13} /> Members</Label>
+        <Link href="/proxy/logs" className="flex items-center gap-1 text-[11px] text-primary hover:underline">
+          <ExternalLink size={11} /> View logs
+        </Link>
+      </div>
       <div className="space-y-1.5">
-        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Tambahkan proxy URL di bawah.</p>}
+        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Tambahkan proxy di bawah (pilih tipe + host + port).</p>}
         {members.map((m) => (
-          <MemberRow key={m.id} m={m} poolId={poolId} onDelete={() => del.mutate(m.id)} onTest={() => test.mutateAsync(m.id)} testing={test.isPending} />
+          <MemberRow key={m.id} m={m} poolId={poolId} onDelete={() => del.mutate(m.id)} testMut={test} />
         ))}
       </div>
-      {/* Add row */}
-      <div className="flex gap-2 pt-1">
-        <Input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="socks5://user:pass@host:1080" className="flex-1 font-mono text-[12px]" />
-        <Input value={newLabel} onChange={(e) => setNewLabel(e.target.value)} placeholder="label" className="w-28 text-[12px]" />
-        <Input type="number" min={1} value={newWeight} onChange={(e) => setNewWeight(Number(e.target.value) || 1)} className="w-16 text-[12px]" />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={add.isPending || !newUrl.trim()}
-          onClick={async () => {
-            try {
-              await add.mutateAsync({ proxyUrl: newUrl, label: newLabel || undefined, weight: newWeight });
-              setNewUrl(''); setNewLabel(''); setNewWeight(1);
-              toast.success('Member added');
-            } catch (err) {
-              toast.error((err as Error).message);
-            }
-          }}
-        >
-          <Plus size={13} /> Add
-        </Button>
+      {/* Add form — terstruktur: tipe + host + port + optional auth */}
+      <div className="space-y-2 rounded border border-border/60 bg-secondary/10 p-2">
+        <div className="flex gap-2">
+          <select
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+            className="h-9 rounded-md border border-border bg-background px-2 text-[12px] font-mono"
+            title="Tipe proxy"
+          >
+            {PROXY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host (mis. 1.2.3.4 / proxy.com)" className="flex-1 text-[12px]" />
+          <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="port" className="w-20 text-[12px]" />
+        </div>
+        <details className="group">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+            Auth (opsional — kosongkan utk proxy tanpa user/password)
+          </summary>
+          <div className="mt-1.5 flex gap-2">
+            <Input value={user} onChange={(e) => setUser(e.target.value)} placeholder="username (opsional)" className="flex-1 text-[12px]" autoComplete="off" />
+            <Input value={pass} onChange={(e) => setPass(e.target.value)} placeholder="password (opsional)" type="password" className="flex-1 text-[12px]" autoComplete="new-password" />
+          </div>
+        </details>
+        <div className="flex gap-2">
+          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="label (opsional)" className="flex-1 text-[12px]" />
+          <Input type="number" min={1} value={weight} onChange={(e) => setWeight(Number(e.target.value) || 1)} className="w-20 text-[12px]" title="weight" />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={!canAdd}
+            onClick={async () => {
+              const url = buildProxyUrl({ type, host, port, user, pass });
+              if (!url) { toast.error('Host & port wajib diisi'); return; }
+              try {
+                await add.mutateAsync({ proxyUrl: url, label: label || undefined, weight });
+                setHost(''); setPort(''); setUser(''); setPass(''); setLabel(''); setWeight(1);
+                toast.success('Member added');
+              } catch (err) {
+                toast.error((err as Error).message);
+              }
+            }}
+          >
+            <Plus size={13} /> Add
+          </Button>
+        </div>
       </div>
     </div>
   );
 }
 
-function MemberRow({ m, onDelete, onTest, testing }: { m: ProxyPoolMember; poolId: string; onDelete: () => void; onTest: () => Promise<unknown>; testing: boolean }) {
+function MemberRow({ m, onDelete, testMut }: { m: ProxyPoolMember; poolId: string; onDelete: () => void; testMut: ReturnType<typeof useTestPoolMember> }) {
+  const [result, setResult] = useState<{ ok: boolean; latencyMs: number; exitIp: string | null; geo: { country: string; flag: string } | null; error?: string } | null>(null);
+  const testing = testMut.isPending && testMut.variables === m.id;
+
+  const runTest = async () => {
+    setResult(null);
+    try {
+      const r = await testMut.mutateAsync(m.id);
+      setResult(r);
+    } catch (err) {
+      setResult({ ok: false, latencyMs: 0, exitIp: null, geo: null, error: (err as Error).message });
+    }
+  };
+
   return (
-    <div className="flex items-center gap-2 rounded border border-border/60 bg-secondary/20 px-2 py-1.5">
-      <span className="text-lg leading-none" title={m.country ?? 'unknown'}>{m.healthy ? flagEmoji(m.country) : '❌'}</span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-mono text-[11px]">{redact(m.proxyUrl)}</div>
-        <div className="text-[10px] text-muted-foreground">
-          w:{m.weight} {m.label ? `· ${m.label}` : ''} {m.exitIp ? `· ${m.exitIp}` : ''} {m.country ? `· ${m.country}` : ''}
+    <div className="rounded border border-border/60 bg-secondary/20 px-2 py-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-lg leading-none" title={m.country ?? 'unknown'}>{m.healthy ? flagEmoji(m.country) : '❌'}</span>
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-mono text-[11px]">{redact(m.proxyUrl)}</div>
+          <div className="text-[10px] text-muted-foreground">
+            w:{m.weight} {m.label ? `· ${m.label}` : ''} {m.exitIp ? `· ${m.exitIp}` : ''} {m.country ? `· ${m.country}` : ''}
+          </div>
         </div>
+        <Button type="button" variant="ghost" size="sm" disabled={testing} onClick={runTest} title="Test connectivity + geoip">
+          {testing ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Test
+        </Button>
+        <Button type="button" variant="ghost" size="icon" onClick={onDelete} title="Delete"><Trash2 size={12} className="text-muted-foreground" /></Button>
       </div>
-      <Button type="button" variant="ghost" size="sm" disabled={testing} onClick={() => onTest().catch((e) => toast.error((e as Error).message))} title="Test connectivity + geoip">
-        <Zap size={12} /> Test
-      </Button>
-      <Button type="button" variant="ghost" size="icon" onClick={onDelete} title="Delete"><Trash2 size={12} className="text-muted-foreground" /></Button>
+      {/* Hasil test inline */}
+      {testing && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Loader2 size={11} className="animate-spin" /> Testing connectivity & geoip…
+        </div>
+      )}
+      {result && !testing && (
+        <div className={`mt-1.5 rounded p-1.5 text-[11px] ${result.ok ? 'bg-emerald-600/10 text-emerald-400' : 'bg-red-600/10 text-red-400'}`}>
+          {result.ok ? (
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <CheckCircle2 size={11} /> OK · {result.latencyMs}ms · exit IP: <span className="font-mono">{result.exitIp}</span>
+              {result.geo && <span>{result.geo.flag} {result.geo.country}</span>}
+            </span>
+          ) : (
+            <span className="flex items-center gap-1"><XCircle size={11} /> FAILED · {result.error}</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
