@@ -83,6 +83,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa. Saat upstream error terjadi (termasuk yg sukses failover), **raw request lengkap** (URL client, headers teredact, body, upstream call) disimpan otomatis ke file per-request di `request_traces/` — bukan DB, jadi DB tetap ramping. Di drawer Logs, klik **"View raw request"** untuk membuka modal berisi request asli + respons upstream yg gagal.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
 - **🧩 Custom Scripts (build-your-own provider)** — tulis script Node.js di dashboard, dan output `console.log` script otomatis jadi endpoint HTTP (`/api/custom/<nama>`) yg masuk ke alur routing/failover SiberGate sama persis seperti provider lain. Satu provider bisa serve banyak script. Bungkus API lama, scraper, atau microservice internal jadi provider OpenAI-compat tanpa sentuh kode gateway. Lihat [Custom Scripts](#-custom-scripts-build-your-own-provider).
+- **🌐 Proxy Layer (outbound proxy selektif)** — rutekan request **provider tertentu** lewat pool proxy HTTP/HTTPS/SOCKS5/SOCKS4. Selektif per-provider (bukan VPN global): pilih provider mana yg di-proxy. Pool = kumpulan proxy dgn weight + health-check otomatis (active ping + passive on-fail) + failover. Test proxy → lihat latensi + IP keluar + 🇺🇸 negara (GeoIP MaxMind). Cocok utk bypass geo-block (Gemini/OpenAI diblokir region) & IP rotation. Logging proxy terpisah + Console live stream. Lihat [Proxy Layer](#-proxy-layer).
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
 
@@ -357,6 +358,86 @@ dirasakan pada throughput tinggi. Rencana ke depan:
 
 Optimisasi akan dipandu data real: tunggu sampai log menunjukkan spawn overhead
 dominan (>40% waktu request) sebelum bermigrasi dari `child_process`.
+
+---
+
+## 🌐 Proxy Layer
+
+**Rutekan request provider tertentu lewat proxy outbound.** Modul proxy
+terisolasi (`packages/core/src/proxy/`) — saat aktif, Anda **pilih provider
+mana** yg request-nya dilewatkan lewat proxy pool (selektif per-provider,
+**bukan VPN global**).
+
+Mengapa ini berguna?
+- **Bypass geo-block** — Gemini/OpenAI/Anthropic sering diblokir di region
+  tertentu. Arahkan provider tsb lewat proxy US/EU → request lolos.
+- **IP rotation** — hindari rate-limit per IP. Multi-key + IP rotation kombinasi
+  kuat.
+- **Corporate proxy** — gateway di belakang firewall? Arahkan semua provider
+  lewat proxy perusahaan.
+
+### Yang didukung
+
+- **Protokol**: HTTP, HTTPS, SOCKS5, SOCKS4, SOCKS5h, SOCKS4a (via undici v7
+  `ProxyAgent`; SOCKS5 experimental di Node).
+- **Pool**: kumpulan proxy URL dgn `weight`. Strategi: `weighted` (random by
+  weight, default), `round-robin` (cycle), `failover` (ordered).
+- **Health-check hybrid**:
+  - **Active**: background ping setiap 60s ke endpoint netral → update healthy
+    + cache GeoIP (negara/flag).
+  - **Passive**: saat request real lewat proxy gagal (network/timeout) → member
+    otomatis ditandai unhealthy, failover ke member lain.
+  - Member unhealthy di-skip selector; kembali healthy setelah active ping
+    sukses.
+- **Test proxy**: tombol Test per-member → ukur latensi + capture IP keluar +
+  lookup negara → tampilkan 🇺🇸 flag (butuh GeoIP DB, lihat bawah).
+- **Logging**: tabel `proxy_logs` (query/filter terpisah di `/proxy/logs`) +
+  Console live stream dgn flag 🌐 saat request lewat proxy.
+
+### Cara pakai
+
+1. **Admin → Proxy Layer → New pool** — isi id, nama, strategi (weighted/rr/failover).
+2. Tambahkan **member** proxy URL (`socks5://user:pass@host:1080`,
+   `http://host:8080`, …) + weight + label. Klik **Test** utk cek latensi +
+   negara.
+3. Buka **Provider bindings** → centang provider mana yg request-nya lewat pool
+   ini (selektif — hanya provider terpilih).
+4. Selesai. Request ke route yg menargetkan provider tsb otomatis lewat proxy.
+   Lihat event di **Proxy Logs** atau Console (filter `proxy`).
+
+### Deteksi negara (GeoIP)
+
+Test & health-check auto-detect negara proxy via **MaxMind GeoLite2-Country**
+mmdb. File di-download on-demand:
+- **Admin → Settings → GeoIP Database → Download/Update** (butuh
+  `SIBERGATE_MAXMIND_LICENSE_KEY` — gratis daftar di maxmind.com).
+- File disimpan di `packages/core/data/`, **di-gitignore & di-exclude backup**
+  (bukan data app, bisa re-download).
+- Tanpa GeoIP DB, proxy tetap jalan tapi flag tampil 🏳️ (unknown).
+
+### Arsitektur
+
+```
+Client → Route → Engine → resolveProxy(providerId)
+                          ↓ (provider bind ke pool aktif?)
+                     selectMember (weight/health) → ProxyAgent
+                          ↓
+                   fetch(url, { dispatcher }) → via HTTP/SOCKS5 proxy
+                          ↓
+                 on fail → markMemberUnhealthy (passive) → failover
+```
+
+Proxy di-inject di satu chokepoint (`sendUpstream` → `fetch`), shg semua
+modality (chat/image/embed/music/…) otomatis dapat proxy tanpa kode terpisah.
+Async image-polling juga lewat proxy yg sama. **Nol perubahan behavioral** bila
+proxy tidak dipakai (`dispatcher` undefined = direct fetch).
+
+### Catatan
+- Proxy URL dgn auth (`http://user:pass@host`) didukung native. Di-redact saat
+  log.
+- `strictProxy` (rencana): bila true, request gagal total saat semua member
+  unhealthy. Default false → fallback direct.
+- Edge relay proxy (Vercel/Cloudflare/Deno, konsep URL-rewrite) = phase 2.
 
 ---
 
