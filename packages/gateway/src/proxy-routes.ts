@@ -16,12 +16,17 @@ import {
   bindProviderToPool,
   unbindProviderFromPool,
   testProxy,
+  testMember,
   updateMemberHealth,
   recentProxyLogs,
   clearProxyLogs,
   downloadGeoIpDb,
   geoipStatus,
   pushConsoleLog,
+  listEdgeProviders,
+  verifyEdgeCredentials,
+  deployEdgeMember,
+  removeEdgeDeployment,
   type ProxyPool,
   type ProxyPoolMember,
 } from '@sibergate/core';
@@ -112,18 +117,45 @@ export function createProxyAdminRouter(configStore: ConfigStore) {
   });
 
   // Test satu member → connectivity + latency + exit IP + geoip flag.
+  // Cabang by type: edge-relay pakai provider.testConnectivity (__health),
+  // http/socks pakai testProxy (example.com + ipify).
   app.post('/pools/:id/members/:memberId/test', async (c) => {
     const memberId = Number(c.req.param('memberId'));
-    // Ambil member utk dapat proxyUrl (bisa juga test ad-hoc via body).
     const members = listPoolMembers(c.req.param('id'));
     const member = members.find((m) => m.id === memberId);
     if (!member) return c.json(notFound('member'), 404);
-    const result = await testProxy(member.proxyUrl);
-    // Cache hasil ke DB (health + geoip).
+    const result = await testMember(member);
     updateMemberHealth(memberId, result);
     reload();
     return c.json(result);
   });
+
+  /* ──────────────── Edge relay actions (CF Worker deploy, dll) ─────────── */
+  // Verify edge credentials (mis. CF API token). Body: { config: {...} }.
+  app.post('/pools/:id/members/:memberId/edge/verify', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { config?: Record<string, unknown> };
+    const result = await verifyEdgeCredentials(Number(c.req.param('memberId')), body.config ?? {});
+    reload();
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Deploy relay (CF Worker). Body: { config?: {...} } (override, opsional).
+  app.post('/pools/:id/members/:memberId/edge/deploy', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { config?: Record<string, unknown> };
+    const result = await deployEdgeMember(Number(c.req.param('memberId')), body.config);
+    reload();
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // Hapus relay deployment (Worker).
+  app.delete('/pools/:id/members/:memberId/edge', async (c) => {
+    const result = await removeEdgeDeployment(Number(c.req.param('memberId')));
+    reload();
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  // List edge providers tersedia (utk UI dropdown tipe).
+  app.get('/edge-providers', (c) => c.json({ data: listEdgeProviders() }));
 
   /* ─────────────────────── Provider bindings ──────────────────── */
   app.get('/pools/:id/bindings', (c) => {

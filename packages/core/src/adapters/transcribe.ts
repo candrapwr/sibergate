@@ -22,5 +22,5 @@ export async function transcribe(call: AdapterCall): Promise<Response> {
   if (!raw || !contentType) {
     throw new Error('transcribe adapter expects { __raw, __contentType } — gateway must pass multipart body through');
   }
-  return sendUpstream({ url, provider, body: raw as BodyInit, signal, contentType, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher });
+  return sendUpstream({ url, provider, body: raw as BodyInit, signal, contentType, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher, relay: call.relay });
 }

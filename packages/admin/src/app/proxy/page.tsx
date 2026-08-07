@@ -17,6 +17,9 @@ import {
   useBindProvider,
   useUnbindProvider,
   useProviders,
+  useVerifyEdgeMember,
+  useDeployEdgeMember,
+  useRemoveEdgeDeployment,
 } from '@/lib/queries';
 import type { ProxyPool, ProxyPoolMember, ProxyStrategy } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -289,6 +292,12 @@ const PROXY_TYPES = [
   { value: 'https:', label: 'HTTPS' },
 ] as const;
 
+/** Tipe member proxy (http/socks vs edge relay). */
+const MEMBER_TYPES = [
+  { value: 'http-proxy', label: 'HTTP/SOCKS Proxy' },
+  { value: 'edge-relay', label: 'Edge Relay (Cloudflare Workers)' },
+] as const;
+
 /** Bangun proxy URL dari field terstruktur. Auth opsional. */
 function buildProxyUrl(t: { type: string; host: string; port: string; user: string; pass: string }): string | null {
   const host = t.host.trim();
@@ -304,6 +313,7 @@ function MembersSection({ poolId }: { poolId: string }) {
   const add = useAddPoolMember(poolId);
   const del = useDeletePoolMember(poolId);
   const test = useTestPoolMember(poolId);
+  const [memberType, setMemberType] = useState<'http-proxy' | 'edge-relay'>('http-proxy');
   // Form state (terstruktur, bukan URL mentah)
   const [type, setType] = useState<string>('socks5:');
   const [host, setHost] = useState('');
@@ -312,8 +322,11 @@ function MembersSection({ poolId }: { poolId: string }) {
   const [pass, setPass] = useState('');
   const [label, setLabel] = useState('');
   const [weight, setWeight] = useState(1);
+  // Edge form state
+  const [cfToken, setCfToken] = useState('');
+  const [scriptName, setScriptName] = useState('sibergate-relay');
 
-  const canAdd = host.trim() && port.trim() && !add.isPending;
+  const canAdd = memberType === 'edge-relay' ? !!cfToken.trim() && !add.isPending : !!(host.trim() && port.trim()) && !add.isPending;
 
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
@@ -324,34 +337,50 @@ function MembersSection({ poolId }: { poolId: string }) {
         </Link>
       </div>
       <div className="space-y-1.5">
-        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Tambahkan proxy di bawah (pilih tipe + host + port).</p>}
+        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Tambahkan proxy/relay di bawah.</p>}
         {members.map((m) => (
           <MemberRow key={m.id} m={m} poolId={poolId} onDelete={() => del.mutate(m.id)} testMut={test} />
         ))}
       </div>
-      {/* Add form — terstruktur: tipe + host + port + optional auth */}
+      {/* Add form — pilih tipe member dulu */}
       <div className="space-y-2 rounded border border-border/60 bg-secondary/10 p-2">
         <div className="flex gap-2">
           <select
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-            className="h-9 rounded-md border border-border bg-background px-2 text-[12px] font-mono"
-            title="Tipe proxy"
+            value={memberType}
+            onChange={(e) => setMemberType(e.target.value as 'http-proxy' | 'edge-relay')}
+            className="h-9 rounded-md border border-border bg-background px-2 text-[12px]"
+            title="Tipe member"
           >
-            {PROXY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            {MEMBER_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
-          <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host (mis. 1.2.3.4 / proxy.com)" className="flex-1 text-[12px]" />
-          <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="port" className="w-20 text-[12px]" />
         </div>
-        <details className="group">
-          <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
-            Auth (opsional — kosongkan utk proxy tanpa user/password)
-          </summary>
-          <div className="mt-1.5 flex gap-2">
-            <Input value={user} onChange={(e) => setUser(e.target.value)} placeholder="username (opsional)" className="flex-1 text-[12px]" autoComplete="off" />
-            <Input value={pass} onChange={(e) => setPass(e.target.value)} placeholder="password (opsional)" type="password" className="flex-1 text-[12px]" autoComplete="new-password" />
+        {memberType === 'http-proxy' ? (
+          <>
+            <div className="flex gap-2">
+              <select value={type} onChange={(e) => setType(e.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-[12px] font-mono" title="Tipe proxy">
+                {PROXY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host (mis. 1.2.3.4 / proxy.com)" className="flex-1 text-[12px]" />
+              <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="port" className="w-20 text-[12px]" />
+            </div>
+            <details className="group">
+              <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">Auth (opsional — kosongkan utk no-auth)</summary>
+              <div className="mt-1.5 flex gap-2">
+                <Input value={user} onChange={(e) => setUser(e.target.value)} placeholder="username" className="flex-1 text-[12px]" autoComplete="off" />
+                <Input value={pass} onChange={(e) => setPass(e.target.value)} placeholder="password" type="password" className="flex-1 text-[12px]" autoComplete="new-password" />
+              </div>
+            </details>
+          </>
+        ) : (
+          <div className="space-y-1.5 rounded border border-primary/30 bg-primary/5 p-2 text-[11px]">
+            <p className="text-muted-foreground">Deploy Cloudflare Worker sbg edge relay (URL rewrite, bukan tunnel). 1 Worker serve semua provider. Token disimpan <b>encrypted</b> di DB.</p>
+            <Label htmlFor="cf-token" className="text-[11px]">Cloudflare API Token</Label>
+            <Input id="cf-token" value={cfToken} onChange={(e) => setCfToken(e.target.value)} placeholder="cf_xxxxxxxxxxxxxxxx" type="password" className="text-[12px]" autoComplete="off" />
+            <Label htmlFor="cf-script" className="text-[11px]">Worker Script Name</Label>
+            <Input id="cf-script" value={scriptName} onChange={(e) => setScriptName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="sibergate-relay" className="text-[12px] font-mono" />
+            <p className="text-[10px] text-muted-foreground">Setelah add, buka member → klik Verify → Deploy utk aktifkan Worker.</p>
           </div>
-        </details>
+        )}
         <div className="flex gap-2">
           <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="label (opsional)" className="flex-1 text-[12px]" />
           <Input type="number" min={1} value={weight} onChange={(e) => setWeight(Number(e.target.value) || 1)} className="w-20 text-[12px]" title="weight" />
@@ -361,11 +390,16 @@ function MembersSection({ poolId }: { poolId: string }) {
             size="sm"
             disabled={!canAdd}
             onClick={async () => {
-              const url = buildProxyUrl({ type, host, port, user, pass });
-              if (!url) { toast.error('Host & port wajib diisi'); return; }
               try {
-                await add.mutateAsync({ proxyUrl: url, label: label || undefined, weight });
-                setHost(''); setPort(''); setUser(''); setPass(''); setLabel(''); setWeight(1);
+                if (memberType === 'edge-relay') {
+                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: 'cloudflare-workers', edgeConfig: { apiToken: cfToken, scriptName }, label: label || undefined, weight });
+                  setCfToken(''); setScriptName('sibergate-relay'); setLabel(''); setWeight(1);
+                } else {
+                  const url = buildProxyUrl({ type, host, port, user, pass });
+                  if (!url) { toast.error('Host & port wajib diisi'); return; }
+                  await add.mutateAsync({ proxyUrl: url, label: label || undefined, weight });
+                  setHost(''); setPort(''); setUser(''); setPass(''); setLabel(''); setWeight(1);
+                }
                 toast.success('Member added');
               } catch (err) {
                 toast.error((err as Error).message);
@@ -380,9 +414,11 @@ function MembersSection({ poolId }: { poolId: string }) {
   );
 }
 
-function MemberRow({ m, onDelete, testMut }: { m: ProxyPoolMember; poolId: string; onDelete: () => void; testMut: ReturnType<typeof useTestPoolMember> }) {
+function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolId: string; onDelete: () => void; testMut: ReturnType<typeof useTestPoolMember> }) {
   const [result, setResult] = useState<{ ok: boolean; latencyMs: number; exitIp: string | null; geo: { country: string; flag: string } | null; error?: string } | null>(null);
+  const [showEdge, setShowEdge] = useState(false);
   const testing = testMut.isPending && testMut.variables === m.id;
+  const isEdge = m.type === 'edge-relay';
 
   const runTest = async () => {
     setResult(null);
@@ -397,14 +433,24 @@ function MemberRow({ m, onDelete, testMut }: { m: ProxyPoolMember; poolId: strin
   return (
     <div className="rounded border border-border/60 bg-secondary/20 px-2 py-1.5">
       <div className="flex items-center gap-2">
-        <span className="text-lg leading-none" title={m.country ?? 'unknown'}>{m.healthy ? flagEmoji(m.country) : '❌'}</span>
+        <span className="text-lg leading-none" title={m.country ?? 'unknown'}>
+          {isEdge ? (m.relayUrl ? '☁️' : '⏳') : m.healthy ? flagEmoji(m.country) : '❌'}
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-[11px]">{redact(m.proxyUrl)}</div>
+          <div className="truncate font-mono text-[11px]">
+            {isEdge ? (m.relayUrl ?? '(not deployed)') : redact(m.proxyUrl)}
+          </div>
           <div className="text-[10px] text-muted-foreground">
-            w:{m.weight} {m.label ? `· ${m.label}` : ''} {m.exitIp ? `· ${m.exitIp}` : ''} {m.country ? `· ${m.country}` : ''}
+            {isEdge ? <span>{m.edgeProvider}{m.relayUrl ? '' : ' · belum deploy'}</span> : <>w:{m.weight}</>}
+            {m.label ? ` · ${m.label}` : ''} {m.exitIp && !isEdge ? `· ${m.exitIp}` : ''} {m.country && !isEdge ? `· ${m.country}` : ''}
           </div>
         </div>
-        <Button type="button" variant="ghost" size="sm" disabled={testing} onClick={runTest} title="Test connectivity + geoip">
+        {isEdge && m.relayUrl && (
+          <Button type="button" variant="ghost" size="sm" onClick={() => setShowEdge(!showEdge)} title="Edge deploy panel">
+            {showEdge ? 'Hide' : 'Setup'}
+          </Button>
+        )}
+        <Button type="button" variant="ghost" size="sm" disabled={testing || (isEdge && !m.relayUrl)} onClick={runTest} title="Test connectivity">
           {testing ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Test
         </Button>
         <Button type="button" variant="ghost" size="icon" onClick={onDelete} title="Delete"><Trash2 size={12} className="text-muted-foreground" /></Button>
@@ -412,21 +458,88 @@ function MemberRow({ m, onDelete, testMut }: { m: ProxyPoolMember; poolId: strin
       {/* Hasil test inline */}
       {testing && (
         <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Loader2 size={11} className="animate-spin" /> Testing connectivity & geoip…
+          <Loader2 size={11} className="animate-spin" /> Testing {isEdge ? 'relay' : 'connectivity'}…
         </div>
       )}
       {result && !testing && (
         <div className={`mt-1.5 rounded p-1.5 text-[11px] ${result.ok ? 'bg-emerald-600/10 text-emerald-400' : 'bg-red-600/10 text-red-400'}`}>
           {result.ok ? (
             <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <CheckCircle2 size={11} /> OK · {result.latencyMs}ms · exit IP: <span className="font-mono">{result.exitIp}</span>
-              {result.geo && <span>{result.geo.flag} {result.geo.country}</span>}
+              <CheckCircle2 size={11} /> OK · {result.latencyMs}ms {!isEdge && result.exitIp && <>· exit IP: <span className="font-mono">{result.exitIp}</span></>}
+              {!isEdge && result.geo && <span>{result.geo.flag} {result.geo.country}</span>}
             </span>
           ) : (
             <span className="flex items-center gap-1"><XCircle size={11} /> FAILED · {result.error}</span>
           )}
         </div>
       )}
+      {/* Edge setup panel (verify/deploy/delete) */}
+      {isEdge && showEdge && m.relayUrl && <EdgeMemberPanel m={m} poolId={poolId} />}
+      {isEdge && !m.relayUrl && <EdgeSetupNeeded m={m} poolId={poolId} />}
+    </div>
+  );
+}
+
+/** Panel edge relay utk member belum di-deploy — verify + deploy. */
+function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) {
+  const verify = useVerifyEdgeMember(poolId);
+  const deploy = useDeployEdgeMember(poolId);
+  const [token, setToken] = useState('');
+  const [scriptName, setScriptName] = useState('sibergate-relay');
+  return (
+    <div className="mt-2 space-y-1.5 rounded border border-primary/30 bg-primary/5 p-2 text-[11px]">
+      <p className="text-muted-foreground">Worker belum di-deploy. Verify token lalu deploy.</p>
+      <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Cloudflare API Token" type="password" className="text-[12px]" autoComplete="off" />
+      <Input value={scriptName} onChange={(e) => setScriptName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="script name" className="text-[12px] font-mono" />
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" size="sm" disabled={!token.trim() || verify.isPending}
+          onClick={async () => {
+            const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
+            if (r.ok) toast.success('Token valid' + (r.accountInfo ? ` (${r.accountInfo.name})` : ''));
+            else toast.error(r.error ?? 'Verify failed');
+          }}
+        >
+          {verify.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Verify
+        </Button>
+        <Button type="button" variant="default" size="sm" disabled={deploy.isPending}
+          onClick={async () => {
+            const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
+            if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
+            else toast.error(r.error ?? 'Deploy failed');
+          }}
+        >
+          {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Deploy
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Panel edge relay utk member sudah di-deploy — redeploy / delete deployment. */
+function EdgeMemberPanel({ m, poolId }: { m: ProxyPoolMember; poolId: string }) {
+  const deploy = useDeployEdgeMember(poolId);
+  const remove = useRemoveEdgeDeployment(poolId);
+  return (
+    <div className="mt-2 space-y-1.5 rounded border border-border/60 bg-secondary/10 p-2 text-[11px]">
+      <div className="break-all font-mono text-[10px] text-muted-foreground">URL: {m.relayUrl}</div>
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" size="sm" disabled={deploy.isPending}
+          onClick={async () => {
+            const r = await deploy.mutateAsync({ memberId: m.id });
+            r.ok ? toast.success('Redeployed') : toast.error(r.error ?? 'Failed');
+          }}
+        >
+          {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Redeploy
+        </Button>
+        <Button type="button" variant="ghost" size="sm" disabled={remove.isPending}
+          onClick={async () => {
+            const r = await remove.mutateAsync(m.id);
+            r.ok ? toast.success('Worker removed') : toast.error(r.error ?? 'Failed');
+          }}
+        >
+          {remove.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Remove Worker
+        </Button>
+      </div>
     </div>
   );
 }

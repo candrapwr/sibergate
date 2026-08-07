@@ -5,7 +5,9 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db.js';
 import { ConflictError, ValidationError } from '../admin.js';
+import { encryptJSON, decryptJSON } from '../crypto.js';
 import { validateProxyUrl } from './dispatcher.js';
+import { getEdgeProvider } from './edge/index.js';
 import type { ProxyPool, ProxyPoolMember, ProxyStrategy, ProviderProxyBinding } from './types.js';
 
 const VALID_STRATEGIES: ProxyStrategy[] = ['weighted', 'round-robin', 'failover'];
@@ -125,10 +127,19 @@ export function deleteProxyPool(id: string): boolean {
 /* ──────────────────────────── Members ──────────────────────────── */
 
 export interface PoolMemberInput {
-  proxyUrl: string;
+  /** Untuk http-proxy/socks5 wajib. Untuk edge-relay bisa kosong (diisi setelah deploy). */
+  proxyUrl?: string;
   label?: string;
   weight?: number;
   enabled?: boolean;
+  /** Tipe member. Default 'http-proxy' utk backward compat. */
+  type?: import('./types.js').MemberType;
+  /** Untuk edge-relay: id provider (mis. 'cloudflare-workers'). */
+  edgeProvider?: string;
+  /** Untuk edge-relay: config (token, dll) — di-encrypt sebelum disimpan. */
+  edgeConfig?: Record<string, unknown>;
+  /** Untuk edge-relay: relay URL (worker URL setelah deploy). */
+  relayUrl?: string;
 }
 
 interface MemberRow {
@@ -143,6 +154,10 @@ interface MemberRow {
   exit_ip: string | null;
   last_check_at: string | null;
   created_at: string;
+  type: string;
+  edge_provider: string | null;
+  edge_config: string | null;
+  relay_url: string | null;
 }
 
 function toMember(row: MemberRow): ProxyPoolMember {
@@ -158,6 +173,9 @@ function toMember(row: MemberRow): ProxyPoolMember {
     exitIp: row.exit_ip,
     lastCheckAt: row.last_check_at,
     createdAt: row.created_at,
+    type: (row.type as import('./types.js').MemberType) ?? 'http-proxy',
+    edgeProvider: row.edge_provider ?? null,
+    relayUrl: row.relay_url ?? null,
   };
 }
 
@@ -169,14 +187,45 @@ export function listPoolMembers(poolId: string): ProxyPoolMember[] {
 
 export function addPoolMember(poolId: string, input: PoolMemberInput): ProxyPoolMember {
   if (!getProxyPool(poolId)) throw new ValidationError(`Proxy pool '${poolId}' not found.`);
-  const validated = validateProxyUrl(input.proxyUrl);
+  const type = input.type ?? 'http-proxy';
+
+  if (type === 'edge-relay') {
+    // Edge relay: tidak butuh proxyUrl (diisi setelah deploy). Validasi via provider.
+    const provider = input.edgeProvider;
+    if (!provider) throw new ValidationError('edgeProvider wajib untuk tipe edge-relay.');
+    // edge_config di-encrypt bila ada (token, dll).
+    let edgeConfigBlob: string | null = null;
+    if (input.edgeConfig && Object.keys(input.edgeConfig).length > 0) {
+      edgeConfigBlob = JSON.stringify(encryptJSON(input.edgeConfig));
+    }
+    const result = getDb()
+      .prepare(
+        `INSERT INTO proxy_pool_members (pool_id, proxy_url, label, weight, enabled, healthy, type, edge_provider, edge_config, relay_url)
+         VALUES (@poolId, @proxyUrl, @label, @weight, @enabled, 1, @type, @edgeProvider, @edgeConfig, @relayUrl)`,
+      )
+      .run({
+        poolId,
+        proxyUrl: input.proxyUrl ?? '',
+        label: input.label ?? null,
+        weight: Math.max(1, input.weight ?? 1),
+        enabled: input.enabled === false ? 0 : 1,
+        type,
+        edgeProvider: provider,
+        edgeConfig: edgeConfigBlob,
+        relayUrl: input.relayUrl ?? null,
+      });
+    return getPoolMember(Number(result.lastInsertRowid))!;
+  }
+
+  // http-proxy / socks5: validasi URL seperti biasa.
+  const validated = validateProxyUrl(input.proxyUrl ?? '');
   if (!validated) {
-    throw new ValidationError('Invalid proxy URL (must be http/https/socks5/socks4 with host).');
+    throw new ValidationError('Invalid proxy URL (must be http/https/socks5/socks5h with host).');
   }
   const result = getDb()
     .prepare(
-      `INSERT INTO proxy_pool_members (pool_id, proxy_url, label, weight, enabled, healthy)
-       VALUES (@poolId, @proxyUrl, @label, @weight, @enabled, 1)`,
+      `INSERT INTO proxy_pool_members (pool_id, proxy_url, label, weight, enabled, healthy, type)
+       VALUES (@poolId, @proxyUrl, @label, @weight, @enabled, 1, @type)`,
     )
     .run({
       poolId,
@@ -184,9 +233,9 @@ export function addPoolMember(poolId: string, input: PoolMemberInput): ProxyPool
       label: input.label ?? null,
       weight: Math.max(1, input.weight ?? 1),
       enabled: input.enabled === false ? 0 : 1,
+      type,
     });
-  const id = Number(result.lastInsertRowid);
-  return getPoolMember(id)!;
+  return getPoolMember(Number(result.lastInsertRowid))!;
 }
 
 export function getPoolMember(memberId: number): ProxyPoolMember | null {
@@ -194,13 +243,50 @@ export function getPoolMember(memberId: number): ProxyPoolMember | null {
   return row ? toMember(row) : null;
 }
 
+/** Ambil edge_config member (decrypted). Hanya utk tipe edge-relay. */
+export function getMemberEdgeConfig(memberId: number): Record<string, unknown> | null {
+  const row = getDb().prepare('SELECT edge_config FROM proxy_pool_members WHERE id = ?').get(memberId) as { edge_config: string | null } | undefined;
+  if (!row?.edge_config) return null;
+  try {
+    return decryptJSON<Record<string, unknown>>(JSON.parse(row.edge_config) as import('../crypto.js').EncryptedBlob);
+  } catch {
+    return null;
+  }
+}
+
+/** Simpan edge_config member (encrypted). */
+export function setMemberEdgeConfig(memberId: number, config: Record<string, unknown>): void {
+  const blob = JSON.stringify(encryptJSON(config));
+  getDb().prepare('UPDATE proxy_pool_members SET edge_config = ? WHERE id = ?').run(blob, memberId);
+}
+
+/** Update relay_url member (setelah deploy Worker). */
+export function setMemberRelayUrl(memberId: number, relayUrl: string): void {
+  getDb().prepare('UPDATE proxy_pool_members SET relay_url = ?, proxy_url = ? WHERE id = ?').run(relayUrl, relayUrl, memberId);
+}
+
 export function updatePoolMember(memberId: number, input: Partial<PoolMemberInput>): ProxyPoolMember | null {
   const existing = getPoolMember(memberId);
   if (!existing) return null;
-  const proxyUrl = input.proxyUrl ? validateProxyUrl(input.proxyUrl) ?? existing.proxyUrl : existing.proxyUrl;
+  const type = input.type ?? existing.type;
+  // Validasi proxyUrl hanya utk http/socks.
+  let proxyUrl = existing.proxyUrl;
+  if (type !== 'edge-relay' && input.proxyUrl) {
+    proxyUrl = validateProxyUrl(input.proxyUrl) ?? existing.proxyUrl;
+  } else if (type === 'edge-relay' && input.relayUrl) {
+    proxyUrl = input.relayUrl;
+  }
+  // Update edge_config bila diberikan.
+  if (input.edgeConfig !== undefined && type === 'edge-relay') {
+    setMemberEdgeConfig(memberId, input.edgeConfig);
+  }
+  if (input.relayUrl !== undefined && type === 'edge-relay') {
+    setMemberRelayUrl(memberId, input.relayUrl);
+  }
   getDb()
     .prepare(
-      `UPDATE proxy_pool_members SET proxy_url = @proxyUrl, label = @label, weight = @weight, enabled = @enabled WHERE id = @id`,
+      `UPDATE proxy_pool_members SET proxy_url = @proxyUrl, label = @label, weight = @weight, enabled = @enabled,
+       type = @type, edge_provider = @edgeProvider WHERE id = @id`,
     )
     .run({
       id: memberId,
@@ -208,13 +294,85 @@ export function updatePoolMember(memberId: number, input: Partial<PoolMemberInpu
       label: input.label !== undefined ? input.label : existing.label,
       weight: input.weight !== undefined ? Math.max(1, input.weight) : existing.weight,
       enabled: input.enabled !== undefined ? (input.enabled ? 1 : 0) : (existing.enabled ? 1 : 0),
+      type,
+      edgeProvider: input.edgeProvider ?? existing.edgeProvider,
     });
   return getPoolMember(memberId);
 }
 
 export function deletePoolMember(memberId: number): boolean {
+  // Bila edge-relay & sudah deploy, best-effort hapus relay di provider (Worker).
+  try {
+    const member = getPoolMember(memberId);
+    if (member?.type === 'edge-relay' && member.edgeProvider && member.relayUrl) {
+      const provider = getEdgeProvider(member.edgeProvider);
+      const config = getMemberEdgeConfig(memberId) ?? {};
+      void provider.remove(config).catch(() => {
+        /* best-effort; tetap hapus member walau Worker gagal dihapus */
+      });
+    }
+  } catch {
+    /* ignore */
+  }
   const res = getDb().prepare('DELETE FROM proxy_pool_members WHERE id = ?').run(memberId);
   return res.changes > 0;
+}
+
+/* ──────────────────────── Edge relay actions ──────────────────── */
+
+/** Verifikasi kredensial edge provider (mis. CF token). Simpan config encrypted. */
+export async function verifyEdgeCredentials(
+  memberId: number,
+  config: Record<string, unknown>,
+): Promise<{ ok: boolean; accountInfo?: unknown; error?: string }> {
+  const member = getPoolMember(memberId);
+  if (!member || member.type !== 'edge-relay' || !member.edgeProvider) {
+    return { ok: false, error: 'Member bukan tipe edge-relay.' };
+  }
+  const provider = getEdgeProvider(member.edgeProvider);
+  const errors = provider.validateConfig(config);
+  if (errors.length > 0) return { ok: false, error: errors[0] };
+  const result = await provider.verifyCredentials(config);
+  if (result.ok) {
+    // Simpan config + account info (encrypted).
+    setMemberEdgeConfig(memberId, config);
+  }
+  return result;
+}
+
+/** Deploy relay (mis. CF Worker). Simpan relay_url bila sukses. */
+export async function deployEdgeMember(
+  memberId: number,
+  configOverride?: Record<string, unknown>,
+): Promise<{ ok: boolean; relayUrl?: string; error?: string }> {
+  const member = getPoolMember(memberId);
+  if (!member || member.type !== 'edge-relay' || !member.edgeProvider) {
+    return { ok: false, error: 'Member bukan tipe edge-relay.' };
+  }
+  const provider = getEdgeProvider(member.edgeProvider);
+  const config = configOverride ?? getMemberEdgeConfig(memberId) ?? {};
+  if (Object.keys(config).length === 0) return { ok: false, error: 'Config edge kosong (verify dulu).' };
+  const result = await provider.deploy(config);
+  if (result.ok && result.relayUrl) {
+    setMemberEdgeConfig(memberId, config); // simpan config terbaru (termasuk accountId, relayUrl)
+    setMemberRelayUrl(memberId, result.relayUrl);
+  }
+  return result;
+}
+
+/** Hapus relay deployment (Worker). Kosongkan relay_url. */
+export async function removeEdgeDeployment(memberId: number): Promise<{ ok: boolean; error?: string }> {
+  const member = getPoolMember(memberId);
+  if (!member || member.type !== 'edge-relay' || !member.edgeProvider) {
+    return { ok: false, error: 'Member bukan tipe edge-relay.' };
+  }
+  const provider = getEdgeProvider(member.edgeProvider);
+  const config = getMemberEdgeConfig(memberId) ?? {};
+  const result = await provider.remove(config);
+  if (result.ok) {
+    getDb().prepare('UPDATE proxy_pool_members SET relay_url = NULL, proxy_url = ?, healthy = 0 WHERE id = ?').run('', memberId);
+  }
+  return result;
 }
 
 /* ──────────────────────── Provider bindings ────────────────────── */

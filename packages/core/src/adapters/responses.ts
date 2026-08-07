@@ -360,5 +360,5 @@ export async function responses(call: AdapterCall): Promise<Response> {
   const upstreamBody = JSON.stringify(mapped);
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';
-  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher });
+  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher, relay: call.relay });
 }

@@ -2,7 +2,7 @@ import type { Provider, Route, RouteModality, RouteTarget, SiberGateConfig } fro
 import { getLatency, hasLatencyEstimate, recordFailure, recordLatency } from './latency.js';
 import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 import { pushConsoleLog } from './console-log.js';
-import { resolveProxy, buildDispatcher, pushProxyLog, redactProxyUrl, markMemberUnhealthy } from './proxy/index.js';
+import { resolveProxy, buildTransport, pushProxyLog, redactProxyUrl, markMemberUnhealthy } from './proxy/index.js';
 
 /**
  * Run `fn` with a fresh AbortController whose timeout is `budgetMs`, while
@@ -180,36 +180,44 @@ export async function executeRoute(
       ? target.modelId.slice(target.providerId.length + 1)
       : target.modelId;
     // Proxy Layer: resolve outbound proxy utk provider ini (selektif per-provider).
-    // resolved = { poolId, memberId, proxyUrl, country } | null (null = direct).
+    // buildTransport memutuskan: dispatcher (http/socks) atau relay (edge worker).
     let dispatcher: unknown;
+    let relay: { url: string; injectHeaders: Record<string, string> } | undefined;
+    let proxyResolved: { poolId: string; memberId: number; country: string | null; type: string } | null = null;
     const resolved = resolveProxy(target.providerId);
     if (resolved) {
       try {
-        dispatcher = buildDispatcher(resolved.proxyUrl);
+        // providerOrigin = baseUrl provider utk x-relay-target header (edge only).
+        const transport = buildTransport(resolved, provider.baseUrl);
+        dispatcher = transport.dispatcher;
+        relay = transport.relay;
+        proxyResolved = { poolId: transport.poolId, memberId: transport.memberId, country: transport.country, type: transport.type };
         pushProxyLog({
-          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          poolId: resolved.poolId, memberId: resolved.memberId,
+          memberUrl: redactProxyUrl(resolved.proxyUrl),
           providerId: target.providerId, outcome: 'selected', latencyMs: null, country: resolved.country,
         });
       } catch (err) {
-        // Proxy URL invalid / agent gagal dibangun → log & lanjut direct (fail-open).
+        // Proxy build gagal (URL invalid / edge config corrupt) → log & direct.
         pushProxyLog({
-          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          poolId: resolved.poolId, memberId: resolved.memberId,
+          memberUrl: redactProxyUrl(resolved.proxyUrl),
           providerId: target.providerId, outcome: 'failed', latencyMs: null, country: null,
-          error: `dispatcher build failed: ${(err as Error).message}`,
+          error: `transport build failed: ${(err as Error).message}`,
         });
       }
     }
     try {
       const stepNoBefore = trail.length + 1;
-      // Each target gets the FULL route timeout as its own budget (not a slice).
-      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId} (budget ${perTargetBudgetMs}ms)${resolved ? ' via proxy' : ''}`, {
+      const viaTag = proxyResolved ? ` via ${proxyResolved.type}` : '';
+      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId} (budget ${perTargetBudgetMs}ms)${viaTag}`, {
         route: route.id, step: stepNoBefore, totalSteps: attempts.length,
         provider: target.providerId, model: target.modelId, modality, strategy: route.strategy,
         targetBudgetMs: perTargetBudgetMs,
-        ...(resolved ? { proxy: { poolId: resolved.poolId, country: resolved.country } } : {}),
+        ...(proxyResolved ? { proxy: { poolId: proxyResolved.poolId, country: proxyResolved.country, type: proxyResolved.type } } : {}),
       });
       const response = await withTargetTimeout(signal, perTargetBudgetMs, (targetSignal) =>
-        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders, dispatcher }),
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders, dispatcher, relay }),
       );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);

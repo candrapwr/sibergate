@@ -19,10 +19,14 @@ export interface ProxyPool {
   updatedAt: string;
 }
 
+/** Tipe member proxy. http-proxy/socks5 = tunnel (ProxyAgent), edge-relay = URL rewrite. */
+export type MemberType = 'http-proxy' | 'socks5' | 'edge-relay';
+
 /** Anggota pool (satu proxy URL + weight + health state). */
 export interface ProxyPoolMember {
   id: number;
   poolId: string;
+  /** Untuk http-proxy/socks5: full proxy URL. Untuk edge-relay: relay (worker) URL setelah deploy. */
   proxyUrl: string;
   label: string | null;
   weight: number;
@@ -34,6 +38,12 @@ export interface ProxyPoolMember {
   exitIp: string | null;
   lastCheckAt: string | null;
   createdAt: string;
+  /** Tipe member (additive, default 'http-proxy' utk backward compat). */
+  type: MemberType;
+  /** Untuk edge-relay: id provider (mis. 'cloudflare-workers'). */
+  edgeProvider: string | null;
+  /** Untuk edge-relay: deployed relay URL. */
+  relayUrl: string | null;
 }
 
 /** Junction: provider mana pakai pool mana. */
@@ -84,12 +94,20 @@ export interface ProxyTestResult {
 }
 
 /**
- * Member terpilih + dispatcher siap pakai. Inilah satu-satunya contract yg
+ * Member terpilih + info utk build transport. Inilah satu-satunya contract yg
  * dipakai engine. Null = tidak ada proxy utk provider ini (direct fetch).
+ * Engine pakai buildTransport(resolved) utk dapat {dispatcher?, relay?}.
  */
 export interface ResolvedProxy {
   poolId: string;
   memberId: number;
+  /** Untuk http-proxy/socks5: proxy URL. Untuk edge-relay: relay URL. */
   proxyUrl: string;
   country: string | null;
+  /** Tipe member. */
+  type: MemberType;
+  /** Untuk edge-relay: id provider (mis. 'cloudflare-workers'). */
+  edgeProvider: string | null;
+  /** Untuk edge-relay: memberId utk lookup config encrypted (decrypt di buildTransport). */
+  edgeMemberId: number | null;
 }

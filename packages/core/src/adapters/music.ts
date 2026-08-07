@@ -16,7 +16,7 @@ import { sendUpstream, upstreamUrl, type AdapterCall } from '../provider.js';
 export async function music(call: AdapterCall): Promise<Response> {
   const { provider, model, body, signal } = call;
   const url = upstreamUrl(provider, 'music', model);
-  const upstream = await sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher });
+  const upstream = await sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher, relay: call.relay });
 
   // Normalize: extract the first audio artifact into a flat shape.
   try {

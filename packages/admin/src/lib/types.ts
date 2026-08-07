@@ -128,6 +128,22 @@ export interface ScriptRunResult {
 
 /** Proxy pool strategy. */
 export type ProxyStrategy = 'weighted' | 'round-robin' | 'failover';
+export type MemberType = 'http-proxy' | 'socks5' | 'edge-relay';
+export type EdgeProviderId = 'cloudflare-workers';
+
+/** Result of edge relay verify (POST .../edge/verify). */
+export interface EdgeVerifyResult {
+  ok: boolean;
+  accountInfo?: { accountId: string; name: string };
+  error?: string;
+}
+
+/** Result of edge relay deploy (POST .../edge/deploy). */
+export interface EdgeDeployResult {
+  ok: boolean;
+  relayUrl?: string;
+  error?: string;
+}
 
 /** A proxy pool (master). List view includes counts. */
 export interface ProxyPool {
@@ -155,6 +171,9 @@ export interface ProxyPoolMember {
   exitIp: string | null;
   lastCheckAt: string | null;
   createdAt: string;
+  type: MemberType;
+  edgeProvider: string | null;
+  relayUrl: string | null;
 }
 
 /** Provider → pool binding. */
