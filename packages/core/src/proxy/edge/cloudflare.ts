@@ -92,16 +92,20 @@ interface CfSubdomain {
 /** Bangun multipart body utk PUT deploy Worker (Node 18+ FormData global). */
 function buildDeployForm(): FormData {
   const fd = new FormData();
-  // Metadata: main module name.
+  // Metadata: main_module HARUS match nama file di FormData (worker.js).
+  // compatibility_date wajib utk ES module syntax.
+  const metadata = {
+    main_module: 'worker.js',
+    compatibility_date: '2024-11-01',
+  };
+  fd.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  // Worker script. Content-Type harus application/javascript+module utk ES modules.
+  // Node FormData set Content-Type dari Blob.type otomatis.
   fd.append(
-    'metadata',
-    new Blob(
-      [JSON.stringify({ main_module: 'worker.js', compatibility_date: '2024-09-23' })],
-      { type: 'application/json' },
-    ),
+    'worker.js',
+    new Blob([WORKER_SCRIPT], { type: 'application/javascript+module' }),
+    'worker.js',
   );
-  // Script utama.
-  fd.append('worker.js', new Blob([WORKER_SCRIPT], { type: 'application/javascript+module' }), 'worker.js');
   return fd;
 }
 
@@ -158,14 +162,12 @@ export const cloudflareProvider: EdgeRelayProvider = {
           body: fd,
         },
       );
-      const putJson = (await putRes.json().catch(() => ({ success: false, errors: [{ code: putRes.status, message: putRes.statusText }] }))) as CfResponse<unknown>;
+      const putRaw = await putRes.text();
+      console.error('[sibergate] CF deploy PUT response:', putRes.status, putRaw.slice(0, 500));
+      const putJson = (() => { try { return JSON.parse(putRaw) as CfResponse<unknown>; } catch { return { success: false, errors: [{ code: putRes.status, message: putRaw.slice(0, 200) }] }; } })();
       if (!putRes.ok || !putJson.success) {
         const cfErr = putJson.errors?.[0];
-        // Pesan utk permission error (10000 = Authentication error, 10026 = could not authenticate).
-        const hint = cfErr && (cfErr.code === 10000 || cfErr.code === 10026 || /auth/i.test(cfErr.message))
-          ? ' Token CF butuh permission "Workers Scripts: Edit" + "Account: Read". Buat token baru di dash.cloudflare.com → My Profile → API Tokens.'
-          : '';
-        return { ok: false, error: `Deploy gagal (PUT script ${putRes.status}): ${cfErr?.message ?? putRes.statusText}${hint}` };
+        return { ok: false, error: `Deploy gagal (PUT ${putRes.status}): code=${cfErr?.code ?? '?'} msg=${cfErr?.message ?? putRaw.slice(0, 150)}` };
       }
 
       // 2. Enable workers.dev subdomain utk script ini (supaya ada URL publik).
