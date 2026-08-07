@@ -63,11 +63,28 @@ export function pushProxyLog(input: ProxyLogInput): void {
   }
 }
 
-/** Ambil proxy_logs terbaru (utk UI). */
+/** Ambil proxy_logs terbaru (utk UI), dgn mapping snake_case → camelCase. */
 export function recentProxyLogs(limit = 100): ProxyLogEntry[] {
-  return getDb()
+  const rows = getDb()
     .prepare('SELECT * FROM proxy_logs ORDER BY id DESC LIMIT ?')
-    .all(limit) as ProxyLogEntry[];
+    .all(limit) as Array<{
+      id: number; ts: string; pool_id: string | null; member_id: number | null;
+      member_url: string | null; provider_id: string | null; outcome: string;
+      latency_ms: number | null; country: string | null; error: string | null; details: string | null;
+    }>;
+  return rows.map((r) => ({
+    id: r.id,
+    ts: r.ts,
+    poolId: r.pool_id,
+    memberId: r.member_id,
+    memberUrl: r.member_url,
+    providerId: r.provider_id,
+    outcome: r.outcome,
+    latencyMs: r.latency_ms,
+    country: r.country,
+    error: r.error,
+    details: r.details,
+  }));
 }
 
 /** Hapus semua proxy_logs (clear logs maintenance). */
