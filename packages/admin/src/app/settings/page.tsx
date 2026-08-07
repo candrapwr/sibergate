@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2, Eraser, BarChart3, KeyRound } from 'lucide-react';
+import { Settings as SettingsIcon, Download, AlertTriangle, Trash2, Boxes, Upload, DatabaseBackup, Loader2, Eraser, BarChart3, KeyRound, Globe } from 'lucide-react';
 import { toast } from 'sonner';
-import { useImportProviders, useResetAll, useClearLogs, useResetStats, useSystem, useSignatures, useClearSignatures } from '@/lib/queries';
+import { useImportProviders, useResetAll, useClearLogs, useResetStats, useSystem, useSignatures, useClearSignatures, useGeoIpStatus, useUpdateGeoIp } from '@/lib/queries';
 import { api } from '@/lib/api-client';
 import { KNOWN_STATS } from '@/lib/known-providers-client';
 import { PageHeader } from '@/components/layout/page-header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -43,6 +44,9 @@ export default function SettingsPage() {
 
       {/* Maintenance: clear logs / reset stats (light-weight destructive) */}
       <MaintenanceSection />
+
+      {/* GeoIP database (untuk Proxy Layer flag detection) */}
+      <GeoIpSection />
 
       {/* Danger zone */}
       <Card className="border-destructive/40">
@@ -408,6 +412,46 @@ function BackupRestoreSection() {
         <div className="text-[11px] text-muted-foreground">
           <p>📦 Backup includes: SQLite database, encryption master key, all providers/models/routes/keys/users.</p>
           <p className="mt-1">🔒 Keep the backup file safe — it contains your encrypted API keys and the key to decrypt them.</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** GeoIP database section — download/update MaxMind GeoLite2 utk proxy flag detection. */
+function GeoIpSection() {
+  const { data: status } = useGeoIpStatus();
+  const update = useUpdateGeoIp();
+  const sizeMb = status?.sizeBytes ? (status.sizeBytes / 1024 / 1024).toFixed(1) : null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Globe size={15} /> GeoIP Database
+        </CardTitle>
+        <CardDescription>
+          MaxMind GeoLite2-Country dipakai Proxy Layer utk deteksi negara + flag proxy (🇺🇸). File di-download
+          on-demand & TIDAK ikut backup DB (bisa re-download). Butuh{' '}
+          <code className="font-mono">SIBERGATE_MAXMIND_LICENSE_KEY</code> (gratis, daftar di maxmind.com).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2 text-[12px]">
+          <div className="flex items-center gap-2">
+            <Badge variant={status?.present ? 'success' : 'muted'}>{status?.present ? 'installed' : 'not installed'}</Badge>
+            {sizeMb && <span className="text-muted-foreground">{sizeMb} MB</span>}
+            {status?.modifiedAt && <span className="text-muted-foreground">· updated {new Date(status.modifiedAt).toLocaleString()}</span>}
+          </div>
+          {status?.loadError && status.loadError !== 'not-found' && (
+            <div className="text-destructive">⚠️ Load error: {status.loadError}</div>
+          )}
+          <Button onClick={() => update.mutateAsync().then((r) => r.ok ? toast.success('GeoIP DB updated') : toast.error(r.error ?? 'Update failed')).catch((e) => toast.error((e as Error).message))} disabled={update.isPending} size="sm">
+            {update.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {status?.present ? 'Update now' : 'Download'}
+          </Button>
+          {status && !status.present && (
+            <p className="text-[11px] text-muted-foreground">Tanpa GeoIP DB, proxy tetap jalan tapi flag negara tampil 🏳️ (unknown).</p>
+          )}
         </div>
       </CardContent>
     </Card>

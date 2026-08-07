@@ -90,7 +90,7 @@ export type PollOutcome =
 export async function pollTaskUntilDone(
   provider: Provider,
   pollUrl: string,
-  opts: { maxIterations?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void>; signal?: AbortSignal } = {},
+  opts: { maxIterations?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void>; signal?: AbortSignal; dispatcher?: unknown } = {},
 ): Promise<PollOutcome> {
   const maxIterations = opts.maxIterations ?? POLL_MAX_ITERATIONS;
   const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS;
@@ -105,7 +105,7 @@ export async function pollTaskUntilDone(
     const headers = buildAuthHeaders(provider);
     let res: Response;
     try {
-      res = await fetch(pollUrl, { method: 'GET', headers, signal: opts.signal });
+      res = await fetch(pollUrl, { method: 'GET', headers, signal: opts.signal, ...(opts.dispatcher ? { dispatcher: opts.dispatcher } : {}) });
     } catch (err) {
       const e = err as Error;
       return { status: 'failed', message: `Failed to reach ${provider.id} (poll iteration ${i + 1}): ${e.message}` };

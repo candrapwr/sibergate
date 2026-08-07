@@ -10,10 +10,17 @@ import type {
   ApiKey,
   CustomScript,
   CustomScriptSummary,
+  GeoIpStatus,
   ListResponse,
   Model,
   Provider,
   ProviderKey,
+  ProviderProxyBinding,
+  ProxyLogEntry,
+  ProxyPool,
+  ProxyPoolMember,
+  ProxyStrategy,
+  ProxyTestResult,
   RequestLog,
   Route,
   ScriptRunResult,
@@ -514,5 +521,146 @@ export function useTestCustomScript() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: string }) =>
       api.post<ScriptRunResult>(`custom-scripts/${id}/test`, { input }),
+  });
+}
+
+/* ──────────────────────────── Proxy Layer ──────────────────────────── */
+
+export function useProxyPools() {
+  return useQuery({
+    queryKey: ['proxy-pools'],
+    queryFn: () => api.get<ListResponse<ProxyPool>>('proxy/pools'),
+  });
+}
+
+export function useCreateProxyPool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { id: string; name?: string; strategy?: ProxyStrategy; enabled?: boolean }) =>
+      api.post<ProxyPool>('proxy/pools', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-pools'] }),
+  });
+}
+
+export function useUpdateProxyPool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<ProxyPool> }) =>
+      api.patch<ProxyPool>(`proxy/pools/${id}`, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-pools'] }),
+  });
+}
+
+export function useDeleteProxyPool() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`proxy/pools/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-pools'] }),
+  });
+}
+
+/** Members of a pool. */
+export function usePoolMembers(poolId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['proxy-members', poolId],
+    queryFn: () => api.get<ListResponse<ProxyPoolMember>>(`proxy/pools/${poolId}/members`),
+    enabled: !!poolId,
+  });
+}
+
+export function useAddPoolMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { proxyUrl: string; label?: string; weight?: number; enabled?: boolean }) =>
+      api.post<ProxyPoolMember>(`proxy/pools/${poolId}/members`, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+export function useUpdatePoolMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, data }: { memberId: number; data: Partial<ProxyPoolMember> }) =>
+      api.patch<ProxyPoolMember>(`proxy/pools/${poolId}/members/${memberId}`, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-members', poolId] }),
+  });
+}
+
+export function useDeletePoolMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (memberId: number) => api.delete(`proxy/pools/${poolId}/members/${memberId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+/** Test a member (connectivity + latency + exit IP + geoip flag). */
+export function useTestPoolMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (memberId: number) => api.post<ProxyTestResult>(`proxy/pools/${poolId}/members/${memberId}/test`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+    },
+  });
+}
+
+/** Provider bindings for a pool (which providers route through it). */
+export function usePoolBindings(poolId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['proxy-bindings', poolId],
+    queryFn: () => api.get<ListResponse<ProviderProxyBinding>>(`proxy/pools/${poolId}/bindings`),
+    enabled: !!poolId,
+  });
+}
+
+export function useBindProvider(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ providerId, enabled }: { providerId: string; enabled: boolean }) =>
+      api.post(`proxy/pools/${poolId}/bindings`, { providerId, enabled }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-bindings', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+export function useUnbindProvider(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (providerId: string) => api.delete(`proxy/pools/${poolId}/bindings/${providerId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-bindings', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+/** Proxy event logs. */
+export function useProxyLogs(limit = 100) {
+  return useQuery({
+    queryKey: ['proxy-logs', limit],
+    queryFn: () => api.get<ListResponse<ProxyLogEntry>>(`proxy/logs?limit=${limit}`),
+    refetchInterval: 10_000,
+  });
+}
+
+/** GeoIP DB status + update. */
+export function useGeoIpStatus() {
+  return useQuery({ queryKey: ['proxy-geoip'], queryFn: () => api.get<GeoIpStatus>('proxy/geoip/status') });
+}
+
+export function useUpdateGeoIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ ok: boolean; sizeBytes?: number; error?: string }>('proxy/geoip/update', {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-geoip'] }),
   });
 }

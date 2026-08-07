@@ -126,6 +126,77 @@ export interface ScriptRunResult {
   error?: string;
 }
 
+/** Proxy pool strategy. */
+export type ProxyStrategy = 'weighted' | 'round-robin' | 'failover';
+
+/** A proxy pool (master). List view includes counts. */
+export interface ProxyPool {
+  id: string;
+  name: string;
+  strategy: ProxyStrategy;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  memberCount: number;
+  healthyCount: number;
+  boundProviderCount: number;
+}
+
+/** A member (proxy URL) inside a pool. */
+export interface ProxyPoolMember {
+  id: number;
+  poolId: string;
+  proxyUrl: string;
+  label: string | null;
+  weight: number;
+  enabled: boolean;
+  healthy: boolean;
+  country: string | null;
+  exitIp: string | null;
+  lastCheckAt: string | null;
+  createdAt: string;
+}
+
+/** Provider → pool binding. */
+export interface ProviderProxyBinding {
+  providerId: string;
+  poolId: string;
+  enabled: boolean;
+}
+
+/** Result of testing one proxy member. */
+export interface ProxyTestResult {
+  ok: boolean;
+  latencyMs: number;
+  exitIp: string | null;
+  geo: { country: string; countryName: string; flag: string } | null;
+  error?: string;
+}
+
+/** One proxy_logs row. */
+export interface ProxyLogEntry {
+  id: number;
+  ts: string;
+  poolId: string | null;
+  memberId: number | null;
+  memberUrl: string | null;
+  providerId: string | null;
+  outcome: string;
+  latencyMs: number | null;
+  country: string | null;
+  error: string | null;
+  details: string | null;
+}
+
+/** GeoIP DB status (GET /admin/proxy/geoip/status). */
+export interface GeoIpStatus {
+  present: boolean;
+  path: string;
+  sizeBytes: number;
+  modifiedAt: string | null;
+  loadError: string | null;
+}
+
 export interface RequestLog {
   id: number;
   ts: string;

@@ -20,7 +20,7 @@ import { cn } from '@/lib/utils';
  * line unless the user scrolls up (then a "jump to latest" button appears).
  */
 
-const CATEGORIES: ConsoleLogCategory[] = ['incoming', 'routing', 'upstream', 'custom-script', 'request', 'auth', 'config', 'system'];
+const CATEGORIES: ConsoleLogCategory[] = ['incoming', 'routing', 'upstream', 'custom-script', 'proxy', 'request', 'auth', 'config', 'system'];
 
 const STATUS_META: Record<string, { dot: string; label: string; text: string }> = {
   live: { dot: 'bg-success animate-pulse', label: 'Live', text: 'text-success' },

@@ -12,5 +12,5 @@ export async function chat(call: AdapterCall): Promise<Response> {
   const upstreamBody = JSON.stringify({ ...mapped, model });
   const headers: Record<string, string> = {};
   if (body.stream) headers.Accept = 'text/event-stream';
-  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders });
+  return sendUpstream({ url, provider, body: upstreamBody, signal, contentType: 'application/json', passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher });
 }
