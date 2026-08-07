@@ -505,10 +505,12 @@ function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
         >
           {verify.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Verify
         </Button>
-        <Button type="button" variant="default" size="sm" disabled={!token.trim() || deploy.isPending}
+        <Button type="button" variant="default" size="sm" disabled={deploy.isPending}
           onClick={async () => {
             try {
-              const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
+              // Deploy pakai config dari DB (sudah ada accountId setelah verify).
+              // Jangan override dgn form config (gak punya accountId).
+              const r = await deploy.mutateAsync({ memberId: m.id });
               if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
               else toast.error(r.error ?? 'Deploy failed');
             } catch (err) {
