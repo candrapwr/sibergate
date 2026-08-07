@@ -494,18 +494,26 @@ function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
       <div className="flex gap-2">
         <Button type="button" variant="outline" size="sm" disabled={!token.trim() || verify.isPending}
           onClick={async () => {
-            const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
-            if (r.ok) toast.success('Token valid' + (r.accountInfo ? ` (${r.accountInfo.name})` : ''));
-            else toast.error(r.error ?? 'Verify failed');
+            try {
+              const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
+              if (r.ok) toast.success('Token valid' + (r.accountInfo ? ` (${r.accountInfo.name})` : ''));
+              else toast.error(r.error ?? 'Verify failed');
+            } catch (err) {
+              toast.error((err as Error).message);
+            }
           }}
         >
           {verify.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Verify
         </Button>
-        <Button type="button" variant="default" size="sm" disabled={deploy.isPending}
+        <Button type="button" variant="default" size="sm" disabled={!token.trim() || deploy.isPending}
           onClick={async () => {
-            const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
-            if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
-            else toast.error(r.error ?? 'Deploy failed');
+            try {
+              const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
+              if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
+              else toast.error(r.error ?? 'Deploy failed');
+            } catch (err) {
+              toast.error((err as Error).message);
+            }
           }}
         >
           {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Deploy
@@ -525,16 +533,24 @@ function EdgeMemberPanel({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
       <div className="flex gap-2">
         <Button type="button" variant="outline" size="sm" disabled={deploy.isPending}
           onClick={async () => {
-            const r = await deploy.mutateAsync({ memberId: m.id });
-            r.ok ? toast.success('Redeployed') : toast.error(r.error ?? 'Failed');
+            try {
+              const r = await deploy.mutateAsync({ memberId: m.id });
+              r.ok ? toast.success('Redeployed') : toast.error(r.error ?? 'Failed');
+            } catch (err) {
+              toast.error((err as Error).message);
+            }
           }}
         >
           {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Redeploy
         </Button>
         <Button type="button" variant="ghost" size="sm" disabled={remove.isPending}
           onClick={async () => {
-            const r = await remove.mutateAsync(m.id);
-            r.ok ? toast.success('Worker removed') : toast.error(r.error ?? 'Failed');
+            try {
+              const r = await remove.mutateAsync(m.id);
+              r.ok ? toast.success('Worker removed') : toast.error(r.error ?? 'Failed');
+            } catch (err) {
+              toast.error((err as Error).message);
+            }
           }}
         >
           {remove.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Remove Worker
