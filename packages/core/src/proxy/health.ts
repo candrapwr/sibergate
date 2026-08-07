@@ -194,10 +194,17 @@ export function stopHealthMonitor(): void {
 async function pingAllMembers(): Promise<void> {
   const db = getDb();
   const members = db
-    .prepare('SELECT id, proxy_url, pool_id FROM proxy_pool_members WHERE enabled = 1')
-    .all() as Array<{ id: number; proxy_url: string; pool_id: string }>;
+    .prepare('SELECT id, proxy_url, pool_id, type, relay_url, edge_provider FROM proxy_pool_members WHERE enabled = 1')
+    .all() as Array<{ id: number; proxy_url: string; pool_id: string; type: string; relay_url: string | null; edge_provider: string | null }>;
   for (const m of members) {
-    const result = await testProxy(m.proxy_url);
+    // Branch by type: edge-relay pakai testMember (provider.testConnectivity),
+    // http/socks pakai testProxy (ProxyAgent + example.com + ipify).
+    const result = await testMember({
+      type: m.type,
+      proxyUrl: m.proxy_url,
+      relayUrl: m.relay_url,
+      edgeProvider: m.edge_provider,
+    });
     const was = db.prepare('SELECT healthy FROM proxy_pool_members WHERE id = ?').get(m.id) as { healthy: number } | undefined;
     updateMemberHealth(m.id, result);
     // Log recovery bila sebelumnya unhealthy & sekarang healthy.
@@ -205,7 +212,7 @@ async function pingAllMembers(): Promise<void> {
       pushProxyLog({
         poolId: m.pool_id,
         memberId: m.id,
-        memberUrl: redactProxyUrl(m.proxy_url),
+        memberUrl: m.relay_url ?? redactProxyUrl(m.proxy_url),
         providerId: null,
         outcome: 'recovered',
         latencyMs: result.latencyMs,
