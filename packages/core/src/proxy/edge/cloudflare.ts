@@ -153,6 +153,7 @@ export const cloudflareProvider: EdgeRelayProvider = {
 
     try {
       // 1. PUT script (multipart).
+      console.error('[sibergate] CF deploy debug:', { tokenPrefix: token.slice(0, 8) + '...', accountId, scriptName });
       const fd = buildDeployForm();
       const putRes = await fetch(
         `${CF_API}/accounts/${accountId}/workers/scripts/${scriptName}`,
