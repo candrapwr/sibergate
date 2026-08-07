@@ -340,7 +340,11 @@ export async function verifyEdgeCredentials(
   return result;
 }
 
-/** Deploy relay (mis. CF Worker). Simpan relay_url bila sukses. */
+/**
+ * Deploy relay (mis. CF Worker). Simpan relay_url bila sukses.
+ * configOverride = config lengkap dari UI (apiToken, accountId, scriptName).
+ * Bila tidak ada, fallback ke config DB (hasil verify sebelumnya).
+ */
 export async function deployEdgeMember(
   memberId: number,
   configOverride?: Record<string, unknown>,
@@ -350,11 +354,16 @@ export async function deployEdgeMember(
     return { ok: false, error: 'Member bukan tipe edge-relay.' };
   }
   const provider = getEdgeProvider(member.edgeProvider);
-  const config = configOverride ?? getMemberEdgeConfig(memberId) ?? {};
-  if (Object.keys(config).length === 0) return { ok: false, error: 'Config edge kosong (verify dulu).' };
+  // Merge: DB config sbg base, override dgn config dari UI (apiToken, accountId).
+  const dbConfig = getMemberEdgeConfig(memberId) ?? {};
+  const config = { ...dbConfig, ...(configOverride ?? {}) };
+  const token = String(config.apiToken ?? '').trim();
+  const accountId = String(config.accountId ?? '').trim();
+  if (!token) return { ok: false, error: 'API token kosong.' };
+  if (!accountId) return { ok: false, error: 'Account ID kosong (verify dulu, atau input manual).' };
   const result = await provider.deploy(config);
   if (result.ok && result.relayUrl) {
-    setMemberEdgeConfig(memberId, config); // simpan config terbaru (termasuk accountId, relayUrl)
+    setMemberEdgeConfig(memberId, config);
     setMemberRelayUrl(memberId, result.relayUrl);
   }
   return result;
