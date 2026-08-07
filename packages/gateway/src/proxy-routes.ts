@@ -159,7 +159,8 @@ export function createProxyAdminRouter(configStore: ConfigStore) {
   app.get('/geoip/status', (c) => c.json(geoipStatus()));
 
   app.post('/geoip/update', async (c) => {
-    const result = await downloadGeoIpDb();
+    const body = await c.req.json().catch(() => ({})) as { url?: string };
+    const result = await downloadGeoIpDb(body.url);
     pushConsoleLog(result.ok ? 'success' : 'error', 'proxy', `GeoIP DB ${result.ok ? 'updated' : 'update failed'}`, { ...result });
     return c.json(result, result.ok ? 200 : 400);
   });

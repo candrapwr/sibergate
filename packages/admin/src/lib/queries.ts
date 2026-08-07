@@ -660,7 +660,7 @@ export function useGeoIpStatus() {
 export function useUpdateGeoIp() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<{ ok: boolean; sizeBytes?: number; error?: string }>('proxy/geoip/update', {}),
+    mutationFn: (url?: string) => api.post<{ ok: boolean; sizeBytes?: number; error?: string; url?: string }>('proxy/geoip/update', url ? { url } : {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-geoip'] }),
   });
 }
