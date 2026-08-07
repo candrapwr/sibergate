@@ -79,7 +79,7 @@ export function recentProxyLogs(limit = 100): ProxyLogEntry[] {
     memberId: r.member_id,
     memberUrl: r.member_url,
     providerId: r.provider_id,
-    outcome: r.outcome,
+    outcome: r.outcome as ProxyOutcome,
     latencyMs: r.latency_ms,
     country: r.country,
     error: r.error,
