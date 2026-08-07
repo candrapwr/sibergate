@@ -1,10 +1,11 @@
 import { serve } from '@hono/node-server';
-import { ConfigStore, getDb, loadDotEnv, pushConsoleLog } from '@sibergate/core';
+import { ConfigStore, getDb, loadDotEnv, pushConsoleLog, startHealthMonitor } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { createApp } from './routes.js';
 import { createAdminRouter } from './admin-routes.js';
 import { createAuthRouter } from './auth-routes.js';
 import { createCustomScriptPublicRouter, createCustomScriptAdminRouter } from './custom-routes.js';
+import { createProxyAdminRouter } from './proxy-routes.js';
 import { getOrCreateAdminKey } from './admin-middleware.js';
 
 function readTimeoutMs(name: string, fallback: number): number {
@@ -55,6 +56,12 @@ async function main() {
   // engine + failover unchanged.
   app.route('/api/custom', createCustomScriptPublicRouter());
   app.route('/admin/custom-scripts', createCustomScriptAdminRouter(configStore));
+
+  // Proxy Layer — outbound proxy pools selektif per provider (HTTP/HTTPS/SOCKS5).
+  // Admin CRUD + test + logs. Routing engine inject dispatcher via resolveProxy.
+  app.route('/admin/proxy', createProxyAdminRouter(configStore));
+  // Background health monitor (active ping) — unref supaya tidak hold event loop.
+  startHealthMonitor();
 
   app.notFound((c) =>
     c.json(

@@ -2,6 +2,7 @@ import type { Provider, Route, RouteModality, RouteTarget, SiberGateConfig } fro
 import { getLatency, hasLatencyEstimate, recordFailure, recordLatency } from './latency.js';
 import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 import { pushConsoleLog } from './console-log.js';
+import { resolveProxy, buildDispatcher, pushProxyLog, redactProxyUrl, markMemberUnhealthy } from './proxy/index.js';
 
 /**
  * Run `fn` with a fresh AbortController whose timeout is `budgetMs`, while
@@ -178,16 +179,37 @@ export async function executeRoute(
     const upstreamModel = target.modelId.startsWith(`${target.providerId}/`)
       ? target.modelId.slice(target.providerId.length + 1)
       : target.modelId;
+    // Proxy Layer: resolve outbound proxy utk provider ini (selektif per-provider).
+    // resolved = { poolId, memberId, proxyUrl, country } | null (null = direct).
+    let dispatcher: unknown;
+    const resolved = resolveProxy(target.providerId);
+    if (resolved) {
+      try {
+        dispatcher = buildDispatcher(resolved.proxyUrl);
+        pushProxyLog({
+          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          providerId: target.providerId, outcome: 'selected', latencyMs: null, country: resolved.country,
+        });
+      } catch (err) {
+        // Proxy URL invalid / agent gagal dibangun → log & lanjut direct (fail-open).
+        pushProxyLog({
+          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          providerId: target.providerId, outcome: 'failed', latencyMs: null, country: null,
+          error: `dispatcher build failed: ${(err as Error).message}`,
+        });
+      }
+    }
     try {
       const stepNoBefore = trail.length + 1;
       // Each target gets the FULL route timeout as its own budget (not a slice).
-      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId} (budget ${perTargetBudgetMs}ms)`, {
+      pushConsoleLog('info', 'upstream', `step #${stepNoBefore} calling upstream ${target.providerId}/${target.modelId} (budget ${perTargetBudgetMs}ms)${resolved ? ' via proxy' : ''}`, {
         route: route.id, step: stepNoBefore, totalSteps: attempts.length,
         provider: target.providerId, model: target.modelId, modality, strategy: route.strategy,
         targetBudgetMs: perTargetBudgetMs,
+        ...(resolved ? { proxy: { poolId: resolved.poolId, country: resolved.country } } : {}),
       });
       const response = await withTargetTimeout(signal, perTargetBudgetMs, (targetSignal) =>
-        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders }),
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders, dispatcher }),
       );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);
@@ -196,12 +218,30 @@ export async function executeRoute(
       pushConsoleLog('success', 'routing', `step #${stepNo} served by ${target.providerId}/${target.modelId} (${latencyMs}ms)`, {
         route: route.id, step: stepNo, totalSteps: attempts.length,
         provider: target.providerId, model: target.modelId, latencyMs, outcome: 'served',
+        ...(resolved ? { proxy: { poolId: resolved.poolId, country: resolved.country } } : {}),
       });
+      // Log proxy served outcome.
+      if (resolved) {
+        pushProxyLog({
+          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          providerId: target.providerId, outcome: 'served', latencyMs, country: resolved.country,
+        });
+      }
       return { response, servedBy: target, latencyMs, trail, servedByKeyId: key?.id ?? null };
     } catch (err) {
       const latencyMs = Date.now() - start;
       recordFailure(target.providerId, target.modelId);
       const ge = err as GatewayCallError;
+      // Passive health: bila request lewat proxy & gagal krn network/timeout (bukan
+      // HTTP error dari provider), tandai member unhealthy utk failover berikutnya.
+      if (resolved && (ge.code === 'network' || ge.code === 'timeout')) {
+        markMemberUnhealthy(resolved.memberId, ge.code, resolved.poolId, target.providerId);
+      } else if (resolved) {
+        pushProxyLog({
+          poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
+          providerId: target.providerId, outcome: 'failed', latencyMs, country: resolved.country, error: ge.code,
+        });
+      }
       trail.push({
         provider: target.providerId,
         model: target.modelId,

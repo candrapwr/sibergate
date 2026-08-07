@@ -16,6 +16,8 @@ import {
   saveRequestTrace,
   type RequestTraceData,
   type RouteModality,
+  resolveProxy,
+  buildDispatcher,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { proxySSEStream, proxyResponsesSSEStream, proxyToolsTextSSEStream } from './stream.js';
@@ -999,7 +1001,10 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       const provider = key ? { ...baseProvider, apiKey: key.value } : baseProvider;
       const taskId = taskBody.data.task_id;
       const pollUrl = buildPollUrl(provider, taskId);
-      const outcome = await pollTaskUntilDone(provider, pollUrl, { signal: controller.signal });
+      // Async image poll juga lewat proxy bila provider di-bind (konsisten dgn call awal).
+      const resolvedPoll = resolveProxy(servedBy.providerId);
+      const pollDispatcher = resolvedPoll ? buildDispatcher(resolvedPoll.proxyUrl) : undefined;
+      const outcome = await pollTaskUntilDone(provider, pollUrl, { signal: controller.signal, dispatcher: pollDispatcher });
       const totalLatency = Math.round(performance.now() - startedAt);
       const model = config.models.find((m) => m.id === servedBy.modelId);
       const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);

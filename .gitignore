@@ -24,6 +24,9 @@ dist/
 # Logs
 *.log
 
+# GeoIP database (downloaded on-demand, ~6MB, not app data)
+packages/core/data/*.mmdb
+
 # OS
 .DS_Store
 

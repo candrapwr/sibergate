@@ -310,6 +310,60 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_custom_scripts_name ON custom_scripts(name);
   `);
+
+  // ── Proxy Layer (outbound proxy selektif per provider) ─────────────────
+  // Modul terisolasi: saat aktif, pilih provider mana yg request-nya dilewatkan
+  // lewat proxy pool (HTTP/HTTPS/SOCKS5/SOCKS4). Pool = kumpulan member dgn
+  // weight + health state. Bind selektif per provider (bukan VPN global).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS proxy_pools (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      strategy    TEXT NOT NULL DEFAULT 'weighted',  -- weighted|round-robin|failover
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS proxy_pool_members (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      pool_id       TEXT NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
+      proxy_url     TEXT NOT NULL,           -- http://user:pass@host:port, socks5://...
+      label         TEXT,
+      weight        INTEGER NOT NULL DEFAULT 1,
+      enabled       INTEGER NOT NULL DEFAULT 1,
+      healthy       INTEGER NOT NULL DEFAULT 1,     -- health state (passive+active)
+      country       TEXT,                            -- geoip result (cached)
+      exit_ip       TEXT,                            -- IP keluar terdeteksi (cached)
+      last_check_at TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_proxy_pool_members_pool ON proxy_pool_members(pool_id);
+
+    CREATE TABLE IF NOT EXISTS provider_proxy_pools (
+      provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+      pool_id     TEXT NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (provider_id, pool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_provider_proxy_pools_pool ON provider_proxy_pools(pool_id);
+
+    CREATE TABLE IF NOT EXISTS proxy_logs (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts          TEXT NOT NULL DEFAULT (datetime('now')),
+      pool_id     TEXT,
+      member_id   INTEGER,
+      member_url  TEXT,                  -- di-redact partial utk safety
+      provider_id TEXT,
+      outcome     TEXT NOT NULL,         -- selected|served|failed|unhealthy|timeout|recovered
+      latency_ms  INTEGER,
+      country     TEXT,
+      error       TEXT,
+      details     TEXT                   -- JSON tambahan
+    );
+    CREATE INDEX IF NOT EXISTS idx_proxy_logs_ts ON proxy_logs(ts);
+    CREATE INDEX IF NOT EXISTS idx_proxy_logs_pool ON proxy_logs(pool_id);
+  `);
 }
 
 /**

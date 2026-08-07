@@ -16,7 +16,8 @@ export type ConsoleLogCategory =
   | 'system'
   | 'incoming'
   | 'upstream'
-  | 'custom-script';
+  | 'custom-script'
+  | 'proxy';
 
 export interface ConsoleLogEntry {
   id: string;

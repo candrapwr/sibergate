@@ -34,6 +34,13 @@ export interface AdapterCall {
    * filters them before populating this field.
    */
   passthroughHeaders?: Record<string, string>;
+  /**
+   * Optional undici dispatcher (ProxyAgent) to route this upstream call through
+   * an outbound proxy. Set by the engine when the route's provider is bound to
+   * an active proxy pool. undefined = direct fetch (no proxy). Type loose (`any`)
+   * to avoid forcing all adapter files to import undici types.
+   */
+  dispatcher?: unknown;
 }
 
 const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> = {
@@ -121,6 +128,8 @@ export async function sendUpstream(opts: {
   contentType?: string;
   /** Filtered client headers to forward to the upstream (allowlist only). */
   passthroughHeaders?: Record<string, string>;
+  /** Optional undici dispatcher (ProxyAgent) to route through outbound proxy. */
+  dispatcher?: unknown;
 }): Promise<Response> {
   const { provider, body, signal } = opts;
   let url = opts.url;
@@ -158,7 +167,16 @@ export async function sendUpstream(opts: {
 
   let res: Response;
   try {
-    res = await fetch(url, { method: opts.method ?? 'POST', headers, body, signal });
+    // `dispatcher` (ProxyAgent) routes this upstream call through an outbound
+    // proxy when set; undefined = direct fetch. Spread conditionally so we
+    // don't pollute the RequestInit when no proxy is in use.
+    res = await fetch(url, {
+      method: opts.method ?? 'POST',
+      headers,
+      body,
+      signal,
+      ...(opts.dispatcher ? { dispatcher: opts.dispatcher } : {}),
+    });
   } catch (err) {
     const e = err as Error;
     const cause = (e as Error & { cause?: { code?: string; name?: string; message?: string } }).cause;
