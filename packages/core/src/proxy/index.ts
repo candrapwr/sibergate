@@ -12,12 +12,30 @@ export type {
   GeoIpResult,
   ProxyTestResult,
   ResolvedProxy,
+  MemberType,
 } from './types.js';
+
+// Edge relay registry (CF + future Vercel/Deno/AWS).
+export {
+  listEdgeProviders,
+  getEdgeProvider,
+  isEdgeProvider,
+  type EdgeProviderId,
+  type EdgeRelayProvider,
+  type EdgeRelayRuntime,
+  type VerifyResult,
+  type DeployResult,
+  type RemoveResult,
+  type ConnectivityResult,
+} from './edge/index.js';
 
 // Runtime resolver (dipakai engine).
 export { resolveProxy } from './resolver.js';
 
-// Dispatcher (dipakai sendUpstream utk inject ke fetch).
+// Transport (centralized dispatcher vs relay decision).
+export { buildTransport, type Transport } from './transport.js';
+
+// Dispatcher (dipakai sendUpstream utk inject ke fetch, http/socks).
 export {
   buildDispatcher,
   validateProxyUrl,
@@ -28,6 +46,7 @@ export {
 // Health + test (dipakai admin routes + engine on-fail).
 export {
   testProxy,
+  testMember,
   updateMemberHealth,
   markMemberUnhealthy,
   startHealthMonitor,
@@ -63,6 +82,12 @@ export {
   bindProviderToPool,
   unbindProviderFromPool,
   getActivePoolForProvider,
+  getMemberEdgeConfig,
+  setMemberEdgeConfig,
+  setMemberRelayUrl,
+  verifyEdgeCredentials,
+  deployEdgeMember,
+  removeEdgeDeployment,
   type ProxyPoolInput,
   type PoolMemberInput,
 } from './admin.js';

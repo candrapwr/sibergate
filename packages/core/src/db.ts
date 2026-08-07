@@ -364,6 +364,15 @@ function migrate(db: DB): void {
     CREATE INDEX IF NOT EXISTS idx_proxy_logs_ts ON proxy_logs(ts);
     CREATE INDEX IF NOT EXISTS idx_proxy_logs_pool ON proxy_logs(pool_id);
   `);
+
+  // ── Edge Relay (Cloudflare Workers + future Vercel/Deno/AWS) ──────────
+  // Member proxy_pool_members bisa tipe edge-relay (URL rewrite relay, bukan
+  // tunnel). type: http-proxy|socks5|edge-relay. edge_config: encrypted JSON
+  // (CF token, account_id, dll). relay_url: Worker URL setelah deploy.
+  addColumnIfMissing(db, 'proxy_pool_members', 'type', "TEXT NOT NULL DEFAULT 'http-proxy'");
+  addColumnIfMissing(db, 'proxy_pool_members', 'edge_provider', 'TEXT');   // 'cloudflare-workers' | ...
+  addColumnIfMissing(db, 'proxy_pool_members', 'edge_config', 'TEXT');     // encrypted JSON blob
+  addColumnIfMissing(db, 'proxy_pool_members', 'relay_url', 'TEXT');       // deployed worker URL
 }
 
 /**

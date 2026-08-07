@@ -41,6 +41,13 @@ export interface AdapterCall {
    * to avoid forcing all adapter files to import undici types.
    */
   dispatcher?: unknown;
+  /**
+   * Optional edge-relay config (URL rewrite). Set when the proxy member is an
+   * edge relay (Cloudflare Workers, etc.). sendUpstream rewrites the URL to the
+   * worker URL + injects `x-relay-target` header. Mutually exclusive with
+   * dispatcher (edge relay = no ProxyAgent).
+   */
+  relay?: { url: string; injectHeaders: Record<string, string> };
 }
 
 const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> = {
@@ -130,6 +137,8 @@ export async function sendUpstream(opts: {
   passthroughHeaders?: Record<string, string>;
   /** Optional undici dispatcher (ProxyAgent) to route through outbound proxy. */
   dispatcher?: unknown;
+  /** Optional edge-relay config (URL rewrite to worker). */
+  relay?: { url: string; injectHeaders: Record<string, string> };
 }): Promise<Response> {
   const { provider, body, signal } = opts;
   let url = opts.url;
@@ -140,7 +149,16 @@ export async function sendUpstream(opts: {
     'Content-Type': opts.contentType ?? 'application/json',
     ...provider.headers,
     ...(opts.passthroughHeaders ?? {}),
+    // Edge relay inject headers (mis. x-relay-target) ditaruh terakhir shg
+    // relay header menang.
+    ...(opts.relay ? opts.relay.injectHeaders : {}),
   };
+  // Edge relay: rewrite URL ke worker URL + path asli. Header injectHeaders
+  // sudah di-merge di atas. Mutually exclusive dgn dispatcher (edge = no agent).
+  if (opts.relay) {
+    const original = new URL(url);
+    url = opts.relay.url.replace(/\/+$/, '') + original.pathname + original.search;
+  }
   // Attach credentials according to the provider's auth scheme.
   // 'none' skips auth entirely (public upstreams); the others inject the key.
   if (provider.apiKey && provider.authScheme !== 'none') {

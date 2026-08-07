@@ -50,5 +50,6 @@ export async function generic(call: AdapterCall): Promise<Response> {
     contentType,
     passthroughHeaders: call.passthroughHeaders,
     dispatcher: call.dispatcher,
+    relay: call.relay,
   });
 }

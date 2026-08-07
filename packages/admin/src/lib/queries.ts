@@ -10,6 +10,8 @@ import type {
   ApiKey,
   CustomScript,
   CustomScriptSummary,
+  EdgeDeployResult,
+  EdgeVerifyResult,
   GeoIpStatus,
   ListResponse,
   Model,
@@ -571,7 +573,7 @@ export function usePoolMembers(poolId: string | null | undefined) {
 export function useAddPoolMember(poolId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { proxyUrl: string; label?: string; weight?: number; enabled?: boolean }) =>
+    mutationFn: (data: { proxyUrl?: string; label?: string; weight?: number; enabled?: boolean; type?: string; edgeProvider?: string; edgeConfig?: Record<string, unknown>; relayUrl?: string }) =>
       api.post<ProxyPoolMember>(`proxy/pools/${poolId}/members`, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
@@ -662,5 +664,46 @@ export function useUpdateGeoIp() {
   return useMutation({
     mutationFn: (url?: string) => api.post<{ ok: boolean; sizeBytes?: number; error?: string; url?: string }>('proxy/geoip/update', url ? { url } : {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-geoip'] }),
+  });
+}
+
+/* ──────────────────────── Edge Relay (CF Workers) ───────────────────── */
+
+export function useEdgeProviders() {
+  return useQuery({
+    queryKey: ['edge-providers'],
+    queryFn: () => api.get<ListResponse<{ id: string; displayName: string }>>('proxy/edge-providers'),
+  });
+}
+
+export function useVerifyEdgeMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, config }: { memberId: number; config: Record<string, unknown> }) =>
+      api.post<EdgeVerifyResult>(`proxy/pools/${poolId}/members/${memberId}/edge/verify`, { config }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['proxy-members', poolId] }),
+  });
+}
+
+export function useDeployEdgeMember(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, config }: { memberId: number; config?: Record<string, unknown> }) =>
+      api.post<EdgeDeployResult>(`proxy/pools/${poolId}/members/${memberId}/edge/deploy`, config ? { config } : {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+export function useRemoveEdgeDeployment(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (memberId: number) => api.delete<{ ok: boolean; error?: string }>(`proxy/pools/${poolId}/members/${memberId}/edge`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
   });
 }

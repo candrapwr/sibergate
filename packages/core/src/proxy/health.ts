@@ -10,6 +10,7 @@
  * SIBERGATE_PROXY_CHECK_URL. Timeout default 5s.
  */
 import { buildDispatcher } from './dispatcher.js';
+import { getEdgeProvider } from './edge/index.js';
 import { lookupCountry } from './geoip.js';
 import { getDb } from '../db.js';
 import { pushProxyLog } from './log.js';
@@ -102,6 +103,28 @@ export async function testProxy(proxyUrl: string): Promise<ProxyTestResult> {
 
   const geo = exitIp ? lookupCountry(exitIp) : null;
   return { ok: true, latencyMs, exitIp, geo };
+}
+
+/**
+ * Test satu member (cabang by type). Edge-relay pakai provider.testConnectivity
+ * (GET relay/__health). http/socks pakai testProxy (example.com + ipify).
+ */
+export async function testMember(
+  member: { type: string; proxyUrl: string; relayUrl: string | null; edgeProvider: string | null },
+): Promise<ProxyTestResult> {
+  if (member.type === 'edge-relay' && member.edgeProvider && member.relayUrl) {
+    const provider = getEdgeProvider(member.edgeProvider);
+    const r = await provider.testConnectivity(member.relayUrl);
+    return {
+      ok: r.ok,
+      latencyMs: r.latencyMs,
+      exitIp: null, // edge relay tidak expose exit IP (worker __health return ok saja)
+      geo: null,
+      error: r.error,
+    };
+  }
+  // http-proxy / socks5.
+  return testProxy(member.proxyUrl);
 }
 
 /** Update health state member di DB + cache geoip hasil test. */
