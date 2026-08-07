@@ -68,6 +68,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose. When an upstream error occurs (including recovered failovers), a **full raw request** (client URL, redacted headers, body, upstream call) is auto-saved to a per-request file in `request_traces/` — not the DB, so the DB stays lean. In the Logs drawer, click **"View raw request"** to open a modal with the original request + the failing upstream response.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
 - **🧩 Custom Scripts (build-your-own provider)** — write a Node.js script in the dashboard and its `console.log` output automatically becomes an HTTP endpoint (`/api/custom/<name>`) that flows through SiberGate's routing/failover exactly like any other provider. One provider can serve many scripts. Wrap legacy APIs, scrapers, or internal microservices into OpenAI-compatible providers without touching gateway code. See [Custom Scripts](#-custom-scripts-build-your-own-provider).
+- **🌐 Proxy Layer (selective outbound proxy)** — route requests of **specific providers** through HTTP/HTTPS/SOCKS5/SOCKS4 proxy pools. Selective per-provider (not a global VPN): choose which providers go through a proxy. Pool = a set of proxies with weight + automatic health-check (active ping + passive on-fail) + failover. Test a proxy → see latency + exit IP + 🇺🇸 country (MaxMind GeoIP). Great for geo-block bypass (Gemini/OpenAI region-locked) & IP rotation. Dedicated proxy logging + Console live stream. See [Proxy Layer](#-proxy-layer).
 - **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
 - **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
 
@@ -345,6 +346,88 @@ noticeable at high throughput. Planned:
 
 Optimization will be data-driven: wait until logs show spawn overhead
 dominating (>40% of request time) before migrating away from `child_process`.
+
+---
+
+## 🌐 Proxy Layer
+
+**Route requests of specific providers through an outbound proxy.** An isolated
+proxy module (`packages/core/src/proxy/`) — when active, you **pick which
+providers** have their requests flow through a proxy pool (selective
+per-provider, **not a global VPN**).
+
+Why is this useful?
+- **Geo-block bypass** — Gemini/OpenAI/Anthropic are often region-locked. Route
+  those providers through a US/EU proxy and requests go through.
+- **IP rotation** — avoid per-IP rate limits. Multi-key + IP rotation is a
+  powerful combination.
+- **Corporate proxy** — gateway behind a firewall? Send all providers through
+  the corporate proxy.
+
+### What's supported
+
+- **Protocols**: HTTP, HTTPS, SOCKS5, SOCKS4, SOCKS5h, SOCKS4a (via undici v7
+  `ProxyAgent`; SOCKS5 is experimental in Node).
+- **Pools**: a set of proxy URLs with `weight`. Strategy: `weighted`
+  (random by weight, default), `round-robin` (cycle), `failover` (ordered).
+- **Hybrid health-check**:
+  - **Active**: background ping every 60s to a neutral endpoint → updates
+    healthy + caches GeoIP (country/flag).
+  - **Passive**: when a real request through a proxy fails (network/timeout),
+    the member is automatically marked unhealthy and the next member is used.
+  - Unhealthy members are skipped by the selector; they return to healthy once
+    an active ping succeeds.
+- **Test proxy**: a per-member Test button → measures latency + captures exit
+  IP + looks up country → shows the 🇺🇸 flag (needs the GeoIP DB, see below).
+- **Logging**: a dedicated `proxy_logs` table (query/filter separately at
+  `/proxy/logs`) + Console live stream with a 🌐 flag when a request goes
+  through a proxy.
+
+### How to use
+
+1. **Admin → Proxy Layer → New pool** — fill in id, name, strategy
+   (weighted/round-robin/failover).
+2. Add **members** with proxy URLs (`socks5://user:pass@host:1080`,
+   `http://host:8080`, …) + weight + label. Click **Test** to check latency +
+   country.
+3. Open **Provider bindings** → tick which providers' requests should flow
+   through this pool (selective — only the chosen providers).
+4. Done. Requests to routes targeting those providers automatically go through
+   the proxy. Watch events in **Proxy Logs** or the Console (filter `proxy`).
+
+### Country detection (GeoIP)
+
+Testing & health-checks auto-detect a proxy's country via the **MaxMind
+GeoLite2-Country** mmdb. The file is downloaded on-demand:
+- **Admin → Settings → GeoIP Database → Download/Update** (needs
+  `SIBERGATE_MAXMIND_LICENSE_KEY` — free, register at maxmind.com).
+- The file lives in `packages/core/data/` and is **git-ignored & excluded from
+  backups** (not app data, re-downloadable).
+- Without the GeoIP DB, proxies still work but the flag shows 🏳️ (unknown).
+
+### Architecture
+
+```
+Client → Route → Engine → resolveProxy(providerId)
+                          ↓ (provider bound to an active pool?)
+                     selectMember (weight/health) → ProxyAgent
+                          ↓
+                   fetch(url, { dispatcher }) → via HTTP/SOCKS5 proxy
+                          ↓
+                 on fail → markMemberUnhealthy (passive) → failover
+```
+
+The proxy is injected at a single chokepoint (`sendUpstream` → `fetch`), so
+every modality (chat/image/embed/music/…) gets proxying automatically with no
+per-adapter code. Async image-polling uses the same proxy. **Zero behavioral
+change** when no proxy is used (`dispatcher` undefined = direct fetch).
+
+### Notes
+- Proxy URLs with auth (`http://user:pass@host`) are supported natively and
+  redacted in logs.
+- `strictProxy` (planned): when true, a request fails hard if all members are
+  unhealthy. Defaults to false → falls back to direct.
+- Edge relay proxies (Vercel/Cloudflare/Deno, a URL-rewrite concept) = phase 2.
 
 ---
 
