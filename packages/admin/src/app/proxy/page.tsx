@@ -485,19 +485,27 @@ function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
   const verify = useVerifyEdgeMember(poolId);
   const deploy = useDeployEdgeMember(poolId);
   const [token, setToken] = useState('');
+  const [accountId, setAccountId] = useState('');
   const [scriptName, setScriptName] = useState('sibergate-relay');
   return (
     <div className="mt-2 space-y-1.5 rounded border border-primary/30 bg-primary/5 p-2 text-[11px]">
-      <p className="text-muted-foreground">Worker belum di-deploy. Verify token lalu deploy.</p>
+      <p className="text-muted-foreground">Worker belum di-deploy. Isi token + account ID, verify, lalu deploy.</p>
       <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Cloudflare API Token" type="password" className="text-[12px]" autoComplete="off" />
+      <Input value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} placeholder="Account ID (mis. e8f516fcd3a8...)" className="text-[12px] font-mono" />
       <Input value={scriptName} onChange={(e) => setScriptName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="script name" className="text-[12px] font-mono" />
       <div className="flex gap-2">
         <Button type="button" variant="outline" size="sm" disabled={!token.trim() || verify.isPending}
           onClick={async () => {
             try {
-              const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName } });
-              if (r.ok) toast.success('Token valid' + (r.accountInfo ? ` (${r.accountInfo.name})` : ''));
-              else toast.error(r.error ?? 'Verify failed');
+              const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName, accountId } });
+              if (r.ok && r.accountInfo) {
+                setAccountId((r.accountInfo as { accountId: string }).accountId);
+                toast.success('Token valid (' + (r.accountInfo as { name: string }).name + ')');
+              } else if (r.ok) {
+                toast.success('Token valid');
+              } else {
+                toast.error(r.error ?? 'Verify failed');
+              }
             } catch (err) {
               toast.error((err as Error).message);
             }
@@ -505,12 +513,12 @@ function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
         >
           {verify.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Verify
         </Button>
-        <Button type="button" variant="default" size="sm" disabled={deploy.isPending}
+        <Button type="button" variant="default" size="sm" disabled={!token.trim() || !accountId.trim() || deploy.isPending}
           onClick={async () => {
             try {
-              // Deploy pakai config dari DB (sudah ada accountId setelah verify).
-              // Jangan override dgn form config (gak punya accountId).
-              const r = await deploy.mutateAsync({ memberId: m.id });
+              // Deploy dgn config lengkap dari form (token + accountId + scriptName).
+              // Sama spt 9router: kirim keduanya bersamaan.
+              const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, accountId, scriptName } });
               if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
               else toast.error(r.error ?? 'Deploy failed');
             } catch (err) {

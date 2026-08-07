@@ -689,7 +689,7 @@ export function useDeployEdgeMember(poolId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ memberId, config }: { memberId: number; config?: Record<string, unknown> }) =>
-      api.post<EdgeDeployResult>(`proxy/pools/${poolId}/members/${memberId}/edge/deploy`, config ? { config } : {}),
+      api.post<EdgeDeployResult>(`proxy/pools/${poolId}/members/${memberId}/edge/deploy`, { config }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
       qc.invalidateQueries({ queryKey: ['proxy-pools'] });
