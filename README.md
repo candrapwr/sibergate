@@ -83,7 +83,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa. Saat upstream error terjadi (termasuk yg sukses failover), **raw request lengkap** (URL client, headers teredact, body, upstream call) disimpan otomatis ke file per-request di `request_traces/` — bukan DB, jadi DB tetap ramping. Di drawer Logs, klik **"View raw request"** untuk membuka modal berisi request asli + respons upstream yg gagal.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
 - **🧩 Custom Scripts (build-your-own provider)** — tulis script Node.js di dashboard, dan output `console.log` script otomatis jadi endpoint HTTP (`/api/custom/<nama>`) yg masuk ke alur routing/failover SiberGate sama persis seperti provider lain. Satu provider bisa serve banyak script. Bungkus API lama, scraper, atau microservice internal jadi provider OpenAI-compat tanpa sentuh kode gateway. Lihat [Custom Scripts](#-custom-scripts-build-your-own-provider).
-- **🌐 Proxy Layer (outbound proxy selektif)** — rutekan request **provider tertentu** lewat pool proxy HTTP/HTTPS/SOCKS5/SOCKS4. Selektif per-provider (bukan VPN global): pilih provider mana yg di-proxy. Pool = kumpulan proxy dgn weight + health-check otomatis (active ping + passive on-fail) + failover. Test proxy → lihat latensi + IP keluar + 🇺🇸 negara (GeoIP MaxMind). Cocok utk bypass geo-block (Gemini/OpenAI diblokir region) & IP rotation. Logging proxy terpisah + Console live stream. Lihat [Proxy Layer](#-proxy-layer).
+- **🌐 Proxy Layer (outbound proxy selektif)** — rutekan request **provider tertentu** lewat pool proxy HTTP/HTTPS/SOCKS5/SOCKS4 atau **Cloudflare Workers edge relay** (auto-deploy). Selektif per-provider (bukan VPN global): pilih provider mana yg di-proxy. Pool = kumpulan proxy dgn weight + health-check otomatis (active ping + passive on-fail) + failover antar tipe. Test proxy → lihat latensi + IP keluar + 🇺🇸 negara (GeoIP). Cocok utk bypass geo-block (Gemini/OpenAI diblokir region) & IP rotation. Logging proxy terpisah + Console live stream. Lihat [Proxy Layer](#-proxy-layer).
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
 
@@ -378,39 +378,58 @@ Mengapa ini berguna?
 
 ### Yang didukung
 
-- **Protokol**: HTTP, HTTPS, SOCKS5, SOCKS4, SOCKS5h, SOCKS4a (via undici v7
-  `ProxyAgent`; SOCKS5 experimental di Node).
-- **Pool**: kumpulan proxy URL dgn `weight`. Strategi: `weighted` (random by
-  weight, default), `round-robin` (cycle), `failover` (ordered).
-- **Health-check hybrid**:
-  - **Active**: background ping setiap 60s ke endpoint netral → update healthy
-    + cache GeoIP (negara/flag).
-  - **Passive**: saat request real lewat proxy gagal (network/timeout) → member
-    otomatis ditandai unhealthy, failover ke member lain.
-  - Member unhealthy di-skip selector; kembali healthy setelah active ping
-    sukses.
+**2 tipe proxy member** (bisa campur dalam 1 pool, failover antar tipe):
+
+1. **HTTP/SOCKS Proxy** — tunnel tradisional (ProxyAgent). Support HTTP, HTTPS,
+   SOCKS5, SOCKS5h (DNS remote). Form terstruktur: pilih tipe + host + port +
+   auth opsional.
+2. **Edge Relay (Cloudflare Workers)** — URL-rewrite relay. Auto-deploy Worker
+   ke akun CF Anda via API (transparent relay: 1 Worker serve semua provider &
+   modality). Token disimpan encrypted. Scalable registry — nambah Vercel/Deno/
+   Netlify/AWS = +1 file.
+
+**Pool & strategi**:
+- `weighted` (random by weight, default), `round-robin` (cycle), `failover` (ordered).
+- Member bisa campur tipe (SOCKS5 + Worker di pool yg sama).
+- Weight + health-check hybrid:
+  - **Active**: background ping setiap 60s (example.com utk connectivity,
+    ipify utk exit IP) → update healthy + cache GeoIP (negara/flag).
+  - **Passive**: saat request real gagal (network/timeout) → member otomatis
+    ditandai unhealthy, failover ke member lain.
 - **Test proxy**: tombol Test per-member → ukur latensi + capture IP keluar +
   lookup negara → tampilkan 🇺🇸 flag (butuh GeoIP DB, lihat bawah).
 - **Logging**: tabel `proxy_logs` (query/filter terpisah di `/proxy/logs`) +
   Console live stream dgn flag 🌐 saat request lewat proxy.
 
-### Cara pakai
+### Cara pakai — HTTP/SOCKS Proxy
 
-1. **Admin → Proxy Layer → New pool** — isi id, nama, strategi (weighted/rr/failover).
-2. Tambahkan **member** proxy URL (`socks5://user:pass@host:1080`,
-   `http://host:8080`, …) + weight + label. Klik **Test** utk cek latensi +
-   negara.
-3. Buka **Provider bindings** → centang provider mana yg request-nya lewat pool
-   ini (selektif — hanya provider terpilih).
-4. Selesai. Request ke route yg menargetkan provider tsb otomatis lewat proxy.
-   Lihat event di **Proxy Logs** atau Console (filter `proxy`).
+1. **Admin → Proxy Layer → New pool** — isi id, nama, strategi.
+2. Tambahkan **member**: pilih tipe (SOCKS5/HTTP) + host + port + auth opsional.
+   Klik **Test** utk cek latensi + negara.
+3. Buka **Provider bindings** → centang provider mana yg request-nya lewat pool.
+4. Request ke route yg menargetkan provider tsb otomatis lewat proxy.
+
+### Cara pakai — Edge Relay (Cloudflare Workers)
+
+1. **Admin → Proxy Layer → New pool** → add member tipe **"Edge Relay"**.
+2. Isi **Cloudflare API Token** + **Worker script name**.
+3. Klik **Verify** → gateway cek token ke CF API, auto-detect account ID.
+4. Klik **Deploy** → gateway auto-deploy transparent-relay Worker ke akun CF Anda.
+   Dapat URL `https://<script>.<subdomain>.workers.dev`.
+5. Bind provider ke pool → request otomatis rewrite URL ke Worker + inject
+   `x-relay-target` header. Worker forward ke provider, return response.
+
+> ⚠️ **Token CF**: gunakan template **"Edit Cloudflare Workers"** di dashboard
+> CF (My Profile → API Tokens). Token harus punya permission **Account-level**
+> "Workers Scripts: Edit" — **bukan** Zone-level. Token zone-scoped akan 403.
 
 ### Deteksi negara (GeoIP)
 
 Test & health-check auto-detect negara proxy via **MaxMind GeoLite2-Country**
 mmdb. File di-download on-demand:
-- **Admin → Settings → GeoIP Database → Download/Update** (butuh
-  `SIBERGATE_MAXMIND_LICENSE_KEY` — gratis daftar di maxmind.com).
+- **Admin → Settings → GeoIP Database** — input URL download (default: mirror
+  P3TERX, **tanpa registrasi/license key**). Ganti URL utk mirror lain / DB
+  City/ASN. Format `.mmdb` (cepat) atau `.tar.gz` (auto-extract).
 - File disimpan di `packages/core/data/`, **di-gitignore & di-exclude backup**
   (bukan data app, bisa re-download).
 - Tanpa GeoIP DB, proxy tetap jalan tapi flag tampil 🏳️ (unknown).
@@ -420,11 +439,17 @@ mmdb. File di-download on-demand:
 ```
 Client → Route → Engine → resolveProxy(providerId)
                           ↓ (provider bind ke pool aktif?)
-                     selectMember (weight/health) → ProxyAgent
+                     selectMember (weight/health)
                           ↓
-                   fetch(url, { dispatcher }) → via HTTP/SOCKS5 proxy
-                          ↓
-                 on fail → markMemberUnhealthy (passive) → failover
+              ┌─────────────┴──────────────┐
+              ↓ HTTP/SOCKS                 ↓ Edge Relay
+        ProxyAgent (dispatcher)     URL rewrite + x-relay-target header
+              ↓                            ↓
+        fetch(url, {dispatcher})     fetch(workerURL, {headers})
+              ↓                            ↓
+        via HTTP/SOCKS5 proxy        via Cloudflare Worker → provider
+              ↓                            ↓
+        on fail → markUnhealthy → failover ke member lain
 ```
 
 Proxy di-inject di satu chokepoint (`sendUpstream` → `fetch`), shg semua
