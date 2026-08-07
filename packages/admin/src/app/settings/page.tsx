@@ -419,10 +419,18 @@ function BackupRestoreSection() {
 }
 
 /** GeoIP database section — download/update MaxMind GeoLite2 utk proxy flag detection. */
+const DEFAULT_GEOIP_URL = 'https://github.com/P3TERX/GeoLite.mmdb/releases/latest/download/GeoLite2-Country.mmdb';
+
 function GeoIpSection() {
   const { data: status } = useGeoIpStatus();
   const update = useUpdateGeoIp();
+  const [url, setUrl] = useState(DEFAULT_GEOIP_URL);
   const sizeMb = status?.sizeBytes ? (status.sizeBytes / 1024 / 1024).toFixed(1) : null;
+  const doDownload = () =>
+    update
+      .mutateAsync(url.trim() || DEFAULT_GEOIP_URL)
+      .then((r) => (r.ok ? toast.success('GeoIP DB updated') : toast.error(r.error ?? 'Update failed')))
+      .catch((e) => toast.error((e as Error).message));
   return (
     <Card>
       <CardHeader>
@@ -430,9 +438,9 @@ function GeoIpSection() {
           <Globe size={15} /> GeoIP Database
         </CardTitle>
         <CardDescription>
-          MaxMind GeoLite2-Country dipakai Proxy Layer utk deteksi negara + flag proxy (🇺🇸). File di-download
-          on-demand & TIDAK ikut backup DB (bisa re-download). Butuh{' '}
-          <code className="font-mono">SIBERGATE_MAXMIND_LICENSE_KEY</code> (gratis, daftar di maxmind.com).
+          MaxMind GeoLite2 dipakai Proxy Layer utk deteksi negara + flag proxy (🇺🇸). File di-download on-demand
+          & TIDAK ikut backup DB (bisa re-download). Default: mirror P3TERX (re-publish MaxMind official,
+          <b> tanpa registrasi / license key</b>). Ganti URL bila mau pakai mirror lain atau DB City/ASN.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -445,7 +453,15 @@ function GeoIpSection() {
           {status?.loadError && status.loadError !== 'not-found' && (
             <div className="text-destructive">⚠️ Load error: {status.loadError}</div>
           )}
-          <Button onClick={() => update.mutateAsync().then((r) => r.ok ? toast.success('GeoIP DB updated') : toast.error(r.error ?? 'Update failed')).catch((e) => toast.error((e as Error).message))} disabled={update.isPending} size="sm">
+          <div className="space-y-1.5">
+            <Label htmlFor="geoip-url">Download URL</Label>
+            <Input id="geoip-url" value={url} onChange={(e) => setUrl(e.target.value)} className="font-mono text-[12px]" placeholder={DEFAULT_GEOIP_URL} />
+            <p className="text-[11px] text-muted-foreground">
+              Format <code>.mmdb</code> (mentah, cepat) atau <code>.tar.gz</code> (MaxMind official, auto-extract).
+              MaxMind official butuh <code>SIBERGATE_MAXMIND_LICENSE_KEY</code> di env; mirror lain (P3TERX default) tanpa auth.
+            </p>
+          </div>
+          <Button onClick={doDownload} disabled={update.isPending} size="sm">
             {update.isPending ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
             {status?.present ? 'Update now' : 'Download'}
           </Button>
