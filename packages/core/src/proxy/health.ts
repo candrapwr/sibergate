@@ -15,20 +15,41 @@ import { getDb } from '../db.js';
 import { pushProxyLog } from './log.js';
 import type { ProxyTestResult } from './types.js';
 
-const CHECK_URL = process.env.SIBERGATE_PROXY_CHECK_URL ?? 'https://httpbin.org/ip';
-const CHECK_TIMEOUT_MS = Number(process.env.SIBERGATE_PROXY_CHECK_TIMEOUT_MS ?? 5000);
+// Connectivity check (apakah proxy bisa keluar internet?) — pakai example.com,
+// host paling reliable (dikelola IANA, always up, tidak pernah 503/load-balanced).
+const CONNECTIVITY_URL = process.env.SIBERGATE_PROXY_CHECK_URL ?? 'https://example.com';
+// Exit IP check (untuk geoip flag) — pakai ipify (return IP plain text, stabil).
+// Override lewat env SIBERGATE_PROXY_IP_URL; set '' utk skip exit IP detection.
+const EXIT_IP_URL = process.env.SIBERGATE_PROXY_IP_URL ?? 'https://api.ipify.org';
+const CHECK_TIMEOUT_MS = Number(process.env.SIBERGATE_PROXY_CHECK_TIMEOUT_MS ?? 8000);
 
-interface IpResponse {
-  origin?: string;
-  ip?: string;
+/**
+ * Ekstrak IP keluar dari response. Mendukung plain text (ipify), JSON
+ * {origin|ip|query} (httpbin/ip.sb), atau string mentah IPv4/IPv6.
+ */
+function extractIp(body: string): string | null {
+  const trimmed = body.trim();
+  // Plain IPv4/IPv6 (ipify default).
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed) || /^[0-9a-f:]+$/i.test(trimmed)) {
+    return trimmed;
+  }
+  // JSON variant.
+  try {
+    const j = JSON.parse(trimmed) as { origin?: string; ip?: string; query?: string };
+    return j.origin ?? j.ip ?? j.query ?? null;
+  } catch {
+    return null;
+  }
 }
 
-/** Ekstrak IP dari response endpoint netral. */
-function extractIp(json: IpResponse | null): string | null {
-  return json?.origin ?? json?.ip ?? null;
-}
-
-/** Test satu proxy URL. Return latensi + exit IP + geoip. Tidak sentuh DB. */
+/**
+ * Test satu proxy URL. Dua tahap:
+ *   1. Connectivity: GET example.com (reliable) → pastikan proxy bisa keluar internet.
+ *   2. Exit IP: GET ipify → capture IP keluar → lookup negara/flag (geoip).
+ *
+ * Tahap 2 fail tidak membatalkan test — proxy tetap OK (connectivity lulus),
+ * hanya flag negara tampil 🏳️. Fail-open di tiap tahap.
+ */
 export async function testProxy(proxyUrl: string): Promise<ProxyTestResult> {
   const start = Date.now();
   let dispatcher;
@@ -37,33 +58,50 @@ export async function testProxy(proxyUrl: string): Promise<ProxyTestResult> {
   } catch (err) {
     return { ok: false, latencyMs: 0, exitIp: null, geo: null, error: (err as Error).message };
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+
+  // Tahap 1: connectivity (example.com).
+  const ctrl1 = new AbortController();
+  const timer1 = setTimeout(() => ctrl1.abort(), CHECK_TIMEOUT_MS);
   try {
-    // `dispatcher` is undici-specific (not in DOM RequestInit type); cast.
-    const res = await fetch(CHECK_URL, { signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
+    const res = await fetch(CONNECTIVITY_URL, { signal: ctrl1.signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
     const latencyMs = Date.now() - start;
     if (!res.ok) {
-      return { ok: false, latencyMs, exitIp: null, geo: null, error: `HTTP ${res.status}` };
+      return { ok: false, latencyMs, exitIp: null, geo: null, error: `connectivity HTTP ${res.status}` };
     }
-    const json = (await res.json()) as IpResponse | null;
-    const exitIp = extractIp(json);
-    const geo = exitIp ? lookupCountry(exitIp) : null;
-    return { ok: true, latencyMs, exitIp, geo };
   } catch (err) {
     const e = err as Error;
-    const latencyMs = Date.now() - start;
-    const aborted = e.name === 'AbortError';
     return {
       ok: false,
-      latencyMs,
+      latencyMs: Date.now() - start,
       exitIp: null,
       geo: null,
-      error: aborted ? `timeout (${CHECK_TIMEOUT_MS}ms)` : e.message,
+      error: e.name === 'AbortError' ? `timeout (${CHECK_TIMEOUT_MS}ms)` : e.message,
     };
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer1);
   }
+
+  const latencyMs = Date.now() - start;
+
+  // Tahap 2: exit IP (ipify) utk geoip. Fail-open: skip flag bila gagal.
+  let exitIp: string | null = null;
+  if (EXIT_IP_URL) {
+    const ctrl2 = new AbortController();
+    const timer2 = setTimeout(() => ctrl2.abort(), CHECK_TIMEOUT_MS);
+    try {
+      const ipRes = await fetch(EXIT_IP_URL, { signal: ctrl2.signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
+      if (ipRes.ok) {
+        exitIp = extractIp(await ipRes.text());
+      }
+    } catch {
+      /* fail-open: no exit IP, no flag */
+    } finally {
+      clearTimeout(timer2);
+    }
+  }
+
+  const geo = exitIp ? lookupCountry(exitIp) : null;
+  return { ok: true, latencyMs, exitIp, geo };
 }
 
 /** Update health state member di DB + cache geoip hasil test. */
