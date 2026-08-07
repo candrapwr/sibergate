@@ -158,9 +158,14 @@ export const cloudflareProvider: EdgeRelayProvider = {
           body: fd,
         },
       );
-      const putJson = (await putRes.json()) as CfResponse<unknown>;
+      const putJson = (await putRes.json().catch(() => ({ success: false, errors: [{ code: putRes.status, message: putRes.statusText }] }))) as CfResponse<unknown>;
       if (!putRes.ok || !putJson.success) {
-        return { ok: false, error: `Deploy gagal: ${putJson.errors?.[0]?.message ?? putRes.statusText}` };
+        const cfErr = putJson.errors?.[0];
+        // Pesan utk permission error (10000 = Authentication error, 10026 = could not authenticate).
+        const hint = cfErr && (cfErr.code === 10000 || cfErr.code === 10026 || /auth/i.test(cfErr.message))
+          ? ' Token CF butuh permission "Workers Scripts: Edit" + "Account: Read". Buat token baru di dash.cloudflare.com → My Profile → API Tokens.'
+          : '';
+        return { ok: false, error: `Deploy gagal (PUT script ${putRes.status}): ${cfErr?.message ?? putRes.statusText}${hint}` };
       }
 
       // 2. Enable workers.dev subdomain utk script ini (supaya ada URL publik).
