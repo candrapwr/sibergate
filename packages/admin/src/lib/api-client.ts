@@ -29,8 +29,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body = text ? safeParse(text) : undefined;
 
   if (!res.ok) {
+    // Gateway error body bisa 2 bentuk:
+    //   { error: { message: "..." } }   ← standar OpenAI-compat (admin CRUD)
+    //   { ok: false, error: "..." }     ← edge relay / proxy routes (error sbg string)
+    const errField = (body as { error?: unknown })?.error;
     const message =
-      (body as { error?: { message?: string } })?.error?.message ?? `Request failed (${res.status})`;
+      (typeof errField === 'string' ? errField : (errField as { message?: string })?.message) ??
+      `Request failed (${res.status})`;
     throw new ApiError(res.status, message, body);
   }
   return body as T;
