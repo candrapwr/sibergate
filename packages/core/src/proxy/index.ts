@@ -23,7 +23,6 @@ export {
   validateProxyUrl,
   evictDispatcher,
   clearDispatcherCache,
-  ALLOWED_PROXY_SCHEMES,
 } from './dispatcher.js';
 
 // Health + test (dipakai admin routes + engine on-fail).

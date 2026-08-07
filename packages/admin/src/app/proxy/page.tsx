@@ -283,12 +283,10 @@ function PoolFormDialog({
 /* ─────────────────────────── Members ─────────────────────────── */
 
 const PROXY_TYPES = [
-  { value: 'http:', label: 'HTTP', scheme: 'http' },
-  { value: 'https:', label: 'HTTPS', scheme: 'https' },
-  { value: 'socks5:', label: 'SOCKS5', scheme: 'socks5' },
-  { value: 'socks5h:', label: 'SOCKS5 (DNS remote)', scheme: 'socks5h' },
-  { value: 'socks4:', label: 'SOCKS4', scheme: 'socks4' },
-  { value: 'socks4a:', label: 'SOCKS4a', scheme: 'socks4a' },
+  { value: 'socks5:', label: 'SOCKS5 (default — DNS remote otomatis)' },
+  { value: 'socks5h:', label: 'SOCKS5h (explicit DNS remote)' },
+  { value: 'http:', label: 'HTTP' },
+  { value: 'https:', label: 'HTTPS' },
 ] as const;
 
 /** Bangun proxy URL dari field terstruktur. Auth opsional. */
