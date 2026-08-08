@@ -129,7 +129,28 @@ export interface ScriptRunResult {
 /** Proxy pool strategy. */
 export type ProxyStrategy = 'weighted' | 'round-robin' | 'failover';
 export type MemberType = 'http-proxy' | 'socks5' | 'edge-relay';
-export type EdgeProviderId = 'cloudflare-workers';
+export type EdgeProviderId = 'cloudflare-workers' | 'vercel-edge' | 'deno-deploy' | 'netlify-edge';
+export type EdgeProviderStatus = 'active' | 'beta' | 'coming-soon';
+
+/** Metadata field config utk render form dinamis di DeployDialog. */
+export interface ConfigField {
+  key: string;
+  label: string;
+  type: 'text' | 'password';
+  placeholder?: string;
+  required: boolean;
+  helper?: string;
+}
+
+/** Info provider edge relay (GET /admin/proxy/edge-providers). */
+export interface EdgeProviderInfo {
+  id: EdgeProviderId;
+  displayName: string;
+  description: string;
+  docsUrl?: string;
+  status: EdgeProviderStatus;
+  configFields: ConfigField[];
+}
 
 /** Result of edge relay verify (POST .../edge/verify). */
 export interface EdgeVerifyResult {
@@ -179,6 +200,7 @@ export interface ProxyPool {
   memberCount: number;
   healthyCount: number;
   boundProviderCount: number;
+  boundRouteCount: number;
 }
 
 /** A member (proxy URL) inside a pool. */

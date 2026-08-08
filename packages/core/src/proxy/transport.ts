@@ -32,8 +32,11 @@ export function buildTransport(resolved: ResolvedProxy, providerBaseUrl: string)
   const base = { poolId: resolved.poolId, memberId: resolved.memberId, country: resolved.country, type: resolved.type };
   if (resolved.type === 'edge-relay' && resolved.edgeProvider && resolved.edgeMemberId != null) {
     const provider = getEdgeProvider(resolved.edgeProvider);
-    // Decrypt config transient (never logged).
-    const config = getMemberEdgeConfig(resolved.edgeMemberId) ?? {};
+    // Decrypt config transient (never logged). Untuk standalone relay, member
+    // edge_config bisa null (config disimpan di edge_relays, bukan member).
+    // relayUrl di-resolve dari resolved.proxyUrl (sudah di-copy saat member dibuat),
+    // bukan dari config — supaya standalone + legacy member sama-sama dapat URL.
+    const config = { ...(getMemberEdgeConfig(resolved.edgeMemberId) ?? {}), relayUrl: resolved.proxyUrl };
     // CRITICAL: x-relay-target harus ORIGIN saja (protocol://host), BUKAN full
     // baseUrl (mis. .../v1). Adapter URL = baseUrl + path (mis. .../v1/chat). Worker
     // baca header ini + gabung dgn request pathname → kalau target include /v1, path

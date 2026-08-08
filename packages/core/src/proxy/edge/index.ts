@@ -4,6 +4,9 @@
  * +1 file impl + 1 line di map. Tidak sentuh core logic.
  */
 import { cloudflareProvider } from './cloudflare.js';
+import { vercelProvider } from './vercel.js';
+import { denoProvider } from './deno.js';
+import { netlifyProvider } from './netlify.js';
 import type { EdgeProviderId, EdgeRelayProvider } from './types.js';
 
 export type {
@@ -14,19 +17,35 @@ export type {
   DeployResult,
   RemoveResult,
   ConnectivityResult,
+  ConfigField,
+  EdgeProviderStatus,
 } from './types.js';
 
 const REGISTRY: Record<EdgeProviderId, EdgeRelayProvider> = {
   'cloudflare-workers': cloudflareProvider,
-  // 'vercel-edge': vercelProvider,     // future: +1 line
-  // 'deno-deploy': denoProvider,       // future
-  // 'netlify-edge': netlifyProvider,   // future
-  // 'aws-lambda-edge': awsProvider,    // future
+  'vercel-edge': vercelProvider,
+  'deno-deploy': denoProvider,
+  'netlify-edge': netlifyProvider,
+  // 'aws-lambda-edge': awsProvider,    // future — arsitektur beda (IAM + Lambda + CloudFront)
 };
 
-/** Daftar semua provider edge relay (utk UI dropdown). */
-export function listEdgeProviders(): Array<{ id: EdgeProviderId; displayName: string }> {
-  return Object.values(REGISTRY).map((p) => ({ id: p.id, displayName: p.displayName }));
+/** Daftar semua provider edge relay (utk UI dropdown + info panel). */
+export function listEdgeProviders(): Array<{
+  id: EdgeProviderId;
+  displayName: string;
+  description: string;
+  docsUrl?: string;
+  status: import('./types.js').EdgeProviderStatus;
+  configFields: import('./types.js').ConfigField[];
+}> {
+  return Object.values(REGISTRY).map((p) => ({
+    id: p.id,
+    displayName: p.displayName,
+    description: p.description,
+    docsUrl: p.docsUrl,
+    status: p.status,
+    configFields: p.configFields,
+  }));
 }
 
 /** Lookup provider by id. Throw bila tidak terdaftar. */

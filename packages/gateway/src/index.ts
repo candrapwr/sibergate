@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { ConfigStore, getDb, loadDotEnv, pushConsoleLog, startHealthMonitor } from '@sibergate/core';
+import { ConfigStore, getDb, loadDotEnv, pushConsoleLog } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { createApp } from './routes.js';
 import { createAdminRouter } from './admin-routes.js';
@@ -60,8 +60,11 @@ async function main() {
   // Proxy Layer — outbound proxy pools selektif per provider (HTTP/HTTPS/SOCKS5).
   // Admin CRUD + test + logs. Routing engine inject dispatcher via resolveProxy.
   app.route('/admin/proxy', createProxyAdminRouter(configStore));
-  // Background health monitor (active ping) — unref supaya tidak hold event loop.
-  startHealthMonitor();
+  // Catatan: background health monitor sengaja TIDAK dijalankan. Proxy dipakai
+  // apa adanya saat user set (enabled). Bila proxy error saat request, error
+  // dibiarkan jelas ke user — TIDAK failover diam-diam ke direct fetch. Privacy
+  // contract: request yg di-proxy HARUS lewat proxy (lebih baik gagal daripada
+  // sukses diam-diam tanpa proxy / IP bocor).
 
   app.notFound((c) =>
     c.json(

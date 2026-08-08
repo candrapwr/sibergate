@@ -94,9 +94,10 @@ export default function ProxyPage() {
               <TableRow>
                 <TableHead>Pool</TableHead>
                 <TableHead>Strategy</TableHead>
-                <TableHead className="w-[120px]">Members</TableHead>
-                <TableHead className="w-[120px]">Bound providers</TableHead>
-                <TableHead className="w-[90px]">Status</TableHead>
+                <TableHead className="w-[110px]">Members</TableHead>
+                <TableHead className="w-[110px]">Providers</TableHead>
+                <TableHead className="w-[110px]">Routes</TableHead>
+                <TableHead className="w-[80px]">Status</TableHead>
                 <TableHead className="w-[140px] text-right">Aksi</TableHead>
               </TableRow>
             </TableHeader>
@@ -127,6 +128,7 @@ function PoolRow({ pool }: { pool: ProxyPool }) {
         </Badge>
       </TableCell>
       <TableCell className="text-[12px]">{pool.boundProviderCount} provider</TableCell>
+      <TableCell className="text-[12px]">{pool.boundRouteCount} route</TableCell>
       <TableCell>
         {pool.enabled ? <Badge variant="default" className="bg-emerald-600/20 text-emerald-400">on</Badge> : <Badge variant="muted">off</Badge>}
       </TableCell>
@@ -298,7 +300,7 @@ const PROXY_TYPES = [
 /** Tipe member proxy (http/socks vs edge relay). */
 const MEMBER_TYPES = [
   { value: 'http-proxy', label: 'HTTP/SOCKS Proxy' },
-  { value: 'edge-relay', label: 'Edge Relay (Cloudflare Workers)' },
+  { value: 'edge-relay', label: 'Edge Relay (CF/Vercel/Deno/Netlify)' },
 ] as const;
 
 /** Bangun proxy URL dari field terstruktur. Auth opsional. */
@@ -316,6 +318,9 @@ function MembersSection({ poolId }: { poolId: string }) {
   const add = useAddPoolMember(poolId);
   const del = useDeletePoolMember(poolId);
   const test = useTestPoolMember(poolId);
+  // Relays list utk derive edgeProvider (CF/Vercel/Deno/Netlify) dari relay terpilih.
+  const { data: relaysData } = useEdgeRelays();
+  const relays = relaysData?.data ?? [];
   const [memberType, setMemberType] = useState<'http-proxy' | 'edge-relay'>('http-proxy');
   // Form state (terstruktur, bukan URL mentah)
   const [type, setType] = useState<string>('socks5:');
@@ -390,7 +395,9 @@ function MembersSection({ poolId }: { poolId: string }) {
             onClick={async () => {
               try {
                 if (memberType === 'edge-relay') {
-                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: 'cloudflare-workers', edgeRelayId: selectedRelayId, label: label || undefined, weight });
+                  // Derive edgeProvider dari type relay yg dipilih (CF/Vercel/Deno/Netlify).
+                  const selectedRelay = relays.find((x) => x.id === selectedRelayId);
+                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: selectedRelay?.type ?? 'cloudflare-workers', edgeRelayId: selectedRelayId, label: label || undefined, weight });
                   setSelectedRelayId(''); setLabel(''); setWeight(1);
                 } else {
                   const url = buildProxyUrl({ type, host, port, user, pass });

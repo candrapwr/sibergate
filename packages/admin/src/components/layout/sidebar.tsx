@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
@@ -20,20 +21,37 @@ import {
   Users,
   Terminal,
   FileCode2,
+  ChevronDown,
+  ChevronRight,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useSystem, useReload } from '@/lib/queries';
 import { useUser, useLogout } from '@/lib/auth-client';
 import { toast } from 'sonner';
 
-const NAV = [
+type NavLeaf = { href: string; label: string; icon: LucideIcon };
+type NavGroup = { label: string; icon: LucideIcon; children: NavLeaf[] };
+type NavItem = NavLeaf | NavGroup;
+
+function isGroup(i: NavItem): i is NavGroup {
+  return 'children' in i;
+}
+
+const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/usage', label: 'Usage', icon: BarChart3 },
   { href: '/providers', label: 'Providers', icon: Boxes },
   { href: '/models', label: 'Models', icon: Cpu },
   { href: '/routes', label: 'Routes', icon: Route },
-  { href: '/proxy', label: 'Proxy Layer', icon: Network },
-  { href: '/edge-relays', label: 'Edge Relays', icon: Cloud },
+  {
+    label: 'Proxy & Edge',
+    icon: Network,
+    children: [
+      { href: '/proxy', label: 'Proxy Layer', icon: Network },
+      { href: '/edge-relays', label: 'Edge Relays', icon: Cloud },
+    ],
+  },
   { href: '/custom-scripts', label: 'Custom Scripts', icon: FileCode2 },
   { href: '/api-keys', label: 'API Keys', icon: KeyRound },
   { href: '/users', label: 'Users', icon: Users },
@@ -44,6 +62,72 @@ const NAV = [
   { href: '/settings', label: 'Settings', icon: Settings },
 ];
 
+/** Semua href leaf (utk longest-prefix match). */
+const ALL_LEAF_HREFS = NAV.flatMap((i) => (isGroup(i) ? i.children : [i])).map((l) => l.href);
+
+/** Active = longest-prefix match wins. Without this, /playground/media would
+ *  also highlight /playground (Chat) because it starts with it. */
+function activeHref(pathname: string | null): string | null {
+  if (!pathname) return null;
+  const matches = ALL_LEAF_HREFS.filter((h) => pathname === h || pathname.startsWith(h + '/'));
+  if (matches.length === 0) return null;
+  return matches.sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+/** Leaf nav item (link langsung). */
+function NavLeafItem({ leaf, pathname }: { leaf: NavLeaf; pathname: string | null }) {
+  const active = activeHref(pathname) === leaf.href;
+  const Icon = leaf.icon;
+  return (
+    <Link
+      href={leaf.href}
+      className={cn(
+        'flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] transition-colors',
+        active
+          ? 'bg-primary/15 text-primary'
+          : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+      )}
+    >
+      <Icon size={15} />
+      {leaf.label}
+    </Link>
+  );
+}
+
+/** Grup nav dgn submenu collapsible. Auto-expand bila child aktif. */
+function NavGroupItem({ group, pathname }: { group: NavGroup; pathname: string | null }) {
+  const childActive = activeHref(pathname);
+  const isActive = group.children.some((c) => c.href === childActive);
+  // Default: expand bila ada child aktif. User bisa toggle manual.
+  const [open, setOpen] = useState(isActive);
+  const Icon = group.icon;
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-[13px] transition-colors',
+          isActive
+            ? 'text-primary'
+            : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+        )}
+      >
+        <Icon size={15} />
+        <span className="flex-1 text-left">{group.label}</span>
+        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      {open && (
+        <div className="mt-0.5 space-y-0.5 pl-3">
+          {group.children.map((child) => (
+            <NavLeafItem key={child.href} leaf={child} pathname={pathname} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const { data: system } = useSystem();
@@ -52,9 +136,9 @@ export function Sidebar() {
   const reload = useReload();
 
   return (
-    <aside className="flex h-screen w-56 flex-col border-r border-border bg-[hsl(220_13%_7%)]">
+    <aside className="flex h-full w-56 flex-col border-r border-border bg-[hsl(220_13%_7%)]">
       {/* Brand */}
-      <div className="flex items-center gap-2 px-4 py-4">
+      <div className="flex shrink-0 items-center gap-2 px-4 py-4">
         <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-bold">
           S
         </div>
@@ -64,37 +148,20 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 space-y-0.5 px-2 py-2">
+      {/* Nav — scrollable bila melebihi viewport. flex-1 + min-h-0 supaya
+          flex child bisa shrink & trigger overflow (tanpa min-h-0, flex item
+          default min-height: auto = tidak pernah overflow). */}
+      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
         {NAV.map((item) => {
-          // Active = longest-prefix match wins. Without this, /playground/media
-          // would also highlight /playground (Chat) because it starts with it.
-          const matches = NAV.filter(
-            (n) => pathname === n.href || pathname?.startsWith(n.href + '/'),
-          );
-          const longest = matches.sort((a, b) => b.href.length - a.href.length)[0];
-          const active = longest?.href === item.href;
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-2.5 rounded-md px-3 py-2 text-[13px] transition-colors',
-                active
-                  ? 'bg-primary/15 text-primary'
-                  : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
-              )}
-            >
-              <Icon size={15} />
-              {item.label}
-            </Link>
-          );
+          if (isGroup(item)) {
+            return <NavGroupItem key={item.label} group={item} pathname={pathname} />;
+          }
+          return <NavLeafItem key={item.href} leaf={item} pathname={pathname} />;
         })}
       </nav>
 
-      {/* Footer: counts + reload */}
-      <div className="border-t border-border p-3">
+      {/* Footer: counts + reload — tetap di bawah, tidak ikut scroll. */}
+      <div className="shrink-0 border-t border-border p-3">
         <div className="mb-2 grid grid-cols-2 gap-1 text-[11px] text-muted-foreground">
           <span>Providers</span>
           <span className="text-right text-foreground">{system?.providers ?? '—'}</span>

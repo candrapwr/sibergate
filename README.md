@@ -83,7 +83,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **📊 Observabilitas bawaan** — log per-request, pelacakan token & biaya per route/provider/model/**upstream key**, dashboard live dengan grafik. Tiap error upstream mencatat **URL + response body** lengkap (key di-redact) supaya mudah diagnosa. Saat upstream error terjadi (termasuk yg sukses failover), **raw request lengkap** (URL client, headers teredact, body, upstream call) disimpan otomatis ke file per-request di `request_traces/` — bukan DB, jadi DB tetap ramping. Di drawer Logs, klik **"View raw request"** untuk membuka modal berisi request asli + respons upstream yg gagal.
 - **🖥️ Dashboard admin** — CRUD penuh untuk provider, model, route, dan key; playground chat & media; snippet kode gaya Postman dalam 6 bahasa.
 - **🧩 Custom Scripts (build-your-own provider)** — tulis script Node.js di dashboard, dan output `console.log` script otomatis jadi endpoint HTTP (`/api/custom/<nama>`) yg masuk ke alur routing/failover SiberGate sama persis seperti provider lain. Satu provider bisa serve banyak script. Bungkus API lama, scraper, atau microservice internal jadi provider OpenAI-compat tanpa sentuh kode gateway. Lihat [Custom Scripts](#-custom-scripts-build-your-own-provider).
-- **🌐 Proxy Layer (outbound proxy selektif)** — rutekan request **provider tertentu** lewat pool proxy HTTP/HTTPS/SOCKS5/SOCKS4 atau **Cloudflare Workers edge relay** (auto-deploy). Selektif per-provider (bukan VPN global): pilih provider mana yg di-proxy. Pool = kumpulan proxy dgn weight + health-check otomatis (active ping + passive on-fail) + failover antar tipe. Test proxy → lihat latensi + IP keluar + 🇺🇸 negara (GeoIP). Cocok utk bypass geo-block (Gemini/OpenAI diblokir region) & IP rotation. Logging proxy terpisah + Console live stream. Lihat [Proxy Layer](#-proxy-layer).
+- **🌐 Proxy Layer (outbound proxy selektif)** — rutekan request **provider tertentu** lewat pool proxy HTTP/HTTPS/SOCKS5/SOCKS4 atau **edge relay** (auto-deploy ke Cloudflare Workers, Vercel Edge, Deno Deploy, atau Netlify Edge). Selektif per-provider (bukan VPN global): pilih provider mana yg di-proxy. Pool = kumpulan proxy dgn weight + **privacy contract** (proxy dipakai apa adanya — kalau error, request gagal jelas, TIDAK failover diam-diam ke direct / IP bocor). Test proxy → lihat latensi + IP keluar + 🇺🇸 negara (GeoIP). Cocok utk bypass geo-block (Gemini/OpenAI diblokir region) & IP rotation. Logging proxy terpisah + Console live stream. Lihat [Proxy Layer](#-proxy-layer).
 - **💾 SQLite, tanpa ops** — satu file, tidak ada server database yang harus dijalankan. Master data, log, dan kredensial dalam satu DB portabel.
 - **🔮 Tahan masa depan** — modalitas JSON artinya menambah kapabilitas baru (video, eksekusi kode) cuma ubah data, bukan refactor kode.
 
@@ -383,23 +383,27 @@ Mengapa ini berguna?
 1. **HTTP/SOCKS Proxy** — tunnel tradisional (ProxyAgent). Support HTTP, HTTPS,
    SOCKS5, SOCKS5h (DNS remote). Form terstruktur: pilih tipe + host + port +
    auth opsional.
-2. **Edge Relay (Cloudflare Workers)** — URL-rewrite relay. Auto-deploy Worker
-   ke akun CF Anda via API (transparent relay: 1 Worker serve semua provider &
-   modality). Token disimpan encrypted. Scalable registry — nambah Vercel/Deno/
-   Netlify/AWS = +1 file.
+2. **Edge Relay (4 platform)** — URL-rewrite relay. Auto-deploy edge function ke
+   akun Anda via API (transparent relay: 1 function serve semua provider &
+   modality). Token disimpan encrypted. Didukung: **Cloudflare Workers**,
+   **Vercel Edge Functions**, **Deno Deploy**, **Netlify Edge Functions**
+   (AWS Lambda@Edge coming soon). Scalable registry — nambah platform = +1 file.
 
 **Pool & strategi**:
 - `weighted` (random by weight, default), `round-robin` (cycle), `failover` (ordered).
 - Member bisa campur tipe (SOCKS5 + Worker di pool yg sama).
-- Weight + health-check hybrid:
-  - **Active**: background ping setiap 60s (example.com utk connectivity,
-    ipify utk exit IP) → update healthy + cache GeoIP (negara/flag).
-  - **Passive**: saat request real gagal (network/timeout) → member otomatis
-    ditandai unhealthy, failover ke member lain.
+- **Privacy contract** — proxy dipakai apa adanya saat `enabled`. Tidak ada
+  background health-check otomatis, juga tidak ada passive mark-unhealthy saat
+  request gagal. Alasannya: kalau user set proxy, request **HARUS** lewat proxy.
+  Failover diam-diam ke direct fetch saat proxy error = IP bocor (privacy leak)
+  — lebih baik request gagal jelas supaya user tahu proxy bermasalah. Failover
+  antar-**member** dalam pool tetap jalan (tiap member punya proxy-nya sendiri).
 - **Test proxy**: tombol Test per-member → ukur latensi + capture IP keluar +
-  lookup negara → tampilkan 🇺🇸 flag (butuh GeoIP DB, lihat bawah).
+  lookup negara → tampilkan 🇺🇸 flag (butuh GeoIP DB, lihat bawah). Hasil test
+  hanya informatif (badge healthy di UI), **tidak menahan selection**.
 - **Logging**: tabel `proxy_logs` (query/filter terpisah di `/proxy/logs`) +
-  Console live stream dgn flag 🌐 saat request lewat proxy.
+  Console live stream dgn flag 🌐 saat request lewat proxy. Clear logs di
+  Settings juga otomatis bersihkan `proxy_logs`.
 
 ### Cara pakai — HTTP/SOCKS Proxy
 
@@ -414,11 +418,14 @@ Mengapa ini berguna?
 **Edge Relay sekarang entitas terpisah** — deploy sekali, reuse di pool mana
 saja. Tidak perlu setup ulang di setiap pool.
 
-1. **Admin → Edge Relays → New relay** — isi id, nama, pilih tipe
-   (Cloudflare Workers aktif; Vercel/Deno/Netlify/AWS coming soon).
-2. Klik **Deploy** di row relay → buka modal → isi **CF API Token** →
-   **Verify** (auto-detect account ID) → **Deploy**.
-   Worker ter-upload, dapat URL `https://<script>.<subdomain>.workers.dev`.
+1. **Admin → Edge Relays → New relay** — isi id, nama, pilih platform
+   (Cloudflare Workers / Vercel Edge / Deno Deploy / Netlify Edge aktif;
+   AWS Lambda@Edge coming soon). Deskripsi tiap platform muncul saat dipilih.
+2. Klik **Deploy** di row relay → buka modal → isi field config sesuai platform
+   (token + field lain, **form dinamis** per provider) → **Verify** (auto-detect
+   account ID) → **Deploy**.
+   Edge function ter-upload, dapat URL publik (mis. `…workers.dev`,
+   `…vercel.app`, `…deno.dev`, `…netlify.app`).
 3. **Admin → Proxy Layer → New pool** → add member tipe **"Edge Relay"** →
    **pilih relay** dari dropdown (relay yg sudah deploy) → weight.
 4. Bind provider/route ke pool (lihat bawah).
@@ -470,7 +477,7 @@ Client → Route → Engine → resolveProxy(providerId, routeId)
               ↓                            ↓
         via HTTP/SOCKS5 proxy        via Cloudflare Worker → provider
               ↓                            ↓
-        on fail → markUnhealthy → failover ke member lain
+        on fail → error jelas ke user (TIDAK failover diam-diam ke direct)
 ```
 
 Proxy di-inject di satu chokepoint (`sendUpstream` → `fetch`), shg semua
@@ -481,10 +488,13 @@ proxy tidak dipakai (`dispatcher` undefined = direct fetch).
 ### Catatan
 - Proxy URL dgn auth (`http://user:pass@host`) didukung native. Di-redact saat
   log.
-- `strictProxy` (rencana): bila true, request gagal total saat semua member
-  unhealthy. Default false → fallback direct.
-- Edge relay providers lain (Vercel Edge Functions, Deno Deploy, Netlify Edge,
-  AWS Lambda@Edge) = coming soon. Framework registry sudah siap (+1 file impl).
+- **No silent failover to direct** — privacy contract: proxy yg sudah di-set
+  wajib dipakai. Tidak ada fallback ke direct fetch saat proxy error (dulu
+  rencana `strictProxy`, sekarang default behavior). Request gagal jelas.
+- **4 platform edge relay didukung**: Cloudflare Workers, Vercel Edge
+  Functions, Deno Deploy, Netlify Edge Functions. AWS Lambda@Edge = coming soon
+  (butuh IAM role + Lambda handler + CloudFront distribution — arsitektur
+  berbeda). Framework registry siap: nambah platform = +1 file impl.
 
 ---
 

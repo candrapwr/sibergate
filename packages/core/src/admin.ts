@@ -6,6 +6,7 @@ import { providerEndpoints } from './known-providers.js';
 import { resetLatency } from './latency.js';
 import { listSignatures as listSigs, resetSignatures as resetSigs, type SignatureList } from './signatures.js';
 import { clearRequestTraces as clearTraces } from './request-trace.js';
+import { clearProxyLogs } from './proxy/log.js';
 
 /**
  * Admin repository — CRUD operations over the master-data tables.
@@ -929,6 +930,7 @@ export function clearAllData(): { providers: number; models: number; routes: num
   // but explicit is safer against schema tweaks).
   db.transaction(() => {
     db.exec('DELETE FROM requests');
+    db.exec('DELETE FROM proxy_logs');
     db.exec('DELETE FROM route_targets');
     db.exec('DELETE FROM routes');
     db.exec('DELETE FROM models');
@@ -957,6 +959,9 @@ export function clearLogs(): { logs: number; traces: number } {
   // Raw request trace files live alongside log rows — wipe them together so the
   // "View raw request" link never points at a stale file after a clear.
   const traces = clearTraces();
+  // Proxy logs ikut dibersihkan — "Clear logs" di Settings harus bersihkan SEMUA
+  // log (request + proxy), jangan tinggal proxy_logs berserakan.
+  clearProxyLogs();
   return { logs: before, traces: traces.removed };
 }
 

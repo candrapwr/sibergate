@@ -159,14 +159,21 @@ export function setRelayConfig(id: string, config: Record<string, unknown>): voi
   getDb().prepare('UPDATE edge_relays SET config = ? WHERE id = ?').run(blob, id);
 }
 
-/** Set relay URL (setelah deploy). */
+/** Set relay URL (setelah deploy). Sync URL baru ke semua pool member yg
+ *  mereferensikan relay ini, supaya resolver baca URL terbaru (bukan snapshot
+ *  saat member dibuat). Tanpa ini, member pakai URL lama setelah redeploy. */
 export function setRelayUrl(id: string, url: string): void {
-  getDb().prepare('UPDATE edge_relays SET relay_url = ?, healthy = 1, updated_at = datetime(\'now\') WHERE id = ?').run(url, id);
+  const db = getDb();
+  db.prepare('UPDATE edge_relays SET relay_url = ?, healthy = 1, updated_at = datetime(\'now\') WHERE id = ?').run(url, id);
+  // Propagate URL + proxy_url (proxy_url dipakai logging) ke member reference.
+  db.prepare('UPDATE proxy_pool_members SET relay_url = ?, proxy_url = ? WHERE edge_relay_id = ?').run(url, url, id);
 }
 
-/** Clear relay URL (setelah remove). */
+/** Clear relay URL (setelah remove). Sync ke member reference juga. */
 export function clearRelayUrl(id: string): void {
-  getDb().prepare('UPDATE edge_relays SET relay_url = NULL, healthy = 0 WHERE id = ?').run(id);
+  const db = getDb();
+  db.prepare('UPDATE edge_relays SET relay_url = NULL, healthy = 0 WHERE id = ?').run(id);
+  db.prepare('UPDATE proxy_pool_members SET relay_url = NULL, healthy = 0 WHERE edge_relay_id = ?').run(id);
 }
 
 /* ─────────────────────── Edge actions (verify/deploy/remove/test) ── */
@@ -196,11 +203,13 @@ export async function deployEdgeRelay(
   const relay = getEdgeRelay(id);
   if (!relay) return { ok: false, error: 'Edge relay tidak ditemukan.' };
   const provider = getEdgeProvider(relay.type);
+  // Merge: DB config sbg base, override dgn config dari UI. Validasi field
+  // didelegasikan ke provider (tiap provider tahu field apa yg wajib — mis. CF
+  // butuh accountId, Vercel/Deno/Netlify tidak). Wrapper tidak boleh berasumsi
+  // field tertentu.
   const config = { ...(getRelayConfig(id) ?? {}), ...(configOverride ?? {}) };
-  const token = String(config.apiToken ?? '').trim();
-  const accountId = String(config.accountId ?? '').trim();
-  if (!token) return { ok: false, error: 'API token kosong.' };
-  if (!accountId) return { ok: false, error: 'Account ID kosong (verify dulu).' };
+  const errors = provider.validateConfig(config);
+  if (errors.length > 0) return { ok: false, error: errors[0] };
   const result = await provider.deploy(config);
   if (result.ok && result.relayUrl) {
     setRelayConfig(id, config);

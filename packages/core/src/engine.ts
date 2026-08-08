@@ -2,7 +2,7 @@ import type { Provider, Route, RouteModality, RouteTarget, SiberGateConfig } fro
 import { getLatency, hasLatencyEstimate, recordFailure, recordLatency } from './latency.js';
 import { callProvider, GatewayCallError, isFailoverable } from './provider.js';
 import { pushConsoleLog } from './console-log.js';
-import { resolveProxy, buildTransport, pushProxyLog, redactProxyUrl, markMemberUnhealthy } from './proxy/index.js';
+import { resolveProxy, buildTransport, pushProxyLog, redactProxyUrl } from './proxy/index.js';
 
 /**
  * Run `fn` with a fresh AbortController whose timeout is `budgetMs`, while
@@ -240,11 +240,11 @@ export async function executeRoute(
       const latencyMs = Date.now() - start;
       recordFailure(target.providerId, target.modelId);
       const ge = err as GatewayCallError;
-      // Passive health: bila request lewat proxy & gagal krn network/timeout (bukan
-      // HTTP error dari provider), tandai member unhealthy utk failover berikutnya.
-      if (resolved && (ge.code === 'network' || ge.code === 'timeout')) {
-        markMemberUnhealthy(resolved.memberId, ge.code, resolved.poolId, target.providerId);
-      } else if (resolved) {
+      // Catat ke proxy_logs bila request lewat proxy. TIDAK markMemberUnhealthy —
+      // proxy dipakai apa adanya. Privacy contract: bila user set proxy, request
+      // HARUS lewat proxy; error dibiarkan jelas (tidak failover diam-diam ke
+      // direct). User lihat error → tahu proxy bermasalah → bisa ganti/test.
+      if (resolved) {
         pushProxyLog({
           poolId: resolved.poolId, memberId: resolved.memberId, memberUrl: redactProxyUrl(resolved.proxyUrl),
           providerId: target.providerId, outcome: 'failed', latencyMs, country: resolved.country, error: ge.code,

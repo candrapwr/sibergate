@@ -43,14 +43,14 @@ export {
   clearDispatcherCache,
 } from './dispatcher.js';
 
-// Health + test (dipakai admin routes + engine on-fail).
+// Health + test. testProxy/testMember/updateMemberHealth dipakai admin routes
+// utk tombol Test (manual, on-demand). Background monitor & markMemberUnhealthy
+// dihapus — proxy dipakai apa adanya saat enabled (privacy contract: tidak ada
+// failover diam-diam ke direct).
 export {
   testProxy,
   testMember,
   updateMemberHealth,
-  markMemberUnhealthy,
-  startHealthMonitor,
-  stopHealthMonitor,
   redactProxyUrl,
 } from './health.js';
 

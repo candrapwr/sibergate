@@ -8,9 +8,21 @@ import type { ProxyPoolMember, ProxyStrategy } from './types.js';
 /** State round-robin per pool (poolId → next index). */
 const rrState = new Map<string, number>();
 
-/** Ambil member yg eligible (enabled + healthy). */
+/**
+ * Ambil member yg eligible. Proxy dipakai apa adanya saat user set (enabled) —
+ * state healthy TIDAK dicek. Privacy contract: bila user meng-set proxy, request
+ * HARUS lewat proxy. Kalau proxy error, lebih baik request gagal jelas ke user
+ * (daripada failover diam-diam ke direct fetch / IP bocor).
+ *
+ * - http-proxy/socks5: enabled = eligible.
+ * - edge-relay: enabled + sudah deploy (punya relayUrl).
+ */
 function eligible(members: ProxyPoolMember[]): ProxyPoolMember[] {
-  return members.filter((m) => m.enabled && m.healthy);
+  return members.filter((m) => {
+    if (!m.enabled) return false;
+    if (m.type === 'edge-relay') return !!m.relayUrl;
+    return true;
+  });
 }
 
 /** Weighted random pick. */

@@ -112,7 +112,18 @@ function buildDeployForm(): FormData {
 export const cloudflareProvider: EdgeRelayProvider = {
   id: 'cloudflare-workers',
   displayName: 'Cloudflare Workers',
-  requiredConfigFields: ['apiToken'],
+  description:
+    'Deploy transparent-relay Worker ke Cloudflare. Global edge network (~300 lokasi), cold start mendekati nol, gratis utk 100k request/hari. Paling stabil & cepat utk relay.',
+  docsUrl: 'https://developers.cloudflare.com/workers/',
+  status: 'active',
+  configFields: [
+    { key: 'apiToken', label: 'Cloudflare API Token', type: 'password', placeholder: 'cf_xxx...', required: true,
+      helper: 'Pakai template "Edit Cloudflare Workers" (My Profile → API Tokens). Permission Account-level "Workers Scripts: Edit".' },
+    { key: 'accountId', label: 'Account ID', type: 'text', placeholder: 'auto-detected setelah Verify', required: false,
+      helper: 'Otomatis terisi setelah Verify. Bisa input manual bila perlu.' },
+    { key: 'scriptName', label: 'Worker Script Name', type: 'text', placeholder: 'sibergate-relay', required: false,
+      helper: 'Nama Worker script. Default: sibergate-relay.' },
+  ],
 
   validateConfig(config: Record<string, unknown>): string[] {
     const errors: string[] = [];
@@ -146,10 +157,30 @@ export const cloudflareProvider: EdgeRelayProvider = {
 
   async deploy(config: Record<string, unknown>): Promise<DeployResult> {
     const token = String(config.apiToken ?? '').trim();
-    const accountId = String(config.accountId ?? '').trim();
-    const scriptName = String(config.scriptName ?? 'sibergate-relay').trim();
+    let accountId = String(config.accountId ?? '').trim();
+    const scriptName = String(config.scriptName || 'sibergate-relay').trim();
     if (!token) return { ok: false, error: 'API token kosong.' };
-    if (!accountId) return { ok: false, error: 'Account ID kosong (jalankan verify dulu).' };
+
+    // Bila accountId kosong (user belum verify), auto-detect via /accounts.
+    // Supaya Deploy bisa jalan langsung tanpa Verify dulu — konsisten dgn
+    // provider lain (Vercel/Deno/Netlify tidak butuh accountId).
+    if (!accountId) {
+      try {
+        const accRes = await fetch(`${CF_API}/accounts`, { headers: authHeaders(token) });
+        const accJson = (await accRes.json()) as CfResponse<CfAccount[]>;
+        if (!accRes.ok || !accJson.success) {
+          const msg = accJson.errors?.[0]?.message ?? `HTTP ${accRes.status}`;
+          return { ok: false, error: `Token invalid: ${msg}` };
+        }
+        const accounts = accJson.result ?? [];
+        if (accounts.length === 0) return { ok: false, error: 'Token valid tapi tidak ada account.' };
+        accountId = accounts[0]!.id;
+        config.accountId = accountId;
+        config.accountName = accounts[0]!.name;
+      } catch (err) {
+        return { ok: false, error: `Gagal auto-detect account: ${(err as Error).message}` };
+      }
+    }
 
     try {
       // 1. PUT script (multipart).
@@ -203,7 +234,7 @@ export const cloudflareProvider: EdgeRelayProvider = {
   async remove(config: Record<string, unknown>): Promise<RemoveResult> {
     const token = String(config.apiToken ?? '').trim();
     const accountId = String(config.accountId ?? '').trim();
-    const scriptName = String(config.scriptName ?? 'sibergate-relay').trim();
+    const scriptName = String(config.scriptName || 'sibergate-relay').trim();
     if (!token || !accountId) return { ok: false, error: 'Config tidak lengkap.' };
     try {
       const res = await fetch(`${CF_API}/accounts/${accountId}/workers/scripts/${scriptName}`, {

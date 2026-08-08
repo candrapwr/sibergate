@@ -68,7 +68,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **📊 Built-in observability** — per-request logs, token & cost tracking by route/provider/model/**upstream key**, live dashboard with charts. Every upstream error logs the **URL + response body** in full (key redacted) so it's easy to diagnose. When an upstream error occurs (including recovered failovers), a **full raw request** (client URL, redacted headers, body, upstream call) is auto-saved to a per-request file in `request_traces/` — not the DB, so the DB stays lean. In the Logs drawer, click **"View raw request"** to open a modal with the original request + the failing upstream response.
 - **🖥️ Admin dashboard** — full CRUD for providers, models, routes, and keys; a chat & media playground; Postman-style code snippets in 6 languages.
 - **🧩 Custom Scripts (build-your-own provider)** — write a Node.js script in the dashboard and its `console.log` output automatically becomes an HTTP endpoint (`/api/custom/<name>`) that flows through SiberGate's routing/failover exactly like any other provider. One provider can serve many scripts. Wrap legacy APIs, scrapers, or internal microservices into OpenAI-compatible providers without touching gateway code. See [Custom Scripts](#-custom-scripts-build-your-own-provider).
-- **🌐 Proxy Layer (selective outbound proxy)** — route requests of **specific providers** through HTTP/HTTPS/SOCKS5/SOCKS4 proxy pools or **Cloudflare Workers edge relay** (auto-deploy). Selective per-provider (not a global VPN): choose which providers go through a proxy. Pool = a set of proxies with weight + automatic health-check (active ping + passive on-fail) + failover across types. Test a proxy → see latency + exit IP + 🇺🇸 country (GeoIP). Great for geo-block bypass (Gemini/OpenAI region-locked) & IP rotation. Dedicated proxy logging + Console live stream. See [Proxy Layer](#-proxy-layer).
+- **🌐 Proxy Layer (selective outbound proxy)** — route requests of **specific providers** through HTTP/HTTPS/SOCKS5/SOCKS4 proxy pools or **edge relay** (auto-deploy to Cloudflare Workers, Vercel Edge, Deno Deploy, or Netlify Edge). Selective per-provider (not a global VPN): choose which providers go through a proxy. Pool = a set of proxies with weight + **privacy contract** (proxy used as-is — on error the request fails loudly, NO silent failover to direct / IP leak). Test a proxy → see latency + exit IP + 🇺🇸 country (GeoIP). Great for geo-block bypass (Gemini/OpenAI region-locked) & IP rotation. Dedicated proxy logging + Console live stream. See [Proxy Layer](#-proxy-layer).
 - **💾 SQLite, zero ops** — one file, no database server to run. Master data, logs, and credentials all in one portable DB.
 - **🔮 Future-proof** — JSON modalities mean adding new capabilities (video, code execution) is a data change, not a refactor.
 
@@ -371,23 +371,28 @@ Why is this useful?
 1. **HTTP/SOCKS Proxy** — traditional tunnel (ProxyAgent). Supports HTTP, HTTPS,
    SOCKS5, SOCKS5h (remote DNS). Structured form: pick type + host + port +
    optional auth.
-2. **Edge Relay (Cloudflare Workers)** — URL-rewrite relay. Auto-deploys a
-   Worker to your CF account via API (transparent relay: 1 Worker serves all
-   providers & modalities). Token stored encrypted. Scalable registry — adding
-   Vercel/Deno/Netlify/AWS = +1 file.
+2. **Edge Relay (4 platforms)** — URL-rewrite relay. Auto-deploys an edge
+   function to your account via API (transparent relay: 1 function serves all
+   providers & modalities). Token stored encrypted. Supported: **Cloudflare
+   Workers**, **Vercel Edge Functions**, **Deno Deploy**, **Netlify Edge
+   Functions** (AWS Lambda@Edge coming soon). Scalable registry — adding a
+   platform = +1 file.
 
 **Pool & strategy**:
 - `weighted` (random by weight, default), `round-robin` (cycle), `failover` (ordered).
 - Members can mix types (SOCKS5 + Worker in the same pool).
-- Weight + hybrid health-check:
-  - **Active**: background ping every 60s (example.com for connectivity, ipify
-    for exit IP) → updates healthy + caches GeoIP (country/flag).
-  - **Passive**: when a real request fails (network/timeout) → member is
-    automatically marked unhealthy, failover to next member.
+- **Privacy contract** — proxy used as-is when `enabled`. No automatic
+  background health-check, and no passive mark-unhealthy on request failure.
+  Reason: if a user sets a proxy, requests **MUST** go through it. Silently
+  falling back to a direct fetch on proxy error = IP leak (privacy breach) —
+  better to fail loudly so the user knows the proxy is broken. Failover across
+  **members** in a pool still works (each member has its own proxy).
 - **Test proxy**: per-member Test button → measures latency + captures exit IP
-  + looks up country → shows 🇺🇸 flag (needs GeoIP DB, see below).
+  + looks up country → shows 🇺🇸 flag (needs GeoIP DB, see below). Test result
+  is informational only (healthy badge in UI), it does **not** gate selection.
 - **Logging**: dedicated `proxy_logs` table (query/filter at `/proxy/logs`) +
-  Console live stream with 🌐 flag when request goes through proxy.
+  Console live stream with 🌐 flag when request goes through proxy. Clear logs
+  in Settings also wipes `proxy_logs`.
 
 ### How to use — HTTP/SOCKS Proxy
 
@@ -402,11 +407,14 @@ Why is this useful?
 **Edge Relays are now a standalone entity** — deploy once, reuse across pools.
 No need to set up again in every pool.
 
-1. **Admin → Edge Relays → New relay** — fill in id, name, select type
-   (Cloudflare Workers active; Vercel/Deno/Netlify/AWS coming soon).
-2. Click **Deploy** on the relay row → opens modal → fill in **CF API Token** →
-   **Verify** (auto-detects account ID) → **Deploy**.
-   Worker is uploaded, gets URL `https://<script>.<subdomain>.workers.dev`.
+1. **Admin → Edge Relays → New relay** — fill in id, name, select platform
+   (Cloudflare Workers / Vercel Edge / Deno Deploy / Netlify Edge active;
+   AWS Lambda@Edge coming soon). Each platform shows a description when selected.
+2. Click **Deploy** on the relay row → opens modal → fill in the config fields
+   for the chosen platform (token + other fields, **dynamic form** per
+   provider) → **Verify** (auto-detects account ID) → **Deploy**.
+   Edge function is uploaded, gets a public URL (e.g. `…workers.dev`,
+   `…vercel.app`, `…deno.dev`, `…netlify.app`).
 3. **Admin → Proxy Layer → New pool** → add member type **"Edge Relay"** →
    **select relay** from dropdown (already deployed relay) → weight.
 4. Bind provider/route to pool (see below).
@@ -459,7 +467,7 @@ Client → Route → Engine → resolveProxy(providerId, routeId)
               ↓                            ↓
         via HTTP/SOCKS5 proxy        via Cloudflare Worker → provider
               ↓                            ↓
-        on fail → markUnhealthy → failover to next member
+        on fail → error shown to user (NO silent failover to direct)
 ```
 
 The proxy is injected at a single chokepoint (`sendUpstream` → `fetch`), so
@@ -470,10 +478,13 @@ change** when no proxy is used (`dispatcher` undefined = direct fetch).
 ### Notes
 - Proxy URLs with auth (`http://user:pass@host`) are supported natively and
   redacted in logs.
-- `strictProxy` (planned): when true, a request fails hard if all members are
-  unhealthy. Defaults to false → falls back to direct.
-- Other edge relay providers (Vercel Edge Functions, Deno Deploy, Netlify Edge,
-  AWS Lambda@Edge) = coming soon. Registry framework is ready (+1 file impl).
+- **No silent failover to direct** — privacy contract: a configured proxy is
+  mandatory. No fallback to direct fetch on proxy error (formerly a planned
+  `strictProxy` flag, now the default behavior). Requests fail loudly.
+- **4 edge relay platforms supported**: Cloudflare Workers, Vercel Edge
+  Functions, Deno Deploy, Netlify Edge Functions. AWS Lambda@Edge = coming soon
+  (needs IAM role + Lambda handler + CloudFront distribution — different
+  architecture). Registry framework is ready: adding a platform = +1 file impl.
 
 ---
 

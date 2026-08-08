@@ -8,11 +8,39 @@
 
 /** ID provider edge relay yg didukung (extend saat nambah provider). */
 export type EdgeProviderId =
-  | 'cloudflare-workers';
-// | 'vercel-edge'      // future
-// | 'deno-deploy'      // future
-// | 'netlify-edge'     // future
-// | 'aws-lambda-edge'  // future
+  | 'cloudflare-workers'
+  | 'vercel-edge'
+  | 'deno-deploy'
+  | 'netlify-edge';
+// | 'aws-lambda-edge'  // future — arsitektur beda (IAM + Lambda + CloudFront)
+
+/**
+ * Status kematangan provider. Dipakai UI utk badge + enable/disable pilihan.
+ * - active: siap pakai, API deploy jalan
+ * - beta: implement ada tapi belum diverifikasi ekstensif
+ * - coming-soon: belum ada impl, di-disabled di UI (placeholder)
+ */
+export type EdgeProviderStatus = 'active' | 'beta' | 'coming-soon';
+
+/**
+ * Metadata field config utk render form dinamis di UI. Didefinisikan per
+ * provider. UI baca configFields[] → render input (label, type, placeholder,
+ * helper). Key = nama field di config object yg dikirim ke verify/deploy.
+ */
+export interface ConfigField {
+  /** Nama field di config object (mis. 'apiToken', 'projectId'). */
+  key: string;
+  /** Label display di UI. */
+  label: string;
+  /** Tipe input. password = masked. */
+  type: 'text' | 'password';
+  /** Placeholder input. */
+  placeholder?: string;
+  /** Wajib diisi? */
+  required: boolean;
+  /** Teks bantuan kecil di bawah input (mis. cara dapat token, permission). */
+  helper?: string;
+}
 
 /** Runtime config utk request rewrite (dipakai sendUpstream). */
 export interface EdgeRelayRuntime {
@@ -59,8 +87,14 @@ export interface EdgeRelayProvider {
   id: EdgeProviderId;
   /** Nama display utk UI. */
   displayName: string;
-  /** Field config yg diharapkan user input (mis. ['apiToken'] utk CF). */
-  requiredConfigFields: string[];
+  /** Deskripsi singkat utk info panel/kartu UI (apa itu, keunggulan). */
+  description: string;
+  /** Link dokumentasi resmi provider (utk tombol "Learn more" di UI). */
+  docsUrl?: string;
+  /** Status kematangan. coming-soon = di-disabled di UI. */
+  status: EdgeProviderStatus;
+  /** Field config utk render form dinamis di UI. */
+  configFields: ConfigField[];
 
   /** Validasi config user input. Return [] jika OK, array pesan error jika salah. */
   validateConfig(config: Record<string, unknown>): string[];

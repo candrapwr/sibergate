@@ -94,7 +94,7 @@ export function getProxyPool(id: string): ProxyPool | null {
   return row ? toPool(row) : null;
 }
 
-export function listProxyPools(): Array<ProxyPool & { memberCount: number; healthyCount: number; boundProviderCount: number }> {
+export function listProxyPools(): Array<ProxyPool & { memberCount: number; healthyCount: number; boundProviderCount: number; boundRouteCount: number }> {
   const db = getDb();
   return (db.prepare('SELECT * FROM proxy_pools ORDER BY created_at ASC').all() as PoolRow[]).map((row) => {
     const pool = toPool(row);
@@ -109,11 +109,15 @@ export function listProxyPools(): Array<ProxyPool & { memberCount: number; healt
     const bound = db
       .prepare('SELECT COUNT(*) as c FROM provider_proxy_pools WHERE pool_id = ? AND enabled = 1')
       .get(row.id) as { c: number };
+    const boundRoutes = db
+      .prepare('SELECT COUNT(*) as c FROM route_proxy_pools WHERE pool_id = ? AND enabled = 1')
+      .get(row.id) as { c: number };
     return {
       ...pool,
       memberCount: counts.total ?? 0,
       healthyCount: counts.healthy ?? 0,
       boundProviderCount: bound.c ?? 0,
+      boundRouteCount: boundRoutes.c ?? 0,
     };
   });
 }
@@ -352,7 +356,7 @@ export async function verifyEdgeCredentials(
 
 /**
  * Deploy relay (mis. CF Worker). Simpan relay_url bila sukses.
- * configOverride = config lengkap dari UI (apiToken, accountId, scriptName).
+ * configOverride = config lengkap dari UI (apiToken, accountId, dll).
  * Bila tidak ada, fallback ke config DB (hasil verify sebelumnya).
  */
 export async function deployEdgeMember(
@@ -364,13 +368,12 @@ export async function deployEdgeMember(
     return { ok: false, error: 'Member bukan tipe edge-relay.' };
   }
   const provider = getEdgeProvider(member.edgeProvider);
-  // Merge: DB config sbg base, override dgn config dari UI (apiToken, accountId).
+  // Merge: DB config sbg base, override dgn config dari UI. Validasi field
+  // didelegasikan ke provider (tiap provider tahu field apa yg wajib).
   const dbConfig = getMemberEdgeConfig(memberId) ?? {};
   const config = { ...dbConfig, ...(configOverride ?? {}) };
-  const token = String(config.apiToken ?? '').trim();
-  const accountId = String(config.accountId ?? '').trim();
-  if (!token) return { ok: false, error: 'API token kosong.' };
-  if (!accountId) return { ok: false, error: 'Account ID kosong (verify dulu, atau input manual).' };
+  const errors = provider.validateConfig(config);
+  if (errors.length > 0) return { ok: false, error: errors[0] };
   const result = await provider.deploy(config);
   if (result.ok && result.relayUrl) {
     setMemberEdgeConfig(memberId, config);

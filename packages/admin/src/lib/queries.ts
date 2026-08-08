@@ -11,6 +11,7 @@ import type {
   CustomScript,
   CustomScriptSummary,
   EdgeDeployResult,
+  EdgeProviderInfo,
   EdgeRelay,
   EdgeVerifyResult,
   GeoIpStatus,
@@ -405,7 +406,8 @@ export function useResetAll() {
   });
 }
 
-/** Hapus semua baris di tabel requests (request log). Master data aman. */
+/** Hapus semua baris di tabel requests (request log). Master data aman.
+ *  Backend juga clear proxy_logs — invalidate query proxy-logs supaya UI sync. */
 export function useClearLogs() {
   const qc = useQueryClient();
   return useMutation({
@@ -416,6 +418,8 @@ export function useClearLogs() {
       qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['usage'] });
       qc.invalidateQueries({ queryKey: ['system'] });
+      // Proxy logs juga dibersihkan backend — refresh halaman /proxy/logs.
+      qc.invalidateQueries({ queryKey: ['proxy-logs'] });
     },
   });
 }
@@ -431,6 +435,7 @@ export function useResetStats() {
       qc.invalidateQueries({ queryKey: ['stats'] });
       qc.invalidateQueries({ queryKey: ['usage'] });
       qc.invalidateQueries({ queryKey: ['system'] });
+      qc.invalidateQueries({ queryKey: ['proxy-logs'] });
     },
   });
 }
@@ -674,7 +679,7 @@ export function useUpdateGeoIp() {
 export function useEdgeProviders() {
   return useQuery({
     queryKey: ['edge-providers'],
-    queryFn: () => api.get<ListResponse<{ id: string; displayName: string }>>('proxy/edge-providers'),
+    queryFn: () => api.get<ListResponse<EdgeProviderInfo>>('proxy/edge-providers'),
   });
 }
 
