@@ -1,22 +1,23 @@
 /**
- * Deno Deploy edge relay provider implementation.
+ * Deno Deploy edge relay provider implementation (v2 API).
  *
  * Deploy sebuah transparent-relay edge script ke Deno Deploy (auto via API).
  * Script forward request ke provider mana pun (header x-relay-target), shg
  * 1 script serve semua provider & modality. Token Deno disimpan encrypted di DB
  * (decrypt transient di buildRelayConfig, never logged).
  *
- * Deno Deploy API:
- *   verify: GET    https://api.deno.com/v2/users/self        (Bearer token)
- *   deploy: POST   https://deploy.deno.com/v1/deployments    (multipart: project + entrypoint source)
- *   remove: DELETE https://api.deno.com/v2/projects/{name}   (Bearer token)
+ * Deno Deploy v2 API (https://api.deno.com/v2/docs):
+ *   orgs:    GET    /v2/organizations                  (Bearer token → list orgs)
+ *   app:     POST   /v2/apps                           (create app by slug)
+ *   deploy:  POST   /v2/apps/{slug}/deploy             (assets + config inline)
+ *   app:     DELETE /v2/apps/{slug}                    (remove app + deploys)
  *
- * Deno support ES module native — script hampir identik dgn Cloudflare Worker
- * (`export default { async fetch(request) }`). Public URL = {project}.deno.dev.
+ * v2 model: Organization → App → Revision. "App" = project (slug = URL key),
+ * "Revision" = deployment. URL = https://{slug}.deno.dev.
  *
- * Catatan: deploy.deno.com/v1 adalah "classic" API (single-file). Alternatif
- * api.deno.com/v2 butuh asset upload multi-file (lebih kompleks). Classic API
- * paling cocok utk relay single-file.
+ * ⚠️ Token wajib ORGANIZATION access token (prefix `ddo_`). Personal token
+ * (`ddp_`) DITOLAK v2 API (redirect ke console → "route not found"). Token dibuat
+ * di dashboard Settings → Access Tokens.
  */
 import type {
   EdgeRelayProvider,
@@ -28,10 +29,9 @@ import type {
 } from './types.js';
 
 const DENO_API = 'https://api.deno.com';
-const DENO_DEPLOY = 'https://deploy.deno.com';
 
 function authHeaders(token: string): Record<string, string> {
-  return { Authorization: `Bearer ${token}` };
+  return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 }
 
 /**
@@ -84,36 +84,27 @@ export default {
 };
 `;
 
-interface DenoUser {
-  id?: string;
-  name?: string;
-  email?: string;
-}
-
-interface DenoDeployResponse {
-  domain?: { id: string; domain: string }; // {project}.deno.dev
-  url?: string;
-  id?: string;
-  error?: { code?: string; message?: string } | string;
+interface DenoOrg {
+  id: string;
+  name: string;
+  slug: string;
 }
 
 interface DenoApiError {
   code?: string;
   message?: string;
-  errors?: Array<{ detail?: string }>;
+  errors?: Array<{ detail?: string; message?: string }>;
 }
 
-/** Bangun multipart body utk POST deploy.deno.com/v1/deployments. */
-function buildDeployForm(project: string, source: string): FormData {
-  const fd = new FormData();
-  // URL gambar / project config: klasik API terima import_map URL (opsional) +
-  // entrypoint source sbg file bernama sesuai (mis. relay.ts). Project name di
-  // field "project".
-  fd.append('project', project);
-  // Entrypoint: source code sbg file. Nama bebas tapi harus match main_module.
-  const blob = new Blob([source], { type: 'application/typescript' });
-  fd.append('file', blob, 'relay.ts');
-  return fd;
+interface DenoApp {
+  id?: string;
+  slug?: string;
+  domains?: string[];
+}
+
+interface DenoDeployResponse {
+  app?: { slug?: string; domains?: string[] };
+  domains?: string[];
 }
 
 export const denoProvider: EdgeRelayProvider = {
@@ -124,10 +115,10 @@ export const denoProvider: EdgeRelayProvider = {
   docsUrl: 'https://docs.deno.com/deploy/',
   status: 'active',
   configFields: [
-    { key: 'apiToken', label: 'Deno Deploy Access Token', type: 'password', placeholder: 'ddo_xxx...', required: true,
-      helper: 'Buat di https://dash.deno.com/account#access-tokens. Scope: Full Access atau project write.' },
-    { key: 'projectId', label: 'Project Name', type: 'text', placeholder: 'sibergate-relay', required: false,
-      helper: 'Nama project Deno Deploy. URL = {project}.deno.dev. Default: sibergate-relay.' },
+    { key: 'apiToken', label: 'Deno Deploy Access Token', type: 'password', placeholder: 'ddo_...', required: true,
+      helper: 'WAJIB organization token (prefix ddo_). Buat di dashboard Settings → Access Tokens. Personal token (ddp_) DITOLAK API v2.' },
+    { key: 'projectId', label: 'App Slug', type: 'text', placeholder: 'sibergate-relay', required: false,
+      helper: 'Nama app (slug). URL = {slug}.deno.dev. Default: sibergate-relay.' },
   ],
 
   validateConfig(config: Record<string, unknown>): string[] {
@@ -142,17 +133,26 @@ export const denoProvider: EdgeRelayProvider = {
   async verifyCredentials(config: Record<string, unknown>): Promise<VerifyResult> {
     const token = String(config.apiToken ?? '').trim();
     if (!token) return { ok: false, error: 'Access token kosong.' };
+    // Cek prefix: v2 API hanya terima organization token (ddo_). Personal token
+    // (ddp_) → redirect ke console → "route not found" (membingungkan user).
+    if (token.startsWith('ddp_')) {
+      return { ok: false, error: 'Token personal (ddp_) DITOLAK API v2. Buat organization token (ddo_) di dashboard.' };
+    }
     try {
-      const res = await fetch(`${DENO_API}/v2/users/self`, { headers: authHeaders(token) });
-      const j = (await res.json()) as DenoUser & DenoApiError;
+      const res = await fetch(`${DENO_API}/v2/organizations`, { headers: authHeaders(token) });
       if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as DenoApiError;
         const msg = j.message ?? j.code ?? `HTTP ${res.status}`;
         return { ok: false, error: `Token invalid: ${msg}` };
       }
-      const name = j.name ?? j.email ?? 'unknown';
-      config.accountId = j.id;
-      config.accountName = name;
-      return { ok: true, accountInfo: { accountId: j.id ?? '', name } };
+      const orgs = (await res.json()) as DenoOrg[];
+      if (!Array.isArray(orgs) || orgs.length === 0) {
+        return { ok: false, error: 'Token valid tapi tidak ada organization. Buat organization di dashboard Deno.' };
+      }
+      const org = orgs[0]!;
+      config.accountId = org.id;
+      config.accountName = org.name;
+      return { ok: true, accountInfo: { accountId: org.id, name: org.name } };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
@@ -160,34 +160,59 @@ export const denoProvider: EdgeRelayProvider = {
 
   async deploy(config: Record<string, unknown>): Promise<DeployResult> {
     const token = String(config.apiToken ?? '').trim();
-    const projectId = String(config.projectId || 'sibergate-relay').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const slug = String(config.projectId || 'sibergate-relay').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
     if (!token) return { ok: false, error: 'Access token kosong.' };
-    if (!projectId) return { ok: false, error: 'Project name kosong.' };
+    if (token.startsWith('ddp_')) {
+      return { ok: false, error: 'Token personal (ddp_) DITOLAK API v2. Buat organization token (ddo_).' };
+    }
+    if (!slug) return { ok: false, error: 'App slug kosong.' };
 
     try {
-      // Klasik single-file deploy API. Multipart: project + source file.
-      // Endpoint menerima Authorization header (bukan cookie).
-      const fd = buildDeployForm(projectId, RELAY_SCRIPT);
-      const res = await fetch(`${DENO_DEPLOY}/v1/deployments`, {
+      // 1. Create app (idempoten — 409 bila sudah ada, lanjut).
+      const appRes = await fetch(`${DENO_API}/v2/apps`, {
         method: 'POST',
-        headers: { ...authHeaders(token) },
-        body: fd,
+        headers: authHeaders(token),
+        body: JSON.stringify({ slug }),
       });
-      const raw = await res.text();
-      let j: DenoDeployResponse & DenoApiError;
-      try {
-        j = JSON.parse(raw) as DenoDeployResponse & DenoApiError;
-      } catch {
-        j = { message: raw.slice(0, 200) };
+      // 409 = app sudah ada → OK, lanjut deploy. Error lain = gagal.
+      if (!appRes.ok && appRes.status !== 409) {
+        const j = (await appRes.json().catch(() => ({}))) as DenoApiError;
+        const msg = j.message ?? j.code ?? `HTTP ${appRes.status}`;
+        return { ok: false, error: `Buat app gagal: ${msg}` };
       }
-      if (!res.ok || j.error) {
-        const errDetail = typeof j.error === 'string' ? j.error : j.error?.message ?? j.message ?? `HTTP ${res.status}`;
-        return { ok: false, error: `Deploy gagal: ${errDetail}` };
+
+      // 2. Deploy: POST /v2/apps/{slug}/deploy dgn assets inline + config runtime.
+      // v2 model: assets = map filename → {kind:'file', encoding:'utf-8', content}.
+      // config.runtime = {type:'dynamic', entrypoint}. URL = {slug}.deno.dev.
+      const deployRes = await fetch(`${DENO_API}/v2/apps/${slug}/deploy`, {
+        method: 'POST',
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          assets: {
+            'main.ts': {
+              kind: 'file',
+              encoding: 'utf-8',
+              content: RELAY_SCRIPT,
+            },
+          },
+          config: {
+            runtime: {
+              type: 'dynamic',
+              entrypoint: 'main.ts',
+            },
+          },
+        }),
+      });
+      if (!deployRes.ok) {
+        const raw = await deployRes.text();
+        let j: DenoApiError;
+        try { j = JSON.parse(raw) as DenoApiError; } catch { j = { message: raw.slice(0, 200) }; }
+        const msg = j.message ?? j.code ?? `HTTP ${deployRes.status}`;
+        return { ok: false, error: `Deploy gagal: ${msg}` };
       }
-      // URL = {project}.deno.dev (stabil). Response j.domain.domain juga bisa.
-      const relayUrl = `https://${projectId}.deno.dev`;
+      const relayUrl = `https://${slug}.deno.dev`;
       config.relayUrl = relayUrl;
-      config.projectId = projectId;
+      config.projectId = slug;
       return { ok: true, relayUrl };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
@@ -196,12 +221,12 @@ export const denoProvider: EdgeRelayProvider = {
 
   async remove(config: Record<string, unknown>): Promise<RemoveResult> {
     const token = String(config.apiToken ?? '').trim();
-    const projectId = String(config.projectId || 'sibergate-relay').trim().toLowerCase();
-    if (!token || !projectId) return { ok: false, error: 'Config tidak lengkap.' };
+    const slug = String(config.projectId ?? 'sibergate-relay').trim().toLowerCase();
+    if (!token || !slug) return { ok: false, error: 'Config tidak lengkap.' };
     try {
-      const res = await fetch(`${DENO_API}/v2/projects/${projectId}`, {
+      const res = await fetch(`${DENO_API}/v2/apps/${slug}`, {
         method: 'DELETE',
-        headers: { ...authHeaders(token), 'Content-Type': 'application/json' },
+        headers: authHeaders(token),
       });
       if (res.status === 404) return { ok: true };
       if (!res.ok) {
