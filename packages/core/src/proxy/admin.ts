@@ -136,6 +136,8 @@ export interface PoolMemberInput {
   type?: import('./types.js').MemberType;
   /** Untuk edge-relay: id provider (mis. 'cloudflare-workers'). */
   edgeProvider?: string;
+  /** Untuk edge-relay: reference ke edge_relays.id (standalone relay entity). */
+  edgeRelayId?: string;
   /** Untuk edge-relay: config (token, dll) — di-encrypt sebelum disimpan. */
   edgeConfig?: Record<string, unknown>;
   /** Untuk edge-relay: relay URL (worker URL setelah deploy). */
@@ -190,29 +192,37 @@ export function addPoolMember(poolId: string, input: PoolMemberInput): ProxyPool
   const type = input.type ?? 'http-proxy';
 
   if (type === 'edge-relay') {
-    // Edge relay: tidak butuh proxyUrl (diisi setelah deploy). Validasi via provider.
+    // Edge relay: reference edge_relay_id. Copy relay_url dari edge_relays
+    // supaya resolver & health-check langsung tahu URL relay (tanpa lookup
+    // terpisah setiap request).
     const provider = input.edgeProvider;
     if (!provider) throw new ValidationError('edgeProvider wajib untuk tipe edge-relay.');
-    // edge_config di-encrypt bila ada (token, dll).
-    let edgeConfigBlob: string | null = null;
-    if (input.edgeConfig && Object.keys(input.edgeConfig).length > 0) {
-      edgeConfigBlob = JSON.stringify(encryptJSON(input.edgeConfig));
-    }
+    const edgeRelayId = input.edgeRelayId ?? '';
+    if (!edgeRelayId) throw new ValidationError('edgeRelayId wajib untuk tipe edge-relay.');
+    // Lookup relay URL + healthy dari edge_relays.
+    const relayRow = getDb().prepare('SELECT relay_url, healthy FROM edge_relays WHERE id = ?').get(edgeRelayId) as
+      | { relay_url: string | null; healthy: number }
+      | undefined;
+    if (!relayRow) throw new ValidationError(`Edge relay '${edgeRelayId}' tidak ditemukan.`);
+    const relayUrl = relayRow.relay_url ?? '';
+    const healthy = relayRow.healthy;
     const result = getDb()
       .prepare(
-        `INSERT INTO proxy_pool_members (pool_id, proxy_url, label, weight, enabled, healthy, type, edge_provider, edge_config, relay_url)
-         VALUES (@poolId, @proxyUrl, @label, @weight, @enabled, 1, @type, @edgeProvider, @edgeConfig, @relayUrl)`,
+        `INSERT INTO proxy_pool_members (pool_id, proxy_url, label, weight, enabled, healthy, type, edge_provider, edge_config, relay_url, edge_relay_id)
+         VALUES (@poolId, @proxyUrl, @label, @weight, @enabled, @healthy, @type, @edgeProvider, @edgeConfig, @relayUrl, @edgeRelayId)`,
       )
       .run({
         poolId,
-        proxyUrl: input.proxyUrl ?? '',
+        proxyUrl: relayUrl,
         label: input.label ?? null,
         weight: Math.max(1, input.weight ?? 1),
         enabled: input.enabled === false ? 0 : 1,
+        healthy,
         type,
         edgeProvider: provider,
-        edgeConfig: edgeConfigBlob,
-        relayUrl: input.relayUrl ?? null,
+        edgeConfig: null,
+        relayUrl: relayUrl || null,
+        edgeRelayId,
       });
     return getPoolMember(Number(result.lastInsertRowid))!;
   }
