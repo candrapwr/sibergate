@@ -1002,7 +1002,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       const taskId = taskBody.data.task_id;
       const pollUrl = buildPollUrl(provider, taskId);
       // Async image poll juga lewat proxy bila provider di-bind (konsisten dgn call awal).
-      const resolvedPoll = resolveProxy(servedBy.providerId);
+      const resolvedPoll = resolveProxy(servedBy.providerId, route.id);
       let pollDispatcher: unknown;
       if (resolvedPoll) {
         try {

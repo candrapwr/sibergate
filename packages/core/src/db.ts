@@ -373,6 +373,36 @@ function migrate(db: DB): void {
   addColumnIfMissing(db, 'proxy_pool_members', 'edge_provider', 'TEXT');   // 'cloudflare-workers' | ...
   addColumnIfMissing(db, 'proxy_pool_members', 'edge_config', 'TEXT');     // encrypted JSON blob
   addColumnIfMissing(db, 'proxy_pool_members', 'relay_url', 'TEXT');       // deployed worker URL
+  addColumnIfMissing(db, 'proxy_pool_members', 'edge_relay_id', 'TEXT');   // FK edge_relays.id (standalone relay)
+
+  // ── Edge Relays standalone entity (deploy sekali, reuse di pool mana saja) ──
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS edge_relays (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      type          TEXT NOT NULL DEFAULT 'cloudflare-workers',
+      label         TEXT,
+      config        TEXT,          -- encrypted JSON (apiToken, accountId, scriptName)
+      relay_url     TEXT,          -- deployed Worker URL
+      healthy       INTEGER NOT NULL DEFAULT 0,
+      country       TEXT,
+      last_check_at TEXT,
+      enabled       INTEGER NOT NULL DEFAULT 1,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // ── Route → Pool binding (pool bisa bind ke route, bukan hanya provider) ──
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS route_proxy_pools (
+      route_id   TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+      pool_id    TEXT NOT NULL REFERENCES proxy_pools(id) ON DELETE CASCADE,
+      enabled    INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (route_id, pool_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_route_proxy_pools_pool ON route_proxy_pools(pool_id);
+  `);
 }
 
 /**

@@ -9,13 +9,18 @@
  *
  * Dipanggil per-target di engine loop. Selector + health state cached in-memory.
  */
-import { getActivePoolForProvider, listPoolMembers, getProxyPool } from './admin.js';
+import { getActivePoolForProvider, getActivePoolForRoute, listPoolMembers, getProxyPool } from './admin.js';
 import { selectMember } from './selector.js';
 import type { ResolvedProxy } from './types.js';
 
-/** Resolve proxy utk provider. Null = direct fetch (tidak ada binding/pool/member eligible). */
-export function resolveProxy(providerId: string): ResolvedProxy | null {
-  const active = getActivePoolForProvider(providerId);
+/**
+ * Resolve proxy utk provider (opsional routeId utk route binding).
+ * Prioritas: route binding > provider binding > direct.
+ * Null = direct fetch.
+ */
+export function resolveProxy(providerId: string, routeId?: string): ResolvedProxy | null {
+  // Route binding prioritas #1 (kalau routeId diberikan).
+  const active = (routeId ? getActivePoolForRoute(routeId) : null) ?? getActivePoolForProvider(providerId);
   if (!active) return null; // provider tidak bind ke pool manapun
   const pool = getProxyPool(active.poolId);
   if (!pool || !pool.enabled) return null;
