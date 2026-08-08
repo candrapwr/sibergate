@@ -17,9 +17,6 @@ import {
   useBindProvider,
   useUnbindProvider,
   useProviders,
-  useVerifyEdgeMember,
-  useDeployEdgeMember,
-  useRemoveEdgeDeployment,
   useEdgeRelays,
   useRouteBindings,
   useBindRoute,
@@ -417,7 +414,6 @@ function MembersSection({ poolId }: { poolId: string }) {
 
 function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolId: string; onDelete: () => void; testMut: ReturnType<typeof useTestPoolMember> }) {
   const [result, setResult] = useState<{ ok: boolean; latencyMs: number; exitIp: string | null; geo: { country: string; flag: string } | null; error?: string } | null>(null);
-  const [showEdge, setShowEdge] = useState(false);
   const testing = testMut.isPending && testMut.variables === m.id;
   const isEdge = m.type === 'edge-relay';
 
@@ -446,11 +442,6 @@ function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolI
             {m.label ? ` · ${m.label}` : ''} {m.exitIp && !isEdge ? `· ${m.exitIp}` : ''} {m.country && !isEdge ? `· ${m.country}` : ''}
           </div>
         </div>
-        {isEdge && m.relayUrl && (
-          <Button type="button" variant="ghost" size="sm" onClick={() => setShowEdge(!showEdge)} title="Edge deploy panel">
-            {showEdge ? 'Hide' : 'Setup'}
-          </Button>
-        )}
         <Button type="button" variant="ghost" size="sm" disabled={testing || (isEdge && !m.relayUrl)} onClick={runTest} title="Test connectivity">
           {testing ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Test
         </Button>
@@ -474,103 +465,17 @@ function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolI
           )}
         </div>
       )}
-      {/* Edge setup panel (verify/deploy/delete) */}
-      {isEdge && showEdge && m.relayUrl && <EdgeMemberPanel m={m} poolId={poolId} />}
-      {isEdge && !m.relayUrl && <EdgeSetupNeeded m={m} poolId={poolId} />}
+      {/* Edge member: deploy/setup dikelola di halaman Edge Relays, bukan di sini */}
+      {isEdge && !m.relayUrl && (
+        <div className="mt-1.5 text-[10px] text-muted-foreground">
+          Relay belum deploy. Setup di menu <a href="/edge-relays" className="text-primary hover:underline">Edge Relays</a>.
+        </div>
+      )}
     </div>
   );
 }
 
 /** Panel edge relay utk member belum di-deploy — verify + deploy. */
-function EdgeSetupNeeded({ m, poolId }: { m: ProxyPoolMember; poolId: string }) {
-  const verify = useVerifyEdgeMember(poolId);
-  const deploy = useDeployEdgeMember(poolId);
-  const [token, setToken] = useState('');
-  const [accountId, setAccountId] = useState('');
-  const [scriptName, setScriptName] = useState('sibergate-relay');
-  return (
-    <div className="mt-2 space-y-1.5 rounded border border-primary/30 bg-primary/5 p-2 text-[11px]">
-      <p className="text-muted-foreground">Worker belum di-deploy. Isi token + account ID, verify, lalu deploy.</p>
-      <Input value={token} onChange={(e) => setToken(e.target.value)} placeholder="Cloudflare API Token" type="password" className="text-[12px]" autoComplete="off" />
-      <Input value={accountId} onChange={(e) => setAccountId(e.target.value.trim())} placeholder="Account ID (mis. e8f516fcd3a8...)" className="text-[12px] font-mono" />
-      <Input value={scriptName} onChange={(e) => setScriptName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="script name" className="text-[12px] font-mono" />
-      <div className="flex gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={!token.trim() || verify.isPending}
-          onClick={async () => {
-            try {
-              const r = await verify.mutateAsync({ memberId: m.id, config: { apiToken: token, scriptName, accountId } });
-              if (r.ok && r.accountInfo) {
-                setAccountId((r.accountInfo as { accountId: string }).accountId);
-                toast.success('Token valid (' + (r.accountInfo as { name: string }).name + ')');
-              } else if (r.ok) {
-                toast.success('Token valid');
-              } else {
-                toast.error(r.error ?? 'Verify failed');
-              }
-            } catch (err) {
-              toast.error((err as Error).message);
-            }
-          }}
-        >
-          {verify.isPending ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />} Verify
-        </Button>
-        <Button type="button" variant="default" size="sm" disabled={!token.trim() || !accountId.trim() || deploy.isPending}
-          onClick={async () => {
-            try {
-              // Deploy dgn config lengkap dari form (token + accountId + scriptName).
-              // Sama spt 9router: kirim keduanya bersamaan.
-              const r = await deploy.mutateAsync({ memberId: m.id, config: { apiToken: token, accountId, scriptName } });
-              if (r.ok && r.relayUrl) toast.success('Worker deployed: ' + r.relayUrl);
-              else toast.error(r.error ?? 'Deploy failed');
-            } catch (err) {
-              toast.error((err as Error).message);
-            }
-          }}
-        >
-          {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Deploy
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-/** Panel edge relay utk member sudah di-deploy — redeploy / delete deployment. */
-function EdgeMemberPanel({ m, poolId }: { m: ProxyPoolMember; poolId: string }) {
-  const deploy = useDeployEdgeMember(poolId);
-  const remove = useRemoveEdgeDeployment(poolId);
-  return (
-    <div className="mt-2 space-y-1.5 rounded border border-border/60 bg-secondary/10 p-2 text-[11px]">
-      <div className="break-all font-mono text-[10px] text-muted-foreground">URL: {m.relayUrl}</div>
-      <div className="flex gap-2">
-        <Button type="button" variant="outline" size="sm" disabled={deploy.isPending}
-          onClick={async () => {
-            try {
-              const r = await deploy.mutateAsync({ memberId: m.id });
-              r.ok ? toast.success('Redeployed') : toast.error(r.error ?? 'Failed');
-            } catch (err) {
-              toast.error((err as Error).message);
-            }
-          }}
-        >
-          {deploy.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Redeploy
-        </Button>
-        <Button type="button" variant="ghost" size="sm" disabled={remove.isPending}
-          onClick={async () => {
-            try {
-              const r = await remove.mutateAsync(m.id);
-              r.ok ? toast.success('Worker removed') : toast.error(r.error ?? 'Failed');
-            } catch (err) {
-              toast.error((err as Error).message);
-            }
-          }}
-        >
-          {remove.isPending ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Remove Worker
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 /** Dropdown pilih edge relay existing (deploy terpisah). */
 function EdgeRelayDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const { data } = useEdgeRelays();
