@@ -42,46 +42,44 @@ function authHeaders(token: string): Record<string, string> {
 const RELAY_SCRIPT = `// SiberGate Edge Relay (Deno Deploy) — transparent forward.
 // 1 script serve semua provider & modality. Deploy otomatis oleh SiberGate.
 // @ts-nocheck
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const u = new URL(request.url);
-    // Health check endpoint (dipakai SiberGate utk test connectivity).
-    if (u.pathname === '/__health') {
-      return new Response(JSON.stringify({ ok: true, ts: Date.now() }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    const target = request.headers.get('x-relay-target');
-    if (!target) {
-      return new Response(JSON.stringify({ error: 'Missing x-relay-target header' }), {
-        status: 400,
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-    // Bangun URL tujuan: target origin + path + query asli.
-    const targetUrl = target.replace(/\\/+$/, '') + u.pathname + u.search;
-    // Forward request apa adanya. Hapus header relay/host.
-    const headers = new Headers(request.headers);
-    headers.delete('x-relay-target');
-    headers.delete('host');
-    const init: RequestInit = { method: request.method, headers };
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      init.body = request.body;
-      // @ts-ignore — duplex required utk streaming body.
-      init.duplex = 'half';
-    }
-    try {
-      const res = await fetch(targetUrl, init);
-      // Return response verbatim (streaming SSE tetap jalan).
-      return new Response(res.body, { status: res.status, headers: res.headers });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: 'Upstream fetch failed: ' + ((e as Error)?.message || e) }), {
-        status: 502,
-        headers: { 'content-type': 'application/json' },
-      });
-    }
-  },
-};
+Deno.serve(async (request: Request): Promise<Response> => {
+  const u = new URL(request.url);
+  // Health check endpoint (dipakai SiberGate utk test connectivity).
+  if (u.pathname === '/__health') {
+    return new Response(JSON.stringify({ ok: true, ts: Date.now() }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  const target = request.headers.get('x-relay-target');
+  if (!target) {
+    return new Response(JSON.stringify({ error: 'Missing x-relay-target header' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  // Bangun URL tujuan: target origin + path + query asli.
+  const targetUrl = target.replace(/\\/+$/, '') + u.pathname + u.search;
+  // Forward request apa adanya. Hapus header relay/host.
+  const headers = new Headers(request.headers);
+  headers.delete('x-relay-target');
+  headers.delete('host');
+  const init: RequestInit = { method: request.method, headers };
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    init.body = request.body;
+    // @ts-ignore — duplex required utk streaming body.
+    init.duplex = 'half';
+  }
+  try {
+    const res = await fetch(targetUrl, init);
+    // Return response verbatim (streaming SSE tetap jalan).
+    return new Response(res.body, { status: res.status, headers: res.headers });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: 'Upstream fetch failed: ' + ((e as Error)?.message || e) }), {
+      status: 502,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+});
 `;
 
 interface DenoApiError {
@@ -178,11 +176,13 @@ export const denoProvider: EdgeRelayProvider = {
 
       // 2. Deploy: POST /v2/apps/{slug}/deploy dgn assets inline + config runtime.
       // v2 model: assets = map filename → {kind:'file', encoding:'utf-8', content}.
-      // config.runtime = {type:'dynamic', entrypoint}. URL = {slug}.deno.dev.
+      // config.runtime = {type:'dynamic', entrypoint}. production:true promote
+      // revision ke production timeline shg {slug}.deno.dev langsung route.
       const deployRes = await fetch(`${DENO_API}/v2/apps/${slug}/deploy`, {
         method: 'POST',
         headers: authHeaders(token),
         body: JSON.stringify({
+          production: true,
           assets: {
             'main.ts': {
               kind: 'file',
