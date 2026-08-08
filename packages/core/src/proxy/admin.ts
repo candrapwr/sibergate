@@ -426,3 +426,43 @@ export function getActivePoolForProvider(providerId: string): { poolId: string }
     .get(providerId) as { pool_id: string } | undefined;
   return row ? { poolId: row.pool_id } : null;
 }
+
+/** Ambil pool aktif utk route (route binding — prioritas lebih tinggi dari provider). */
+export function getActivePoolForRoute(routeId: string): { poolId: string } | null {
+  const row = getDb()
+    .prepare(
+      `SELECT rp.pool_id as pool_id
+       FROM route_proxy_pools rp
+       JOIN proxy_pools p ON p.id = rp.pool_id
+       WHERE rp.route_id = ? AND rp.enabled = 1 AND p.enabled = 1
+       LIMIT 1`,
+    )
+    .get(routeId) as { pool_id: string } | undefined;
+  return row ? { poolId: row.pool_id } : null;
+}
+
+/* ──────────────────────── Route bindings ───────────────────────── */
+
+export function listRouteBindings(poolId: string): Array<{ routeId: string; poolId: string; enabled: boolean }> {
+  return (getDb()
+    .prepare('SELECT * FROM route_proxy_pools WHERE pool_id = ? ORDER BY route_id')
+    .all(poolId) as Array<{ route_id: string; pool_id: string; enabled: number }>).map((r) => ({
+      routeId: r.route_id,
+      poolId: r.pool_id,
+      enabled: r.enabled === 1,
+    }));
+}
+
+export function bindRouteToPool(routeId: string, poolId: string, enabled = true): void {
+  if (!getProxyPool(poolId)) throw new ValidationError(`Proxy pool '${poolId}' not found.`);
+  getDb()
+    .prepare(
+      `INSERT INTO route_proxy_pools (route_id, pool_id, enabled) VALUES (@routeId, @poolId, @enabled)
+       ON CONFLICT(route_id, pool_id) DO UPDATE SET enabled = @enabled`,
+    )
+    .run({ routeId, poolId, enabled: enabled ? 1 : 0 });
+}
+
+export function unbindRouteFromPool(routeId: string, poolId: string): void {
+  getDb().prepare('DELETE FROM route_proxy_pools WHERE route_id = ? AND pool_id = ?').run(routeId, poolId);
+}

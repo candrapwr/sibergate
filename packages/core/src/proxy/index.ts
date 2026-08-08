@@ -82,6 +82,10 @@ export {
   bindProviderToPool,
   unbindProviderFromPool,
   getActivePoolForProvider,
+  getActivePoolForRoute,
+  listRouteBindings,
+  bindRouteToPool,
+  unbindRouteFromPool,
   getMemberEdgeConfig,
   setMemberEdgeConfig,
   setMemberRelayUrl,
@@ -91,6 +95,22 @@ export {
   type ProxyPoolInput,
   type PoolMemberInput,
 } from './admin.js';
+
+// Edge relays standalone CRUD (deploy sekali, reuse).
+export {
+  createEdgeRelay,
+  updateEdgeRelay,
+  getEdgeRelay,
+  listEdgeRelays,
+  deleteEdgeRelay,
+  getRelayConfig,
+  verifyEdgeRelay,
+  deployEdgeRelay,
+  removeEdgeRelayDeployment,
+  testEdgeRelay,
+  type EdgeRelay,
+  type EdgeRelayInput,
+} from './edge-relay-admin.js';
 
 // Logging (dipakai engine + admin).
 export { pushProxyLog, recentProxyLogs, clearProxyLogs } from './log.js';

@@ -184,7 +184,7 @@ export async function executeRoute(
     let dispatcher: unknown;
     let relay: { url: string; injectHeaders: Record<string, string> } | undefined;
     let proxyResolved: { poolId: string; memberId: number; country: string | null; type: string } | null = null;
-    const resolved = resolveProxy(target.providerId);
+    const resolved = resolveProxy(target.providerId, route.id);
     if (resolved) {
       try {
         // providerOrigin = baseUrl provider utk x-relay-target header (edge only).
