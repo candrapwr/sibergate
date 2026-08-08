@@ -411,17 +411,35 @@ Mengapa ini berguna?
 
 ### Cara pakai — Edge Relay (Cloudflare Workers)
 
-1. **Admin → Proxy Layer → New pool** → add member tipe **"Edge Relay"**.
-2. Isi **Cloudflare API Token** + **Worker script name**.
-3. Klik **Verify** → gateway cek token ke CF API, auto-detect account ID.
-4. Klik **Deploy** → gateway auto-deploy transparent-relay Worker ke akun CF Anda.
-   Dapat URL `https://<script>.<subdomain>.workers.dev`.
-5. Bind provider ke pool → request otomatis rewrite URL ke Worker + inject
-   `x-relay-target` header. Worker forward ke provider, return response.
+**Edge Relay sekarang entitas terpisah** — deploy sekali, reuse di pool mana
+saja. Tidak perlu setup ulang di setiap pool.
+
+1. **Admin → Edge Relays → New relay** — isi id, nama, pilih tipe
+   (Cloudflare Workers aktif; Vercel/Deno/Netlify/AWS coming soon).
+2. Klik **Deploy** di row relay → buka modal → isi **CF API Token** →
+   **Verify** (auto-detect account ID) → **Deploy**.
+   Worker ter-upload, dapat URL `https://<script>.<subdomain>.workers.dev`.
+3. **Admin → Proxy Layer → New pool** → add member tipe **"Edge Relay"** →
+   **pilih relay** dari dropdown (relay yg sudah deploy) → weight.
+4. Bind provider/route ke pool (lihat bawah).
 
 > ⚠️ **Token CF**: gunakan template **"Edit Cloudflare Workers"** di dashboard
 > CF (My Profile → API Tokens). Token harus punya permission **Account-level**
 > "Workers Scripts: Edit" — **bukan** Zone-level. Token zone-scoped akan 403.
+
+### Binding: Provider vs Route
+
+Pool bisa di-bind ke **provider** dan/atau **route**:
+
+- **Provider binding** (tab Providers di pool edit):
+  "semua request ke provider 'openai' lewat proxy."
+  Berlaku utk SEMUA route yg menargetkan provider tsb.
+- **Route binding** (tab Routes di pool edit):
+  "route 'gemini-chat' lewat proxy — regardless provider mana yg serve."
+  Cocok utk route dgn failover cross-vendor: semua target di route tsb lewat
+  proxy, walau provider berganti (mis. Gemini → OpenRouter → DeepSeek).
+- **Prioritas**: route binding > provider binding. Bila keduanya bind, route
+  binding menang.
 
 ### Deteksi negara (GeoIP)
 
@@ -437,12 +455,15 @@ mmdb. File di-download on-demand:
 ### Arsitektur
 
 ```
-Client → Route → Engine → resolveProxy(providerId)
-                          ↓ (provider bind ke pool aktif?)
+Client → Route → Engine → resolveProxy(providerId, routeId)
+                          ↓
+              ┌─ Route binding (route_proxy_pools) ── prioritas #1
+              └─ Provider binding (provider_proxy_pools) ── prioritas #2
+                          ↓ (pool aktif ditemukan?)
                      selectMember (weight/health)
                           ↓
               ┌─────────────┴──────────────┐
-              ↓ HTTP/SOCKS                 ↓ Edge Relay
+              ↓ HTTP/SOCKS                 ↓ Edge Relay (dari Edge Relays page)
         ProxyAgent (dispatcher)     URL rewrite + x-relay-target header
               ↓                            ↓
         fetch(url, {dispatcher})     fetch(workerURL, {headers})
@@ -462,7 +483,8 @@ proxy tidak dipakai (`dispatcher` undefined = direct fetch).
   log.
 - `strictProxy` (rencana): bila true, request gagal total saat semua member
   unhealthy. Default false → fallback direct.
-- Edge relay proxy (Vercel/Cloudflare/Deno, konsep URL-rewrite) = phase 2.
+- Edge relay providers lain (Vercel Edge Functions, Deno Deploy, Netlify Edge,
+  AWS Lambda@Edge) = coming soon. Framework registry sudah siap (+1 file impl).
 
 ---
 

@@ -399,18 +399,36 @@ Why is this useful?
 
 ### How to use — Edge Relay (Cloudflare Workers)
 
-1. **Admin → Proxy Layer → New pool** → add member type **"Edge Relay"**.
-2. Fill in **Cloudflare API Token** + **Worker script name**.
-3. Click **Verify** → gateway checks token via CF API, auto-detects account ID.
-4. Click **Deploy** → gateway auto-deploys a transparent-relay Worker to your CF
-   account. Gets URL `https://<script>.<subdomain>.workers.dev`.
-5. Bind provider to pool → requests automatically rewrite URL to Worker +
-   inject `x-relay-target` header. Worker forwards to provider, returns response.
+**Edge Relays are now a standalone entity** — deploy once, reuse across pools.
+No need to set up again in every pool.
+
+1. **Admin → Edge Relays → New relay** — fill in id, name, select type
+   (Cloudflare Workers active; Vercel/Deno/Netlify/AWS coming soon).
+2. Click **Deploy** on the relay row → opens modal → fill in **CF API Token** →
+   **Verify** (auto-detects account ID) → **Deploy**.
+   Worker is uploaded, gets URL `https://<script>.<subdomain>.workers.dev`.
+3. **Admin → Proxy Layer → New pool** → add member type **"Edge Relay"** →
+   **select relay** from dropdown (already deployed relay) → weight.
+4. Bind provider/route to pool (see below).
 
 > ⚠️ **CF Token**: use the **"Edit Cloudflare Workers"** template in the CF
 > dashboard (My Profile → API Tokens). Token must have **Account-level**
 > "Workers Scripts: Edit" permission — **not** Zone-level. Zone-scoped tokens
 > will get 403.
+
+### Binding: Provider vs Route
+
+Pools can be bound to **providers** and/or **routes**:
+
+- **Provider binding** (Providers tab in pool edit):
+  "all requests to provider 'openai' go through proxy."
+  Applies to ALL routes targeting that provider.
+- **Route binding** (Routes tab in pool edit):
+  "route 'gemini-chat' goes through proxy — regardless of which provider serves."
+  Ideal for routes with cross-vendor failover: all targets in that route go
+  through proxy, even as provider changes (e.g. Gemini → OpenRouter → DeepSeek).
+- **Priority**: route binding > provider binding. If both are bound, route
+  binding wins.
 
 ### Country detection (GeoIP)
 
@@ -426,12 +444,15 @@ GeoLite2-Country** mmdb. The file is downloaded on-demand:
 ### Architecture
 
 ```
-Client → Route → Engine → resolveProxy(providerId)
-                          ↓ (provider bound to active pool?)
+Client → Route → Engine → resolveProxy(providerId, routeId)
+                          ↓
+              ┌─ Route binding (route_proxy_pools) ── priority #1
+              └─ Provider binding (provider_proxy_pools) ── priority #2
+                          ↓ (active pool found?)
                      selectMember (weight/health)
                           ↓
               ┌─────────────┴──────────────┐
-              ↓ HTTP/SOCKS                 ↓ Edge Relay
+              ↓ HTTP/SOCKS                 ↓ Edge Relay (from Edge Relays page)
         ProxyAgent (dispatcher)     URL rewrite + x-relay-target header
               ↓                            ↓
         fetch(url, {dispatcher})     fetch(workerURL, {headers})
@@ -451,7 +472,8 @@ change** when no proxy is used (`dispatcher` undefined = direct fetch).
   redacted in logs.
 - `strictProxy` (planned): when true, a request fails hard if all members are
   unhealthy. Defaults to false → falls back to direct.
-- Edge relay proxies (Vercel/Cloudflare/Deno, a URL-rewrite concept) = phase 2.
+- Other edge relay providers (Vercel Edge Functions, Deno Deploy, Netlify Edge,
+  AWS Lambda@Edge) = coming soon. Registry framework is ready (+1 file impl).
 
 ---
 
