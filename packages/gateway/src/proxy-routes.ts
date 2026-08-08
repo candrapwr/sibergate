@@ -27,6 +27,18 @@ import {
   verifyEdgeCredentials,
   deployEdgeMember,
   removeEdgeDeployment,
+  listRouteBindings,
+  bindRouteToPool,
+  unbindRouteFromPool,
+  createEdgeRelay,
+  updateEdgeRelay,
+  getEdgeRelay,
+  listEdgeRelays,
+  deleteEdgeRelay,
+  verifyEdgeRelay,
+  deployEdgeRelay,
+  removeEdgeRelayDeployment,
+  testEdgeRelay,
   type ProxyPool,
   type ProxyPoolMember,
 } from '@sibergate/core';
@@ -194,6 +206,67 @@ export function createProxyAdminRouter(configStore: ConfigStore) {
     const body = await c.req.json().catch(() => ({})) as { url?: string };
     const result = await downloadGeoIpDb(body.url);
     pushConsoleLog(result.ok ? 'success' : 'error', 'proxy', `GeoIP DB ${result.ok ? 'updated' : 'update failed'}`, { ...result });
+    return c.json(result, result.ok ? 200 : 400);
+  });
+
+  /* ──────────────────────── Route bindings ────────────────────── */
+  app.get('/pools/:id/route-bindings', (c) => {
+    if (!getProxyPool(c.req.param('id'))) return c.json(notFound('pool'), 404);
+    return c.json({ data: listRouteBindings(c.req.param('id')) });
+  });
+  app.post('/pools/:id/route-bindings', async (c) => {
+    const body = await c.req.json();
+    bindRouteToPool(body.routeId, c.req.param('id'), body.enabled !== false);
+    reload();
+    return c.json({ ok: true });
+  });
+  app.delete('/pools/:id/route-bindings/:routeId', (c) => {
+    unbindRouteFromPool(c.req.param('routeId'), c.req.param('id'));
+    reload();
+    return c.json({ ok: true });
+  });
+
+  /* ──────────────────────── Edge Relays (standalone) ───────────── */
+  app.get('/edge-relays', (c) => c.json({ data: listEdgeRelays() }));
+  app.post('/edge-relays', async (c) => {
+    const body = await c.req.json();
+    const created = createEdgeRelay(body);
+    reload();
+    return c.json(created, 201);
+  });
+  app.get('/edge-relays/:id', (c) => {
+    const r = getEdgeRelay(c.req.param('id'));
+    return r ? c.json(r) : c.json(notFound('edge relay'), 404);
+  });
+  app.patch('/edge-relays/:id', async (c) => {
+    const body = await c.req.json();
+    const updated = updateEdgeRelay(c.req.param('id'), body);
+    if (!updated) return c.json(notFound('edge relay'), 404);
+    reload();
+    return c.json(updated);
+  });
+  app.delete('/edge-relays/:id', (c) => {
+    const ok = deleteEdgeRelay(c.req.param('id'));
+    if (!ok) return c.json(notFound('edge relay'), 404);
+    reload();
+    return c.json({ ok: true });
+  });
+  app.post('/edge-relays/:id/verify', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { config?: Record<string, unknown> };
+    const result = await verifyEdgeRelay(c.req.param('id'), body.config ?? {});
+    return c.json(result, result.ok ? 200 : 400);
+  });
+  app.post('/edge-relays/:id/deploy', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { config?: Record<string, unknown> };
+    const result = await deployEdgeRelay(c.req.param('id'), body.config);
+    return c.json(result, result.ok ? 200 : 400);
+  });
+  app.delete('/edge-relays/:id/deploy', async (c) => {
+    const result = await removeEdgeRelayDeployment(c.req.param('id'));
+    return c.json(result, result.ok ? 200 : 400);
+  });
+  app.post('/edge-relays/:id/test', async (c) => {
+    const result = await testEdgeRelay(c.req.param('id'));
     return c.json(result, result.ok ? 200 : 400);
   });
 

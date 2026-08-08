@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Plus, Trash2, Pencil, Network, Globe, Activity, Zap, CheckCircle2, XCircle, Loader2, ExternalLink } from 'lucide-react';
+import { Plus, Trash2, Pencil, Network, Globe, Activity, Zap, CheckCircle2, XCircle, Loader2, ExternalLink, Route } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   useProxyPools,
@@ -20,6 +20,11 @@ import {
   useVerifyEdgeMember,
   useDeployEdgeMember,
   useRemoveEdgeDeployment,
+  useEdgeRelays,
+  useRouteBindings,
+  useBindRoute,
+  useUnbindRoute,
+  useRoutes,
 } from '@/lib/queries';
 import type { ProxyPool, ProxyPoolMember, ProxyStrategy } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -185,6 +190,7 @@ function EditPoolButton({ pool }: { pool: ProxyPool }) {
     >
       <MembersSection poolId={pool.id} />
       <BindingsSection poolId={pool.id} />
+      <RouteBindingsSection poolId={pool.id} />
     </PoolFormDialog>
   );
 }
@@ -322,11 +328,10 @@ function MembersSection({ poolId }: { poolId: string }) {
   const [pass, setPass] = useState('');
   const [label, setLabel] = useState('');
   const [weight, setWeight] = useState(1);
-  // Edge form state
-  const [cfToken, setCfToken] = useState('');
-  const [scriptName, setScriptName] = useState('sibergate-relay');
+  // Edge form state — pilih relay existing (deploy terpisah)
+  const [selectedRelayId, setSelectedRelayId] = useState('');
 
-  const canAdd = memberType === 'edge-relay' ? !!cfToken.trim() && !add.isPending : !!(host.trim() && port.trim()) && !add.isPending;
+  const canAdd = memberType === 'edge-relay' ? !!selectedRelayId.trim() && !add.isPending : !!(host.trim() && port.trim()) && !add.isPending;
 
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
@@ -373,12 +378,8 @@ function MembersSection({ poolId }: { poolId: string }) {
           </>
         ) : (
           <div className="space-y-1.5 rounded border border-primary/30 bg-primary/5 p-2 text-[11px]">
-            <p className="text-muted-foreground">Deploy Cloudflare Worker sbg edge relay (URL rewrite, bukan tunnel). 1 Worker serve semua provider. Token disimpan <b>encrypted</b> di DB.</p>
-            <Label htmlFor="cf-token" className="text-[11px]">Cloudflare API Token</Label>
-            <Input id="cf-token" value={cfToken} onChange={(e) => setCfToken(e.target.value)} placeholder="cf_xxxxxxxxxxxxxxxx" type="password" className="text-[12px]" autoComplete="off" />
-            <Label htmlFor="cf-script" className="text-[11px]">Worker Script Name</Label>
-            <Input id="cf-script" value={scriptName} onChange={(e) => setScriptName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} placeholder="sibergate-relay" className="text-[12px] font-mono" />
-            <p className="text-[10px] text-muted-foreground">Setelah add, buka member → klik Verify → Deploy utk aktifkan Worker.</p>
+            <Label className="text-[11px]">Pilih Edge Relay (deploy terpisah di menu Edge Relays)</Label>
+            <EdgeRelayDropdown value={selectedRelayId} onChange={setSelectedRelayId} />
           </div>
         )}
         <div className="flex gap-2">
@@ -392,8 +393,8 @@ function MembersSection({ poolId }: { poolId: string }) {
             onClick={async () => {
               try {
                 if (memberType === 'edge-relay') {
-                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: 'cloudflare-workers', edgeConfig: { apiToken: cfToken, scriptName }, label: label || undefined, weight });
-                  setCfToken(''); setScriptName('sibergate-relay'); setLabel(''); setWeight(1);
+                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: 'cloudflare-workers', edgeRelayId: selectedRelayId, label: label || undefined, weight });
+                  setSelectedRelayId(''); setLabel(''); setWeight(1);
                 } else {
                   const url = buildProxyUrl({ type, host, port, user, pass });
                   if (!url) { toast.error('Host & port wajib diisi'); return; }
@@ -570,6 +571,25 @@ function EdgeMemberPanel({ m, poolId }: { m: ProxyPoolMember; poolId: string }) 
   );
 }
 
+/** Dropdown pilih edge relay existing (deploy terpisah). */
+function EdgeRelayDropdown({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { data } = useEdgeRelays();
+  const relays = data?.data ?? [];
+  if (relays.length === 0) {
+    return <p className="text-[11px] text-muted-foreground italic">Belum ada edge relay. Deploy dulu di menu <Link href="/edge-relays" className="text-primary hover:underline">Edge Relays</Link>.</p>;
+  }
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]">
+      <option value="">— pilih relay —</option>
+      {relays.map((r) => (
+        <option key={r.id} value={r.id}>
+          {r.name} ({r.id}) {r.relayUrl ? '✓ deployed' : '⏳ pending'}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function redact(url: string): string {
   try {
     const p = new URL(url);
@@ -613,6 +633,40 @@ function BindingsSection({ poolId }: { poolId: string }) {
               {on ? <CheckCircle2 size={12} className="text-primary" /> : <XCircle size={12} />}
               <span className="truncate">{p.name}</span>
               <span className="ml-auto font-mono text-[10px] opacity-60">{p.id}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Route bindings — pool bind ke route (semua target route lewat proxy). */
+function RouteBindingsSection({ poolId }: { poolId: string }) {
+  const { data: routesData } = useRoutes();
+  const routes = routesData?.data ?? [];
+  const { data: bindingsData } = useRouteBindings(poolId);
+  const bindings = bindingsData?.data ?? [];
+  const bind = useBindRoute(poolId);
+  const unbind = useUnbindRoute(poolId);
+  const boundIds = new Set(bindings.filter((b) => b.enabled).map((b) => b.routeId));
+  return (
+    <div className="space-y-2 rounded-md border border-border p-3">
+      <Label className="flex items-center gap-1"><Route size={13} /> Route bindings</Label>
+      <p className="text-[11px] text-muted-foreground">Centang route yg SEMUA request-nya lewat pool ini (regardless provider). Prioritas lebih tinggi dari provider binding.</p>
+      <div className="grid max-h-48 grid-cols-2 gap-1 overflow-y-auto">
+        {routes.map((r) => {
+          const on = boundIds.has(r.id);
+          return (
+            <button type="button" key={r.id}
+              onClick={() => { if (on) unbind.mutate(r.id); else bind.mutate({ routeId: r.id, enabled: true }); }}
+              className={`flex items-center gap-1.5 rounded border px-2 py-1 text-left text-[12px] transition-colors ${
+                on ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:bg-secondary'
+              }`}
+            >
+              {on ? <CheckCircle2 size={12} className="text-primary" /> : <XCircle size={12} />}
+              <span className="truncate">{r.name || r.id}</span>
+              <span className="ml-auto font-mono text-[10px] opacity-60">{r.id}</span>
             </button>
           );
         })}

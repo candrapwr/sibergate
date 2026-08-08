@@ -11,6 +11,7 @@ import type {
   CustomScript,
   CustomScriptSummary,
   EdgeDeployResult,
+  EdgeRelay,
   EdgeVerifyResult,
   GeoIpStatus,
   ListResponse,
@@ -18,6 +19,7 @@ import type {
   Provider,
   ProviderKey,
   ProviderProxyBinding,
+  RouteProxyBinding,
   ProxyLogEntry,
   ProxyPool,
   ProxyPoolMember,
@@ -573,7 +575,7 @@ export function usePoolMembers(poolId: string | null | undefined) {
 export function useAddPoolMember(poolId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { proxyUrl?: string; label?: string; weight?: number; enabled?: boolean; type?: string; edgeProvider?: string; edgeConfig?: Record<string, unknown>; relayUrl?: string }) =>
+    mutationFn: (data: { proxyUrl?: string; label?: string; weight?: number; enabled?: boolean; type?: string; edgeProvider?: string; edgeConfig?: Record<string, unknown>; edgeRelayId?: string; relayUrl?: string }) =>
       api.post<ProxyPoolMember>(`proxy/pools/${poolId}/members`, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
@@ -703,6 +705,99 @@ export function useRemoveEdgeDeployment(poolId: string) {
     mutationFn: (memberId: number) => api.delete<{ ok: boolean; error?: string }>(`proxy/pools/${poolId}/members/${memberId}/edge`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['proxy-members', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+/* ──────────────────── Standalone Edge Relays ──────────────────── */
+
+export function useEdgeRelays() {
+  return useQuery({
+    queryKey: ['edge-relays'],
+    queryFn: () => api.get<ListResponse<EdgeRelay>>('proxy/edge-relays'),
+  });
+}
+
+export function useCreateEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { id: string; name?: string; type?: string; label?: string }) =>
+      api.post<EdgeRelay>('proxy/edge-relays', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+export function useDeleteEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete(`proxy/edge-relays/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+export function useVerifyEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, config }: { id: string; config: Record<string, unknown> }) =>
+      api.post<EdgeVerifyResult>(`proxy/edge-relays/${id}/verify`, { config }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+export function useDeployEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, config }: { id: string; config?: Record<string, unknown> }) =>
+      api.post<EdgeDeployResult>(`proxy/edge-relays/${id}/deploy`, config ? { config } : {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+export function useRemoveEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<{ ok: boolean; error?: string }>(`proxy/edge-relays/${id}/deploy`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+export function useTestEdgeRelay() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post<{ ok: boolean; latencyMs: number; error?: string }>(`proxy/edge-relays/${id}/test`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['edge-relays'] }),
+  });
+}
+
+/* ──────────────────────── Route Bindings ──────────────────────── */
+
+export function useRouteBindings(poolId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['route-bindings', poolId],
+    queryFn: () => api.get<ListResponse<RouteProxyBinding>>(`proxy/pools/${poolId}/route-bindings`),
+    enabled: !!poolId,
+  });
+}
+
+export function useBindRoute(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ routeId, enabled }: { routeId: string; enabled: boolean }) =>
+      api.post(`proxy/pools/${poolId}/route-bindings`, { routeId, enabled }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['route-bindings', poolId] });
+      qc.invalidateQueries({ queryKey: ['proxy-pools'] });
+    },
+  });
+}
+
+export function useUnbindRoute(poolId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (routeId: string) => api.delete(`proxy/pools/${poolId}/route-bindings/${routeId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['route-bindings', poolId] });
       qc.invalidateQueries({ queryKey: ['proxy-pools'] });
     },
   });

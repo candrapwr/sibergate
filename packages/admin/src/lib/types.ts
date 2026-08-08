@@ -145,6 +145,29 @@ export interface EdgeDeployResult {
   error?: string;
 }
 
+/** Standalone edge relay entity (GET /admin/proxy/edge-relays). */
+export interface EdgeRelay {
+  id: string;
+  name: string;
+  type: string;
+  label: string | null;
+  relayUrl: string | null;
+  healthy: boolean;
+  country: string | null;
+  lastCheckAt: string | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  hasConfig: boolean;
+}
+
+/** Route → pool binding. */
+export interface RouteProxyBinding {
+  routeId: string;
+  poolId: string;
+  enabled: boolean;
+}
+
 /** A proxy pool (master). List view includes counts. */
 export interface ProxyPool {
   id: string;
