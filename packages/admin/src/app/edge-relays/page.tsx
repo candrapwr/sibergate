@@ -159,10 +159,15 @@ function RelayRow({ r }: { r: EdgeRelay }) {
 }
 
 /** Render field config tunggal (text/password) dari metadata provider. */
-function ConfigFieldInput({ field, value, onChange }: { field: ConfigField; value: string; onChange: (v: string) => void }) {
+function ConfigFieldInput({ field, value, onChange, optional }: { field: ConfigField; value: string; onChange: (v: string) => void; optional?: boolean }) {
+  // optional = field wajib tapi boleh kosong krn pakai config tersimpan (redeploy).
+  const showRequired = field.required && !optional;
   return (
     <div className="space-y-1.5">
-      <Label htmlFor={`cf-${field.key}`} className="text-[12px]">{field.label}{field.required ? ' *' : ''}</Label>
+      <Label htmlFor={`cf-${field.key}`} className="text-[12px]">
+        {field.label}{showRequired ? ' *' : ''}
+        {optional && <span className="ml-1 text-[10px] text-muted-foreground">(tersimpan)</span>}
+      </Label>
       <Input
         id={`cf-${field.key}`}
         value={value}
@@ -194,15 +199,25 @@ function DeployDialog({ relay, open, onOpenChange, children }: {
   // State values per field key. Reset ketika provider ganti (key set berubah).
   const [values, setValues] = useState<Record<string, string>>({});
   const isRedeploy = !!relay.relayUrl;
+  // Redeploy dgn config tersimpan (hasConfig) → field wajib boleh kosong (pakai
+  // nilai tersimpan di DB). Deploy baru (belum ada config) → field wajib harus diisi.
+  const hasStoredConfig = relay.hasConfig;
 
   const setValue = (key: string, v: string) => setValues((prev) => ({ ...prev, [key]: v }));
+  // Build config: hanya sertakan field yg diisi user (skip empty). Backend merge
+  // dgn config DB (token tersimpan), jadi empty field = pakai nilai lama.
   const config = useMemo(() => {
     const c: Record<string, unknown> = {};
-    for (const f of fields) c[f.key] = values[f.key] ?? '';
+    for (const f of fields) {
+      const v = values[f.key]?.trim();
+      if (v) c[f.key] = v;
+    }
     return c;
   }, [fields, values]);
 
-  const requiredMissing = fields.some((f) => f.required && !(values[f.key]?.trim()));
+  // Required check: bila ada config tersimpan, field wajib boleh kosong. Bila
+  // deploy baru (belum ada config), field wajib harus diisi.
+  const requiredMissing = !hasStoredConfig && fields.some((f) => f.required && !(values[f.key]?.trim()));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -216,6 +231,7 @@ function DeployDialog({ relay, open, onOpenChange, children }: {
           <DialogTitle>{isRedeploy ? 'Redeploy' : 'Deploy'} — {relay.name}</DialogTitle>
           <DialogDescription>
             Deploy transparent-relay ke {provider?.displayName ?? relay.type}. Token disimpan encrypted.
+            {hasStoredConfig && ' Kosongkan field utk pakai nilai tersimpan (cukup klik Deploy langsung).'}
           </DialogDescription>
         </DialogHeader>
         {provider && (
@@ -235,7 +251,7 @@ function DeployDialog({ relay, open, onOpenChange, children }: {
             </p>
           ) : (
             fields.map((f) => (
-              <ConfigFieldInput key={f.key} field={f} value={values[f.key] ?? ''} onChange={(v) => setValue(f.key, v)} />
+              <ConfigFieldInput key={f.key} field={f} value={values[f.key] ?? ''} onChange={(v) => setValue(f.key, v)} optional={hasStoredConfig} />
             ))
           )}
         </div>

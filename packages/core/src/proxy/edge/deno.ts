@@ -205,7 +205,28 @@ export const denoProvider: EdgeRelayProvider = {
         const msg = j.message ?? j.code ?? `HTTP ${deployRes.status}`;
         return { ok: false, error: `Deploy gagal: ${msg}` };
       }
-      const relayUrl = `https://${slug}.deno.dev`;
+      // Baca URL asli dari response deploy. URL pattern tergantung organization
+      // (mis. {slug}.{org}.deno.net), jadi TIDAK boleh hardcode {slug}.deno.dev.
+      // Deploy response = revision dgn timelines[].hostnames = URL routing asli.
+      const depJson = (await deployRes.json().catch(() => ({}))) as {
+        id?: string;
+        timelines?: Array<{ name?: string; hostnames?: string[] }>;
+      };
+      const prodHosts = depJson.timelines
+        ?.find((t) => /production/i.test(t.name ?? ''))
+        ?.hostnames?.filter(Boolean);
+      let relayUrl = Array.isArray(prodHosts) && prodHosts.length > 0 ? `https://${prodHosts[0]}` : '';
+      // Fallback: bila deploy response belum punya hostname (build belum selesai
+      // saat response), GET app utk ambil domain terdaftar.
+      if (!relayUrl) {
+        const appRes = await fetch(`${DENO_API}/v2/apps/${slug}`, { headers: authHeaders(token) });
+        const appJson = (await appRes.json().catch(() => ({}))) as { domains?: string[] };
+        const domains = appJson.domains ?? [];
+        relayUrl = domains.length > 0 ? `https://${domains[0]}` : '';
+      }
+      if (!relayUrl) {
+        return { ok: false, error: 'Deploy berhasil tapi URL tidak ditemukan di response. Cek dashboard Deno utk domain app.' };
+      }
       config.relayUrl = relayUrl;
       config.projectId = slug;
       return { ok: true, relayUrl };
