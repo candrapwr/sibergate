@@ -99,6 +99,43 @@ interface DenoDeployResponse {
   domains?: string[];
 }
 
+/**
+ * Poll revision sampai build selesai (status succeeded/failed), lalu return
+ * production hostname dari timelines. Deno build cepat (~5-10s). maxAttempts
+ * default 20 × 2s = ~40s timeout. Return '' bila gagal/timeout.
+ */
+async function pollRevisionUrl(token: string, revisionId: string, maxAttempts = 20): Promise<string> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const res = await fetch(`${DENO_API}/v2/revisions/${revisionId}`, { headers: authHeaders(token) });
+    if (!res.ok) { await sleep(2000); continue; }
+    const rev = (await res.json()) as {
+      status?: string;
+      failure_reason?: string;
+      timelines?: Array<{ name?: string; hostnames?: string[] }>;
+    };
+    // Bila build gagal, berhenti (tidak ada URL).
+    if (rev.status === 'failed') return '';
+    // Bila sukses, baca production hostname.
+    if (rev.status === 'succeeded' && Array.isArray(rev.timelines)) {
+      const prodHosts = rev.timelines
+        .find((t) => /production/i.test(t.name ?? ''))?.hostnames?.filter(Boolean);
+      if (prodHosts && prodHosts.length > 0) return `https://${prodHosts[0]}`;
+      // Tidak ada production hostname — ambil hostname pertama dari timeline mana pun.
+      for (const t of rev.timelines) {
+        const h = t.hostnames?.filter(Boolean);
+        if (h && h.length > 0) return `https://${h[0]}`;
+      }
+      return '';
+    }
+    await sleep(2000);
+  }
+  return ''; // timeout
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export const denoProvider: EdgeRelayProvider = {
   id: 'deno-deploy',
   displayName: 'Deno Deploy',
@@ -205,27 +242,29 @@ export const denoProvider: EdgeRelayProvider = {
         const msg = j.message ?? j.code ?? `HTTP ${deployRes.status}`;
         return { ok: false, error: `Deploy gagal: ${msg}` };
       }
-      // Baca URL asli dari response deploy. URL pattern tergantung organization
-      // (mis. {slug}.{org}.deno.net), jadi TIDAK boleh hardcode {slug}.deno.dev.
-      // Deploy response = revision dgn timelines[].hostnames = URL routing asli.
-      const depJson = (await deployRes.json().catch(() => ({}))) as {
-        id?: string;
-        timelines?: Array<{ name?: string; hostnames?: string[] }>;
-      };
-      const prodHosts = depJson.timelines
-        ?.find((t) => /production/i.test(t.name ?? ''))
-        ?.hostnames?.filter(Boolean);
-      let relayUrl = Array.isArray(prodHosts) && prodHosts.length > 0 ? `https://${prodHosts[0]}` : '';
-      // Fallback: bila deploy response belum punya hostname (build belum selesai
-      // saat response), GET app utk ambil domain terdaftar.
-      if (!relayUrl) {
-        const appRes = await fetch(`${DENO_API}/v2/apps/${slug}`, { headers: authHeaders(token) });
-        const appJson = (await appRes.json().catch(() => ({}))) as { domains?: string[] };
-        const domains = appJson.domains ?? [];
-        relayUrl = domains.length > 0 ? `https://${domains[0]}` : '';
+      // Deploy return 202 + Revision object (build masih berjalan: queued→building).
+      // hostnames belum ada di response ini. Poll revision sampai status succeeded,
+      // lalu baca timelines[].hostnames = URL routing asli. Deno build cepat (~5-10s).
+      const depJson = (await deployRes.json().catch(() => ({}))) as { id?: string };
+      const revisionId = depJson.id;
+      let relayUrl = '';
+      if (revisionId) {
+        relayUrl = await pollRevisionUrl(token, revisionId);
       }
       if (!relayUrl) {
-        return { ok: false, error: 'Deploy berhasil tapi URL tidak ditemukan di response. Cek dashboard Deno utk domain app.' };
+        // Fallback terakhir: list revisions app, ambil hostname dari revision sukses
+        // terbaru. Pencegahan bila poll timeout atau revisionId tidak ada.
+        const revsRes = await fetch(`${DENO_API}/v2/apps/${slug}/revisions`, { headers: authHeaders(token) });
+        const revs = (await revsRes.json().catch(() => [])) as Array<{ id?: string }>;
+        for (const r of revs) {
+          if (r.id) {
+            const url = await pollRevisionUrl(token, r.id, 1);
+            if (url) { relayUrl = url; break; }
+          }
+        }
+      }
+      if (!relayUrl) {
+        return { ok: false, error: 'Deploy berhasil tapi URL tidak ditemukan setelah build. Cek dashboard Deno utk domain app.' };
       }
       config.relayUrl = relayUrl;
       config.projectId = slug;
