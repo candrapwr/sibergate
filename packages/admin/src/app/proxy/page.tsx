@@ -12,6 +12,7 @@ import {
   usePoolMembers,
   useAddPoolMember,
   useDeletePoolMember,
+  useUpdatePoolMember,
   useTestPoolMember,
   usePoolBindings,
   useBindProvider,
@@ -315,60 +316,97 @@ function buildProxyUrl(t: { type: string; host: string; port: string; user: stri
 function MembersSection({ poolId }: { poolId: string }) {
   const { data } = usePoolMembers(poolId);
   const members = data?.data ?? [];
-  const add = useAddPoolMember(poolId);
   const del = useDeletePoolMember(poolId);
   const test = useTestPoolMember(poolId);
-  // Relays list utk derive edgeProvider (CF/Vercel/Deno/Netlify) dari relay terpilih.
-  const { data: relaysData } = useEdgeRelays();
-  const relays = relaysData?.data ?? [];
-  const [memberType, setMemberType] = useState<'http-proxy' | 'edge-relay'>('http-proxy');
-  // Form state (terstruktur, bukan URL mentah)
-  const [type, setType] = useState<string>('socks5:');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('');
-  const [user, setUser] = useState('');
-  const [pass, setPass] = useState('');
-  const [label, setLabel] = useState('');
-  const [weight, setWeight] = useState(1);
-  // Edge form state — pilih relay existing (deploy terpisah)
-  const [selectedRelayId, setSelectedRelayId] = useState('');
-
-  const canAdd = memberType === 'edge-relay' ? !!selectedRelayId.trim() && !add.isPending : !!(host.trim() && port.trim()) && !add.isPending;
 
   return (
     <div className="space-y-2 rounded-md border border-border p-3">
       <div className="flex items-center justify-between">
         <Label className="flex items-center gap-1"><Activity size={13} /> Members</Label>
-        <Link href="/proxy/logs" className="flex items-center gap-1 text-[11px] text-primary hover:underline">
-          <ExternalLink size={11} /> View logs
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/proxy/logs" className="flex items-center gap-1 text-[11px] text-primary hover:underline">
+            <ExternalLink size={11} /> View logs
+          </Link>
+          <AddMemberButton poolId={poolId} />
+        </div>
       </div>
       <div className="space-y-1.5">
-        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Tambahkan proxy/relay di bawah.</p>}
+        {members.length === 0 && <p className="text-[11px] italic text-muted-foreground">Belum ada member. Klik &quot;Add member&quot; utk menambahkan proxy/relay.</p>}
         {members.map((m) => (
           <MemberRow key={m.id} m={m} poolId={poolId} onDelete={() => del.mutate(m.id)} testMut={test} />
         ))}
       </div>
-      {/* Add form — pilih tipe member dulu */}
-      <div className="space-y-2 rounded border border-border/60 bg-secondary/10 p-2">
-        <div className="flex gap-2">
+    </div>
+  );
+}
+
+/** Tombol + modal utk nambah member proxy. Modal terpisah supaya form tidak
+ *  menumpuk di bawah list member (dialog edit pool jadi lebih bersih). */
+function AddMemberButton({ poolId }: { poolId: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline" size="sm"><Plus size={13} /> Add member</Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <AddMemberForm poolId={poolId} onDone={() => setOpen(false)} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Form tambah member (http/socks proxy atau edge relay). Dipakai di modal. */
+function AddMemberForm({ poolId, onDone }: { poolId: string; onDone: () => void }) {
+  const add = useAddPoolMember(poolId);
+  // Relays list utk derive edgeProvider (CF/Vercel/Deno/Netlify) dari relay terpilih.
+  const { data: relaysData } = useEdgeRelays();
+  const relays = relaysData?.data ?? [];
+  const [memberType, setMemberType] = useState<'http-proxy' | 'edge-relay'>('http-proxy');
+  // HTTP/SOCKS form state (terstruktur, bukan URL mentah).
+  const [type, setType] = useState<string>('socks5:');
+  const [host, setHost] = useState('');
+  const [port, setPort] = useState('');
+  const [user, setUser] = useState('');
+  const [pass, setPass] = useState('');
+  // Shared.
+  const [label, setLabel] = useState('');
+  // Edge form state — pilih relay existing (deploy terpisah).
+  const [selectedRelayId, setSelectedRelayId] = useState('');
+
+  const canAdd = memberType === 'edge-relay' ? !!selectedRelayId.trim() && !add.isPending : !!(host.trim() && port.trim()) && !add.isPending;
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Add member</DialogTitle>
+        <DialogDescription>Tambah proxy HTTP/SOCKS atau edge relay ke pool ini.</DialogDescription>
+      </DialogHeader>
+      <form autoComplete="off" data-lpignore="true" onSubmit={(e) => e.preventDefault()} className="space-y-3">
+        {/* Pilih tipe member */}
+        <div className="space-y-1.5">
+          <Label htmlFor="mtype">Tipe member</Label>
           <select
+            id="mtype"
             value={memberType}
             onChange={(e) => setMemberType(e.target.value as 'http-proxy' | 'edge-relay')}
-            className="h-9 rounded-md border border-border bg-background px-2 text-[12px]"
-            title="Tipe member"
+            className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]"
           >
             {MEMBER_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
         </div>
+
         {memberType === 'http-proxy' ? (
           <>
-            <div className="flex gap-2">
-              <select value={type} onChange={(e) => setType(e.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-[12px] font-mono" title="Tipe proxy">
-                {PROXY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-              </select>
-              <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host (mis. 1.2.3.4 / proxy.com)" className="flex-1 text-[12px]" />
-              <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="port" className="w-20 text-[12px]" />
+            <div className="space-y-1.5">
+              <Label htmlFor="mhost">Host &amp; Port</Label>
+              <div className="flex gap-2">
+                <select value={type} onChange={(e) => setType(e.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-[12px] font-mono" title="Tipe proxy">
+                  {PROXY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+                <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="host (mis. 1.2.3.4 / proxy.com)" className="flex-1 text-[12px]" />
+                <Input value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ''))} placeholder="port" className="w-20 text-[12px]" />
+              </div>
             </div>
             <details className="group">
               <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">Auth (opsional — kosongkan utk no-auth)</summary>
@@ -384,38 +422,43 @@ function MembersSection({ poolId }: { poolId: string }) {
             <EdgeRelayDropdown value={selectedRelayId} onChange={setSelectedRelayId} />
           </div>
         )}
-        <div className="flex gap-2">
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="label (opsional)" className="flex-1 text-[12px]" />
-          <Input type="number" min={1} value={weight} onChange={(e) => setWeight(Number(e.target.value) || 1)} className="w-20 text-[12px]" title="weight" />
-          <Button
+
+        <div className="space-y-1.5">
+          <Label htmlFor="mlabel">Label (opsional)</Label>
+          <Input id="mlabel" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="mis. US-proxy-1" className="text-[12px]" />
+        </div>
+
+        <DialogFooter>
+          <p className="mr-auto text-[11px] text-muted-foreground">Weight default 1 — bisa diubah fleksibel di list member setelah ditambahkan.</p>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
+            <Button
             type="button"
-            variant="outline"
-            size="sm"
             disabled={!canAdd}
             onClick={async () => {
               try {
                 if (memberType === 'edge-relay') {
                   // Derive edgeProvider dari type relay yg dipilih (CF/Vercel/Deno/Netlify).
                   const selectedRelay = relays.find((x) => x.id === selectedRelayId);
-                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: selectedRelay?.type ?? 'cloudflare-workers', edgeRelayId: selectedRelayId, label: label || undefined, weight });
-                  setSelectedRelayId(''); setLabel(''); setWeight(1);
+                  await add.mutateAsync({ type: 'edge-relay', edgeProvider: selectedRelay?.type ?? 'cloudflare-workers', edgeRelayId: selectedRelayId, label: label || undefined, weight: 1 });
                 } else {
                   const url = buildProxyUrl({ type, host, port, user, pass });
                   if (!url) { toast.error('Host & port wajib diisi'); return; }
-                  await add.mutateAsync({ proxyUrl: url, label: label || undefined, weight });
-                  setHost(''); setPort(''); setUser(''); setPass(''); setLabel(''); setWeight(1);
+                  await add.mutateAsync({ proxyUrl: url, label: label || undefined, weight: 1 });
                 }
                 toast.success('Member added');
+                onDone();
               } catch (err) {
                 toast.error((err as Error).message);
               }
             }}
           >
-            <Plus size={13} /> Add
+            <Plus size={13} /> Add member
           </Button>
-        </div>
-      </div>
-    </div>
+          </div>
+        </DialogFooter>
+      </form>
+    </>
   );
 }
 
@@ -423,6 +466,8 @@ function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolI
   const [result, setResult] = useState<{ ok: boolean; latencyMs: number; exitIp: string | null; geo: { country: string; flag: string } | null; error?: string } | null>(null);
   const testing = testMut.isPending && testMut.variables === m.id;
   const isEdge = m.type === 'edge-relay';
+  const update = useUpdatePoolMember(poolId);
+  const [weight, setWeight] = useState(String(m.weight));
 
   const runTest = async () => {
     setResult(null);
@@ -432,6 +477,15 @@ function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolI
     } catch (err) {
       setResult({ ok: false, latencyMs: 0, exitIp: null, geo: null, error: (err as Error).message });
     }
+  };
+
+  // Simpan weight saat blur/Enter bila berubah. Auto-save, tanpa tombol.
+  const saveWeight = () => {
+    const w = Math.max(1, Number(weight) || 1);
+    if (w !== m.weight) {
+      update.mutate({ memberId: m.id, data: { weight: w } });
+    }
+    setWeight(String(w));
   };
 
   return (
@@ -445,10 +499,25 @@ function MemberRow({ m, poolId, onDelete, testMut }: { m: ProxyPoolMember; poolI
             {isEdge ? (m.relayUrl ?? '(not deployed)') : redact(m.proxyUrl)}
           </div>
           <div className="text-[10px] text-muted-foreground">
-            {isEdge ? <span>{m.edgeProvider}{m.relayUrl ? '' : ' · belum deploy'}</span> : <>w:{m.weight}</>}
+            {isEdge ? <span>{m.edgeProvider}{m.relayUrl ? '' : ' · belum deploy'}</span> : null}
             {m.label ? ` · ${m.label}` : ''} {m.exitIp && !isEdge ? `· ${m.exitIp}` : ''} {m.country && !isEdge ? `· ${m.country}` : ''}
           </div>
         </div>
+        {/* Weight — inline editable, pola sama dgn route module (label "wt").
+            Auto-save saat blur/Enter. */}
+        <label className="flex items-center gap-1 text-[10px] text-muted-foreground" title="Weight — auto-save saat blur/Enter">
+          wt
+          <Input
+            type="number"
+            min={1}
+            value={weight}
+            onChange={(e) => setWeight(e.target.value)}
+            onBlur={saveWeight}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+            disabled={update.isPending}
+            className="h-7 w-14 px-2 text-[12px]"
+          />
+        </label>
         <Button type="button" variant="ghost" size="sm" disabled={testing || (isEdge && !m.relayUrl)} onClick={runTest} title="Test connectivity">
           {testing ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />} Test
         </Button>
