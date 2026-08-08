@@ -34,5 +34,5 @@ packages/core/data/*.mmdb
 .vscode/
 .idea/
 *.swp
-logs/
+/logs/
 request_traces/
