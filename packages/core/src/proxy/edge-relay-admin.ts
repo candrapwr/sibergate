@@ -128,6 +128,7 @@ export function listEdgeRelays(): EdgeRelay[] {
 }
 
 export function deleteEdgeRelay(id: string): boolean {
+  const db = getDb();
   // Best-effort: hapus Worker deployment bila ada.
   const config = getRelayConfig(id);
   if (config?.relayUrl) {
@@ -136,7 +137,12 @@ export function deleteEdgeRelay(id: string): boolean {
       void provider.remove(config).catch(() => {});
     } catch { /* ignore */ }
   }
-  const res = getDb().prepare('DELETE FROM edge_relays WHERE id = ?').run(id);
+  // Hapus pool member yg reference relay ini (edge_relay_id). Tanpa ini, member
+  // jadi orphan saat relay dihapus — masih muncul di list pool tapi proxy-nya
+  // tidak valid lagi (relay_id dangling). Member edge-relay hanya reference
+  // (URL/config ada di edge_relays), jadi aman dihapus bersama relay.
+  db.prepare('DELETE FROM proxy_pool_members WHERE edge_relay_id = ?').run(id);
+  const res = db.prepare('DELETE FROM edge_relays WHERE id = ?').run(id);
   return res.changes > 0;
 }
 

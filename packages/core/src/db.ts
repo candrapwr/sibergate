@@ -403,6 +403,13 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_route_proxy_pools_pool ON route_proxy_pools(pool_id);
   `);
+
+  // Cleanup orphan pool members: edge-relay member yg reference edge_relays.id
+  // yg sudah dihapus. edge_relay_id tidak punya FK CASCADE (kolom add-on), jadi
+  // saat edge relay dihapus, member reference-nya bisa orphan. Dihapus saat
+  // startup (idempoten — 0 row bila tidak ada orphan). Fix di deleteEdgeRelay
+  // mencegah orphan baru, ini bersihkan data yg sudah orphan sebelum fix.
+  db.exec('DELETE FROM proxy_pool_members WHERE edge_relay_id IS NOT NULL AND edge_relay_id NOT IN (SELECT id FROM edge_relays)');
 }
 
 /**
