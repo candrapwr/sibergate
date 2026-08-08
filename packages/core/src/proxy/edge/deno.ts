@@ -42,7 +42,7 @@ function authHeaders(token: string): Record<string, string> {
 const RELAY_SCRIPT = `// SiberGate Edge Relay (Deno Deploy) — transparent forward.
 // 1 script serve semua provider & modality. Deploy otomatis oleh SiberGate.
 // @ts-nocheck
-Deno.serve(async (request: Request): Promise<Response> => {
+Deno.serve(async (request) => {
   const u = new URL(request.url);
   // Health check endpoint (dipakai SiberGate utk test connectivity).
   if (u.pathname === '/__health') {
@@ -63,18 +63,19 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const headers = new Headers(request.headers);
   headers.delete('x-relay-target');
   headers.delete('host');
-  const init: RequestInit = { method: request.method, headers };
+  const init = { method: request.method, headers };
+  // Body di-BUFFER ke ArrayBuffer (bukan stream request.body). AI request kecil
+  // (beberapa KB), buffer cepat. Streaming request body di Deno Deploy bisa hang/
+  // deadlock (ETIMEDOUT) — buffer menghindari isu itu. Response tetap stream (SSE).
   if (request.method !== 'GET' && request.method !== 'HEAD') {
-    init.body = request.body;
-    // @ts-ignore — duplex required utk streaming body.
-    init.duplex = 'half';
+    init.body = await request.arrayBuffer();
   }
   try {
     const res = await fetch(targetUrl, init);
-    // Return response verbatim (streaming SSE tetap jalan).
+    // Return response verbatim (streaming SSE tetap jalan di response).
     return new Response(res.body, { status: res.status, headers: res.headers });
   } catch (e) {
-    return new Response(JSON.stringify({ error: 'Upstream fetch failed: ' + ((e as Error)?.message || e) }), {
+    return new Response(JSON.stringify({ error: 'Upstream fetch failed: ' + ((e)?.message || e) }), {
       status: 502,
       headers: { 'content-type': 'application/json' },
     });
