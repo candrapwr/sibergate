@@ -84,12 +84,6 @@ export default {
 };
 `;
 
-interface DenoOrg {
-  id: string;
-  name: string;
-  slug: string;
-}
-
 interface DenoApiError {
   code?: string;
   message?: string;
@@ -139,20 +133,21 @@ export const denoProvider: EdgeRelayProvider = {
       return { ok: false, error: 'Token personal (ddp_) DITOLAK API v2. Buat organization token (ddo_) di dashboard.' };
     }
     try {
-      const res = await fetch(`${DENO_API}/v2/organizations`, { headers: authHeaders(token) });
+      // v2 API tidak punya endpoint /organizations atau /users/self yg stabil
+      // (redirect ke console saat ditolak). Verify pakai GET /v2/apps (list apps)
+      // yg ADA di spec resmi: 200 = token valid, 401 = invalid. Ambil 1 app
+      // sbg bukti akses org.
+      const res = await fetch(`${DENO_API}/v2/apps?limit=1`, { headers: authHeaders(token) });
       if (!res.ok) {
         const j = (await res.json().catch(() => ({}))) as DenoApiError;
         const msg = j.message ?? j.code ?? `HTTP ${res.status}`;
         return { ok: false, error: `Token invalid: ${msg}` };
       }
-      const orgs = (await res.json()) as DenoOrg[];
-      if (!Array.isArray(orgs) || orgs.length === 0) {
-        return { ok: false, error: 'Token valid tapi tidak ada organization. Buat organization di dashboard Deno.' };
-      }
-      const org = orgs[0]!;
-      config.accountId = org.id;
-      config.accountName = org.name;
-      return { ok: true, accountInfo: { accountId: org.id, name: org.name } };
+      const apps = (await res.json()) as DenoApp[];
+      const sample = Array.isArray(apps) ? apps[0] : undefined;
+      config.accountId = sample?.id ?? '';
+      config.accountName = sample?.slug ?? 'Deno Deploy';
+      return { ok: true, accountInfo: { accountId: sample?.id ?? '', name: sample?.slug ?? 'Deno Deploy' } };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
