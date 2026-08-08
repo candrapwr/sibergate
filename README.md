@@ -852,8 +852,13 @@ pm2 save && pm2 startup           # auto-start saat server reboot (sekali)
 | Aksi | Perintah |
 |---|---|
 | Lihat status | `pm2 status` |
-| Restart setelah ubah kode/env | `npm run build && pm2 restart all` |
+| **Update kode (WAJIB rebuild!)** | `git pull && npm run build && pm2 restart all` |
 | Stop / hapus | `pm2 stop all` / `pm2 delete all` |
+
+> ⚠️ **Setelah `git pull` WAJIB `npm run build`** sebelum `pm2 restart`!
+> PM2 menjalankan Next.js production server yg membaca dari `.next/` (hasil
+> build). Tanpa rebuild, halaman baru (mis. `/proxy/logs`, `/edge-relays`) akan
+> 404 krn belum ter-generate di `.next/`. Jangan hanya `pm2 restart all`.
 
 Log ditulis ke `./logs/` (sudah di-gitignore). Port admin tetap dibaca dari
 `packages/admin/.env.local` (`SIBERGATE_ADMIN_PORT`), jadi cara ganti port sama
