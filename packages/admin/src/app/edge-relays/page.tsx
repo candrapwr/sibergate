@@ -66,7 +66,7 @@ export default function EdgeRelaysPage() {
             pool member. Bisa dipakai banyak pool sekaligus.
           </li>
           <li>
-            <b className="text-foreground">4 provider didukung</b> — Cloudflare Workers, Vercel Edge, Deno Deploy,
+            <b className="text-foreground">3 provider didukung</b> — Cloudflare Workers, Vercel Edge,
             Netlify Edge. AWS Lambda@Edge coming soon. Token disimpan <b>encrypted</b>, tidak pernah di-log.
           </li>
         </ul>

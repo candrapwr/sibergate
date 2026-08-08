@@ -10,8 +10,8 @@
 export type EdgeProviderId =
   | 'cloudflare-workers'
   | 'vercel-edge'
-  | 'deno-deploy'
   | 'netlify-edge';
+// | 'deno-deploy'      // Dihapus — Deno Deploy suspend akun utk relay/proxy (TOS)
 // | 'aws-lambda-edge'  // future — arsitektur beda (IAM + Lambda + CloudFront)
 
 /**

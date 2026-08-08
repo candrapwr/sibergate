@@ -301,7 +301,7 @@ const PROXY_TYPES = [
 /** Tipe member proxy (http/socks vs edge relay). */
 const MEMBER_TYPES = [
   { value: 'http-proxy', label: 'HTTP/SOCKS Proxy' },
-  { value: 'edge-relay', label: 'Edge Relay (CF/Vercel/Deno/Netlify)' },
+  { value: 'edge-relay', label: 'Edge Relay (CF/Vercel/Netlify)' },
 ] as const;
 
 /** Bangun proxy URL dari field terstruktur. Auth opsional. */

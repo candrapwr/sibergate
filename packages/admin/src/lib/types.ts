@@ -129,7 +129,7 @@ export interface ScriptRunResult {
 /** Proxy pool strategy. */
 export type ProxyStrategy = 'weighted' | 'round-robin' | 'failover';
 export type MemberType = 'http-proxy' | 'socks5' | 'edge-relay';
-export type EdgeProviderId = 'cloudflare-workers' | 'vercel-edge' | 'deno-deploy' | 'netlify-edge';
+export type EdgeProviderId = 'cloudflare-workers' | 'vercel-edge' | 'netlify-edge';
 export type EdgeProviderStatus = 'active' | 'beta' | 'coming-soon';
 
 /** Metadata field config utk render form dinamis di DeployDialog. */

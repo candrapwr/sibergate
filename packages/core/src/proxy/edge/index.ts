@@ -5,7 +5,6 @@
  */
 import { cloudflareProvider } from './cloudflare.js';
 import { vercelProvider } from './vercel.js';
-import { denoProvider } from './deno.js';
 import { netlifyProvider } from './netlify.js';
 import type { EdgeProviderId, EdgeRelayProvider } from './types.js';
 
@@ -24,9 +23,9 @@ export type {
 const REGISTRY: Record<EdgeProviderId, EdgeRelayProvider> = {
   'cloudflare-workers': cloudflareProvider,
   'vercel-edge': vercelProvider,
-  'deno-deploy': denoProvider,
   'netlify-edge': netlifyProvider,
-  // 'aws-lambda-edge': awsProvider,    // future — arsitektur beda (IAM + Lambda + CloudFront)
+  // 'deno-deploy': denoProvider,          // Dihapus — Deno suspend akun utk relay/proxy
+  // 'aws-lambda-edge': awsProvider,       // future — arsitektur beda (IAM + Lambda + CloudFront)
 };
 
 /** Daftar semua provider edge relay (utk UI dropdown + info panel). */
