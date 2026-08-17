@@ -1101,7 +1101,21 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       // Qwen-Image synchronous: response langsung berisi gambar dalam bentuk
       // output.choices[].message.content[].image → convert ke OpenAI shape.
       const converted = convertDashScopeImageBody(taskBody as Record<string, unknown>);
-      if (converted) return c.json(converted);
+      if (converted) {
+        // Audit log — sama seperti jalur polling & verbatim (dulu lupa: request
+        // sukses lewat jalur ini tidak pernah masuk tabel requests, hanya muncul
+        // di Console). latencyMs = latency upstream sync dari executeRoute.
+        const model = config.models.find((m) => m.id === servedBy.modelId);
+        logRequest({
+          ...baseLog,
+          provider: servedBy.providerId,
+          model: servedBy.modelId,
+          upstreamKeyId,
+          latencyMs,
+          costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+        });
+        return c.json(converted);
+      }
       // Tidak ada gambar ditemukan (bentuk tak terduga) → jatuh ke verbatim.
     }
 
