@@ -58,6 +58,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
 - **🔀 Cross-vendor tool calling without errors** — agentic loops with failover between models of different vendors (e.g. Gemini ↔ DeepSeek) normally crash in multi-turn because each vendor has its own mandatory internal token (Gemini `thought_signature`, DeepSeek `reasoning_content`) that is incompatible and must be round-tripped. SiberGate solves it: set the Gemini target's modality to `tools-text` → the gateway converts `tool_calls` + role `tool` to universal XML text up front, then re-parses back to OpenAI format at the end. The client keeps clean original `tool_calls`, no vendor-specific signature leaks, no `400 missing signature` errors. See [Cross-vendor tool calling](#-cross-vendor-tool-calling).
 - **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `thinking`+`effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|minimal|low|medium|high|xhigh`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🖼️ Image generation mapping (auto-map)** — every image-gen vendor has a totally different request/response shape (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan with its own params). The client keeps one OpenAI Images format; the gateway translates the body into the target's native dialect (including a 3-class size system — square/landscape/portrait — plus a `quality`⇄`resolution` bridge) and converts the response back to `{created, data:[{url}]}` — including automatic redirect to `/v1/images/edits` multipart when the client sends a reference image to an OpenAI target, plus Kling/Qwen async task polling. **Opt-in per route target** (`verbatim` default / `auto-map`). See [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
@@ -124,6 +125,14 @@ curl http://localhost:8787/v1/images/generations \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"model":"image-fast","prompt":"a cat in a spacesuit"}'
+
+# Generate with a reference image + aspect control (auto-map target:
+# → Kling becomes image+aspect_ratio, → Qwen becomes a content image part,
+# → OpenAI auto-redirects to /v1/images/edits multipart)
+curl http://localhost:8787/v1/images/generations \
+  -H "Authorization: Bearer sg_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"image-fast","prompt":"a spacesuit cat in the style of the reference","image":"https://example.com/cat.jpg","size":"1024x1536","negative_prompt":"blur"}'
 ```
 
 Or open **http://localhost:3000** (or whatever `SIBERGATE_ADMIN_PORT` you set) for the admin dashboard.
@@ -729,6 +738,124 @@ feature is pure logic, transparent, and on by default.
 
 ---
 
+## 🖼️ Image generation mapping (auto-map)
+
+Every image-generation vendor has a **totally different** request/response
+shape: OpenAI flat JSON (`prompt`+`size`), Kling (`model_name`+`aspect_ratio`,
+async task), Qwen-Image (`input.messages`+`parameters`, multimodal chat
+format), Wan (its own parameter set). SiberGate translates **both ways** —
+the client keeps a single OpenAI format, the gateway speaks the target's
+language.
+
+Unlike reasoning mapping (always on), image mapping is **opt-in per route
+target**:
+
+| Mode | Behavior |
+|---|---|
+| **`verbatim`** *(default)* | Request body forwarded as-is, response returned as-is — the old behavior, unchanged. Includes the existing Kling `model_name` quirk & async polling. |
+| **`auto-map`** | The OpenAI-canonical body is translated into the target's native dialect, and non-OpenAI responses are converted back to OpenAI format. |
+
+Enable it in the dashboard: route editor (modality **image**) → per-target
+dropdown: **verbatim / auto-map**. The mode is read per-target at dispatch
+time, so failover across targets with mixed modes is safe.
+
+### Canonical format (what the client sends)
+
+**OpenAI Images superset** — standard OpenAI fields plus blessed non-standard
+fields so vendor features don't get lost along the way:
+
+```json
+{
+  "model": "image-route",
+  "prompt": "an orange cat wearing a jacket",
+  "n": 2,
+  "size": "1024x1536",
+  "quality": "high",
+  "negative_prompt": "blur, distortion",
+  "image": "https://.../ref.png",
+  "resolution": "2k",
+  "seed": 42,
+  "prompt_extend": true,
+  "watermark": false,
+  "image_fidelity": 0.7
+}
+```
+
+Both `model` **and** `model_name` are accepted as the route id (OpenAI vs
+Kling dialect — the client's value is never forwarded upstream anyway; the
+adapter always injects the target's real model).
+
+### Translation dictionary (input)
+
+| Target | Native shape sent upstream |
+|---|---|
+| **Kling direct** (`api.klingai.com`) | `{model_name, prompt, negative_prompt, image, image_fidelity, n, aspect_ratio, resolution?}` |
+| **Kling via Alibaba Model Studio** | DashScope envelope + native Kling params (`aspect_ratio`, `resolution`, `watermark`) |
+| **Qwen-Image** gen & edit | `{model, input:{messages:[{content:[{image?},{text}]}]}, parameters:{negative_prompt, size, n, seed, prompt_extend, prompt_extend_mode?, watermark}}` |
+| **Wan 2.7 / 2.6** | messages + Wan params (`enable_sequential`, `thinking_mode`, `color_palette`, `max_images`, …); canonical `resolution` → size shorthand `"1K"/"2K"/"4K"` |
+| **Wan 2.5 and older / wanx** | legacy `{model, input:{prompt}, parameters:{n, size, seed}}` |
+| **OpenAI** without `image` | passthrough `{model, prompt, n, size, quality, …}` |
+| **OpenAI** with `image` | **redirected to `/v1/images/edits`** + multipart/form-data (the gateway downloads/decodes the image and builds `image[]` + `mask` automatically) |
+
+### Size = 3 aspect classes (safe intersection)
+
+Instead of snapping arbitrary resolutions to each model family's valid list,
+sizes are normalized to 3 classes every target supports — both `size`
+(`"1024x1536"`, `"2048*2048"`) and `aspect_ratio` (`"4:3"`, `"9:16"`) are
+recognized:
+
+| Class | Kling | Qwen 2.x/3.x | Qwen max/plus | OpenAI gpt-image-1 | OpenAI dall-e-3 |
+|---|---|---|---|---|---|
+| **square** | `1:1` | `2048*2048` | `1328*1328` | `1024x1024` | `1024x1024` |
+| **landscape** | `16:9` | `2688*1536` | `1664*928` | `1536x1024` | `1792x1024` |
+| **portrait** | `9:16` | `1536*2688` | `928*1664` | `1024x1536` | `1024x1792` |
+
+### `quality` ⇄ `resolution`
+
+Two different axes kept separate: `quality` (fidelity, OpenAI dialect) vs
+`resolution` (pixels `1k|2k|4k`, Kling v3 dialect). For Kling v3/omni
+targets, an explicit `resolution` wins; if the client only sends `quality`,
+the gateway bridges one way: `high|hd → 2k`, `low|medium|standard → 1k`,
+`auto →` not sent (provider default). Kling v1.x (fixed resolution) gets
+nothing injected. OpenAI receives `quality` verbatim; Qwen has no such knob
+(nothing invented).
+
+### Response mapping (output)
+
+Whatever shape the upstream replies with, the client always receives OpenAI
+format `{created, data:[{url}]}`:
+
+| Upstream response shape | Gateway handling |
+|---|---|
+| OpenAI / OpenAI-compat | passthrough |
+| Kling async (`data.task_id`) | auto-poll `GET /generations/{id}` every 5s → build OpenAI response |
+| DashScope async (`output.task_id`) | poll `GET /api/v1/tasks/{id}` (Qwen async, Kling-Alibaba) |
+| DashScope sync (`output.choices[].message.content[].image`) | direct convert (Qwen-Image sync, Wan 2.6/2.7) |
+| Legacy `output.results[].url` | convert (old Wan, image-synthesis) |
+
+### Principles
+
+> **Map what exists, drop what has no equivalent, never invent.**
+
+Fields the client didn't send are never fabricated (the upstream provider's
+defaults apply). Minor fields with no equivalent (`quality`→Kling/Qwen,
+`seed`→OpenAI) are dropped. Structural fields (`image`) are never silently
+dropped — for OpenAI they trigger the `/edits` redirect instead. The mapper
+is **structural, not semantic**: it holds no knowledge of "model series X
+supports images or not" — if unsupported, the upstream rejects with its own
+message (→ failover proceeds as usual).
+
+```text
+Client (always JSON, OpenAI format)
+  │
+  ├─ Kling target (auto-map)   → native JSON + async polling → {created,data:[{url}]}
+  ├─ Qwen target  (auto-map)   → input.messages + parameters → sync convert → {created,data:[{url}]}
+  ├─ OpenAI target (auto-map)  → JSON /generations —— or —— multipart /edits (when image present)
+  └─ any target (verbatim)     → forwarded as-is (old behavior)
+```
+
+---
+
 ## 🔌 API reference
 
 | Method | Path | Description |
@@ -736,7 +863,7 @@ feature is pure logic, transparent, and on by default.
 | `GET` | `/health` | Liveness |
 | `GET` | `/v1/models` | List enabled routes (tagged with modality) |
 | `POST` | `/v1/chat/completions` | Chat (streaming + JSON) |
-| `POST` | `/v1/images/generations` | Image generation |
+| `POST` | `/v1/images/generations` | Image generation. The route id may come via `model` **or** `model_name`; if the route target is in `auto-map` mode, the body is translated to the target's native dialect (see [Image generation mapping](#️-image-generation-mapping-auto-map)) |
 | `POST` | `/v1/audio/speech` | Text-to-speech (binary) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Text embeddings |

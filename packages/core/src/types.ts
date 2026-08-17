@@ -98,6 +98,16 @@ export interface RouteTarget {
    * Bila null/undefined → pakai provider.apiKey default (kolom credentials lama).
    */
   keyId?: string | null;
+  /**
+   * Body mapping mode per-target (opsional). 'verbatim' (default bila
+   * null/undefined) = request/response diteruskan apa adanya — perilaku lama.
+   * 'auto' = gateway menerjemahkan body request ke format native target
+   * (mis. OpenAI images → Kling model_name/aspect_ratio atau Qwen
+   * input.messages) DAN meng-convert response balik ke format OpenAI.
+   * Dibaca per-target saat dispatch, jadi failover antar target dgn mode
+   * berbeda aman (persis pola modality override).
+   */
+  mapping?: 'verbatim' | 'auto' | null;
 }
 
 /**

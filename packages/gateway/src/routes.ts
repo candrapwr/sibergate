@@ -22,7 +22,17 @@ import {
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { proxySSEStream, proxyResponsesSSEStream, proxyToolsTextSSEStream } from './stream.js';
 import { errorResponse, mapUpstreamErrorStatus } from './errors.js';
-import { isAsyncTaskResponse, buildPollUrl, pollTaskUntilDone, buildOpenAIImageResponse } from './image-task.js';
+import {
+  isAsyncTaskResponse,
+  buildPollUrl,
+  pollTaskUntilDone,
+  buildOpenAIImageResponse,
+  isDashScopeTaskResponse,
+  isDashScopeImageBody,
+  buildDashScopePollUrl,
+  pollDashScopeTaskUntilDone,
+  convertDashScopeImageBody,
+} from './image-task.js';
 
 /**
  * Build audit-log metadata for an upstream failure, merging the failover trail
@@ -934,7 +944,10 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   if (!parsed) return errorResponse(c, 400, 'Request body must be valid JSON.', 'invalid_request_error');
 
   const body = parsed as Record<string, unknown>;
-  const routeId = String(body.model ?? '');
+  // Route id boleh dikirim via `model` (OpenAI) ATAU `model_name` (dialek
+  // Kling) — dua ejaan utk maksud yg sama (route masked; nilai client tidak
+  // pernah diteruskan ke upstream, adapter selalu inject model asli target).
+  const routeId = String(body.model ?? body.model_name ?? '');
   let route;
   try {
     route = getRoute(config, routeId);
@@ -987,49 +1000,49 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       }
     }
 
-    if (isAsyncTaskResponse(taskBody)) {
-      // Async: poll sampai sukses atau gagal. Provider harus dipakai dgn key yg
-      // sama dgn request awal (servedBy.keyId) — clone utk polling bila perlu.
+    // Mapping mode target yg menang (dari route target; 'auto' hanya bila
+    // eksplisit di-set operator). Menentukan converter response mana yg aktif.
+    const autoMapping = servedBy.mapping === 'auto';
+
+    /** Resolve provider utk polling: clone dgn key yg sama dgn request awal. */
+    const resolvePollProvider = () => {
       const baseProvider = config.providers.find((p) => p.id === servedBy.providerId);
-      if (!baseProvider) {
-        // Provider hilang di config (mis. baru di-disable). Teruskan apa adanya.
-        return new Response(buf, { status: 200, headers: { 'Content-Type': upstreamContentType } });
-      }
+      if (!baseProvider) return null;
       const key = servedBy.keyId
         ? config.providerKeys.find((k) => k.id === servedBy.keyId && k.enabled)
         : null;
-      const provider = key ? { ...baseProvider, apiKey: key.value } : baseProvider;
-      const taskId = taskBody.data.task_id;
-      const pollUrl = buildPollUrl(provider, taskId);
-      // Async image poll juga lewat proxy bila provider di-bind (konsisten dgn call awal).
+      return key ? { ...baseProvider, apiKey: key.value } : baseProvider;
+    };
+    /** Polling lewat proxy bila provider di-bind (konsisten dgn call awal). */
+    const resolvePollDispatcher = (baseUrl: string): unknown => {
       const resolvedPoll = resolveProxy(servedBy.providerId, route.id);
-      let pollDispatcher: unknown;
-      if (resolvedPoll) {
-        try {
-          const t = buildTransport(resolvedPoll, provider.baseUrl);
-          pollDispatcher = t.dispatcher;
-        } catch {
-          /* fail-open: poll tanpa proxy */
-        }
+      if (!resolvedPoll) return undefined;
+      try {
+        return buildTransport(resolvedPoll, baseUrl).dispatcher;
+      } catch {
+        return undefined; // fail-open: poll tanpa proxy
       }
-      const outcome = await pollTaskUntilDone(provider, pollUrl, { signal: controller.signal, dispatcher: pollDispatcher });
+    };
+    /** Log + return response OpenAI hasil polling sukses. */
+    const finishPolled = (images: Array<{ url: string; revised_prompt?: string }>) => {
       const totalLatency = Math.round(performance.now() - startedAt);
       const model = config.models.find((m) => m.id === servedBy.modelId);
       const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
-
-      if (outcome.status === 'succeed') {
-        const openaiResp = buildOpenAIImageResponse(outcome.images);
-        logRequest({
-          ...baseLog,
-          provider: servedBy.providerId,
-          model: servedBy.modelId,
-          upstreamKeyId,
-          latencyMs: totalLatency,
-          costUsd,
-        });
-        return c.json(openaiResp);
-      }
-      // Gagal polling → return error OpenAI-compat.
+      logRequest({
+        ...baseLog,
+        provider: servedBy.providerId,
+        model: servedBy.modelId,
+        upstreamKeyId,
+        latencyMs: totalLatency,
+        costUsd,
+      });
+      return c.json(buildOpenAIImageResponse(images));
+    };
+    /** Log + return 502 OpenAI-compat error saat polling gagal. */
+    const failPolled = (message: string) => {
+      const totalLatency = Math.round(performance.now() - startedAt);
+      const model = config.models.find((m) => m.id === servedBy.modelId);
+      const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
       logRequest({
         ...baseLog,
         status: 502,
@@ -1038,16 +1051,58 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
         model: servedBy.modelId,
         upstreamKeyId,
         errorCode: 'image_task_failed',
-        errorMessage: outcome.message?.slice(0, 300),
+        errorMessage: message?.slice(0, 300),
         costUsd,
       });
       return errorResponse(
         c, 502,
-        `Image task failed: ${outcome.message}`,
+        `Image task failed: ${message}`,
         'upstream_error',
         'image_task_failed',
         'image_generation',
       );
+    };
+
+    if (isAsyncTaskResponse(taskBody)) {
+      // Async gaya Kling (data.task_id): poll sampai sukses atau gagal.
+      const provider = resolvePollProvider();
+      if (!provider) {
+        // Provider hilang di config (mis. baru di-disable). Teruskan apa adanya.
+        return new Response(buf, { status: 200, headers: { 'Content-Type': upstreamContentType } });
+      }
+      const pollUrl = buildPollUrl(provider, taskBody.data.task_id);
+      const outcome = await pollTaskUntilDone(provider, pollUrl, {
+        signal: controller.signal,
+        dispatcher: resolvePollDispatcher(provider.baseUrl),
+      });
+      if (outcome.status === 'succeed') return finishPolled(outcome.images);
+      return failPolled(outcome.message);
+    }
+
+    if (autoMapping && isDashScopeTaskResponse(taskBody)) {
+      // Async gaya DashScope (output.task_id — Qwen via header async / Kling
+      // via Alibaba Model Studio). Poll endpoint generik /api/v1/tasks/{id}.
+      // Hanya aktif utk mapping='auto' (bentuk non-OpenAI; mode verbatim
+      // meneruskan apa adanya sesuai kontraknya).
+      const provider = resolvePollProvider();
+      if (!provider) {
+        return new Response(buf, { status: 200, headers: { 'Content-Type': upstreamContentType } });
+      }
+      const pollUrl = buildDashScopePollUrl(provider, taskBody.output.task_id);
+      const outcome = await pollDashScopeTaskUntilDone(provider, pollUrl, {
+        signal: controller.signal,
+        dispatcher: resolvePollDispatcher(provider.baseUrl),
+      });
+      if (outcome.status === 'succeed') return finishPolled(outcome.images);
+      return failPolled(outcome.message);
+    }
+
+    if (autoMapping && taskBody && isDashScopeImageBody(taskBody)) {
+      // Qwen-Image synchronous: response langsung berisi gambar dalam bentuk
+      // output.choices[].message.content[].image → convert ke OpenAI shape.
+      const converted = convertDashScopeImageBody(taskBody as Record<string, unknown>);
+      if (converted) return c.json(converted);
+      // Tidak ada gambar ditemukan (bentuk tak terduga) → jatuh ke verbatim.
     }
 
     // Sync: teruskan verbatim (sama dgn modalityHandler default).

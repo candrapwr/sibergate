@@ -498,6 +498,8 @@ export interface RouteInput {
     priority?: number;
     weight?: number;
     modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | 'tools-text-stream' | 'tools-text-nonstream' | null;
+    /** 'auto' = body mapping aktif utk target ini; selain itu verbatim. */
+    mapping?: 'verbatim' | 'auto' | null;
   }>;
 }
 
@@ -544,6 +546,9 @@ export function getRouteRow(id: string): Record<string, unknown> | null {
     // key_id null = pakai provider.apiKey default; bila di-set, merujuk ke
     // provider_keys.id (assign upstream key spesifik ke target ini).
     key: t.key_id ?? null,
+    // mapping null/'verbatim' = body diteruskan apa adanya (default);
+    // 'auto' = gateway translate body ke format native provider target.
+    mapping: t.mapping === 'auto' ? 'auto' : 'verbatim',
   }));
   return {
     id: route.id,
@@ -579,21 +584,24 @@ function replaceTargets(
     weight?: number;
     modality?: string | null;
     key?: string | null;
+    mapping?: string | null;
   }>,
 ): void {
   const db = getDb();
   db.transaction(() => {
     db.prepare('DELETE FROM route_targets WHERE route_id = ?').run(routeId);
     const stmt = db.prepare(
-      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled, modality, key_id)
-       VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+      `INSERT INTO route_targets (route_id, provider_id, model_id, priority, weight, enabled, modality, key_id, mapping)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
     );
     for (const t of targets) {
       // modality NULL = pakai route.modality (default). String kosong dianggap NULL.
       const mod = t.modality && t.modality.trim() ? t.modality.trim() : null;
       // key NULL = pakai provider.apiKey default. String kosong dianggap NULL.
       const keyId = t.key && t.key.trim() ? t.key.trim() : null;
-      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1, mod, keyId);
+      // mapping NULL = verbatim (default). Hanya 'auto' yg disimpan eksplisit.
+      const mapping = t.mapping === 'auto' ? 'auto' : null;
+      stmt.run(routeId, t.provider, t.model, t.priority ?? 0, t.weight ?? 1, mod, keyId, mapping);
     }
   })();
 }

@@ -74,6 +74,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🔀 Tool calling lintas-vendor (cross-vendor) anti-error** — agentic loop dgn failover antar model beda vendor (mis. Gemini ↔ DeepSeek) biasanya crash di multi-turn krn setiap vendor punya token internal sendiri (Gemini `thought_signature`, DeepSeek `reasoning_content`) yg tidak kompatibel & wajib di round-trip. SiberGate menyelesaikannya: set modality target Gemini ke `tools-text` → gateway ubah tool_calls + role:tool menjadi text XML universal di awal, lalu re-parse balik ke format OpenAI di akhir. Klien tetap pegang `tool_calls` asli bersih, tidak ada signature vendor-specific yg bocor, tidak ada error `400 missing signature`. Lihat [Tool calling lintas-vendor](#-tool-calling-lintas-vendor-cross-vendor).
 - **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `thinking`+`effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|minimal|low|medium|high|xhigh`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🖼️ Image generation mapping (auto-map)** — tiap vendor image gen punya bentuk request/response beda total (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan params sendiri). Klien tetap satu format OpenAI Images; gateway translate body ke dialek native target (termasuk size 3-kelas persegi/landscape/portrait + bridge `quality`⇄`resolution`) dan convert response balik ke `{created, data:[{url}]}` — termasuk redirect otomatis ke `/v1/images/edits` multipart saat klien kirim gambar referensi ke target OpenAI, dan polling async Kling/Qwen. **Opt-in per route target** (`verbatim` default / `auto-map`). Lihat [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
@@ -138,6 +139,14 @@ curl http://localhost:8787/v1/images/generations \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"model":"image-fast","prompt":"kucing astronot"}'
+
+# Generate gambar dgn referensi + kontrol rasio (target auto-map:
+# ke Kling jadi image+aspect_ratio, ke Qwen jadi content image part,
+# ke OpenAI otomatis redirect ke /v1/images/edits multipart)
+curl http://localhost:8787/v1/images/generations \
+  -H "Authorization: Bearer sg_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"image-fast","prompt":"kucing astronot ala foto referensi","image":"https://example.com/kucing.jpg","size":"1024x1536","negative_prompt":"blur"}'
 ```
 
 Atau buka **http://localhost:3000** (atau port `SIBERGATE_ADMIN_PORT` yang Anda set) untuk dashboard admin.
@@ -736,6 +745,122 @@ fitur murni logic, transparan, dan langsung aktif.
 
 ---
 
+## 🖼️ Image generation mapping (auto-map)
+
+Setiap vendor image generation punya bentuk request/response yg **beda total**:
+OpenAI flat JSON (`prompt`+`size`), Kling (`model_name`+`aspect_ratio`, async
+task), Qwen-Image (`input.messages`+`parameters`, format chat multimodal),
+Wan (variasi params sendiri). SiberGate menerjemahkan **dua arah** — klien
+tetap satu format OpenAI, gateway yg bicara bahasa target.
+
+Berbeda dr reasoning mapping (yg selalu aktif), image mapping bersifat
+**opt-in per route target**:
+
+| Mode | Perilaku |
+|---|---|
+| **`verbatim`** *(default)* | Body request diteruskan apa adanya, response balik apa adanya — perilaku lama, tidak berubah. Termasuk quirk Kling `model_name` & polling async yg sudah ada. |
+| **`auto-map`** | Body OpenAI-kanonik diterjemahkan ke dialek native target, dan response non-OpenAI di-convert balik ke format OpenAI. |
+
+Aktifkan di dashboard: editor route (modality **image**) → dropdown per target:
+**verbatim / auto-map**. Mode dibaca per-target saat dispatch, jadi failover
+antar target dgn mode campur aman.
+
+### Format kanonik (yang klien kirim)
+
+**OpenAI Images superset** — field standar OpenAI plus field non-standar yg
+diberkati supaya fitur vendor tidak hilang di tengah jalan:
+
+```json
+{
+  "model": "image-route",
+  "prompt": "kucing oren memakai jaket",
+  "n": 2,
+  "size": "1024x1536",
+  "quality": "high",
+  "negative_prompt": "blur, distorsi",
+  "image": "https://.../ref.png",
+  "resolution": "2k",
+  "seed": 42,
+  "prompt_extend": true,
+  "watermark": false,
+  "image_fidelity": 0.7
+}
+```
+
+Field `model` **atau** `model_name` dua-duanya diterima sebagai route id
+(dialek OpenAI vs Kling — nilai klien memang tidak pernah diteruskan ke
+upstream; adapter selalu inject model asli target).
+
+### Kamus penerjemahan (input)
+
+| Target | Bentuk native yg dikirim upstream |
+|---|---|
+| **Kling langsung** (`api.klingai.com`) | `{model_name, prompt, negative_prompt, image, image_fidelity, n, aspect_ratio, resolution?}` |
+| **Kling via Alibaba Model Studio** | envelope DashScope + params native Kling (`aspect_ratio`, `resolution`, `watermark`) |
+| **Qwen-Image** gen & edit | `{model, input:{messages:[{content:[{image?},{text}]}]}, parameters:{negative_prompt, size, n, seed, prompt_extend, prompt_extend_mode?, watermark}}` |
+| **Wan 2.7 / 2.6** | messages + params Wan (`enable_sequential`, `thinking_mode`, `color_palette`, `max_images`, …); `resolution` kanonik → shorthand size `"1K"/"2K"/"4K"` |
+| **Wan 2.5 ke bawah / wanx** | legacy `{model, input:{prompt}, parameters:{n, size, seed}}` |
+| **OpenAI** tanpa `image` | passthrough `{model, prompt, n, size, quality, …}` |
+| **OpenAI** dgn `image` | **redirect ke `/v1/images/edits`** + multipart/form-data (gateway download/decode gambar, build `image[]` + `mask` otomatis) |
+
+### Size = 3 kelas rasio (safe intersection)
+
+Alih-alih snap resolusi arbitrer ke daftar valid tiap model family, size
+dinormalisasi ke 3 kelas yg pasti didukung semua target — `size` (`"1024x1536"`,
+`"2048*2048"`) maupun `aspect_ratio` (`"4:3"`, `"9:16"`) dua-duanya dikenali:
+
+| Kelas | Kling | Qwen 2.x/3.x | Qwen max/plus | OpenAI gpt-image-1 | OpenAI dall-e-3 |
+|---|---|---|---|---|---|
+| **persegi** | `1:1` | `2048*2048` | `1328*1328` | `1024x1024` | `1024x1024` |
+| **landscape** | `16:9` | `2688*1536` | `1664*928` | `1536x1024` | `1792x1024` |
+| **portrait** | `9:16` | `1536*2688` | `928*1664` | `1024x1536` | `1024x1792` |
+
+### `quality` ⇄ `resolution`
+
+Dua sumbu berbeda yg tetap dipertahankan terpisah: `quality` (fidelity,
+dialek OpenAI) vs `resolution` (piksel `1k|2k|4k`, dialek Kling v3). Untuk
+target Kling v3/omni, `resolution` eksplisit menang; bila klien hanya kirim
+`quality`, gateway bridge satu arah: `high|hd → 2k`, `low|medium|standard → 1k`,
+`auto →` tidak dikirim (default provider). Kling v1.x (resolusi fixed) tidak
+dikirimi apa pun. OpenAI menerima `quality` apa adanya; Qwen tidak punya knob
+(tidak ada yg dikarang).
+
+### Response mapping (output)
+
+Apa pun bentuk balasan upstream, klien selalu menerima format OpenAI
+`{created, data:[{url}]}`:
+
+| Bentuk response upstream | Penanganan gateway |
+|---|---|
+| OpenAI / OpenAI-compat | passthrough |
+| Kling async (`data.task_id`) | poll otomatis `GET /generations/{id}` tiap 5s → build OpenAI response |
+| DashScope async (`output.task_id`) | poll `GET /api/v1/tasks/{id}` (Qwen async, Kling-Alibaba) |
+| DashScope sync (`output.choices[].message.content[].image`) | langsung convert (Qwen-Image sync, Wan 2.6/2.7) |
+| Legacy `output.results[].url` | convert (Wan lama, image-synthesis) |
+
+### Prinsip
+
+> **Map what exists, drop what has no equivalent, never invent.**
+
+Field yg tidak dikirim klien tidak dikarang (default provider upstream yg
+berlaku). Field minor tanpa padanan (`quality`→Kling/Qwen, `seed`→OpenAI)
+di-drop. Field struktural (`image`) tidak pernah di-drop diam-diam — utk
+OpenAI ia memicu redirect `/edits`, bukan dibuang. Mapper bersifat
+**struktural, bukan semantik**: tidak ada pengetahuan "model seri X bisa
+gambar atau tidak" — kalau ternyata tidak didukung, upstream yg menolak dgn
+pesan aslinya (→ failover jalan seperti biasa).
+
+```text
+Klien (selalu JSON, format OpenAI)
+  │
+  ├─ target Kling (auto-map)  → JSON native + polling async → {created,data:[{url}]}
+  ├─ target Qwen  (auto-map)  → input.messages + parameters  → convert sync → {created,data:[{url}]}
+  ├─ target OpenAI (auto-map) → JSON /generations ── atau ── multipart /edits (bila ada image)
+  └─ target apa pun (verbatim) → diteruskan apa adanya (perilaku lama)
+```
+
+---
+
 ## 🔌 Referensi API
 
 | Method | Path | Deskripsi |
@@ -743,7 +868,7 @@ fitur murni logic, transparan, dan langsung aktif.
 | `GET` | `/health` | Cek hidup |
 | `GET` | `/v1/models` | Daftar route aktif (diberi tag modalitas) |
 | `POST` | `/v1/chat/completions` | Chat (streaming + JSON) |
-| `POST` | `/v1/images/generations` | Generasi gambar |
+| `POST` | `/v1/images/generations` | Generasi gambar. Route id boleh via `model` **atau** `model_name`; bila route target ber-mode `auto-map`, body diterjemahkan ke dialek native target (lihat [Image generation mapping](#️-image-generation-mapping-auto-map)) |
 | `POST` | `/v1/audio/speech` | Text-to-speech (binary) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Embedding teks |

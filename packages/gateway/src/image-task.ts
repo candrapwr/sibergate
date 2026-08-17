@@ -19,8 +19,8 @@ import type { Provider } from '@sibergate/core';
 export const POLL_MAX_ITERATIONS = 50;
 export const POLL_INTERVAL_MS = 5_000;
 
-/** Status task yg dianggap sukses (case-insensitive). */
-const SUCCESS_STATUSES = new Set(['succeed', 'success', 'completed', 'done']);
+/** Status task yg dianggap sukses (case-insensitive). 'succeeded' = DashScope. */
+const SUCCESS_STATUSES = new Set(['succeed', 'succeeded', 'success', 'completed', 'done']);
 /** Status task yg dianggap masih berjalan. */
 const PROCESSING_STATUSES = new Set(['processing', 'submitted', 'pending', 'running', 'queued']);
 /** Status task yg dianggap gagal permanen. */
@@ -213,4 +213,165 @@ export function buildOpenAIImageResponse(
       return out;
     }),
   };
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+ * DashScope (Qwen-Image / Alibaba-hosted Kling) — task async + sync.
+ *
+ * Bentuk DashScope BERBEDA dgn Kling langsung:
+ *   - Submit async  : { output: { task_id, task_status }, request_id }
+ *                     (task_id di OUTPUT, bukan data.task_id — deteksi
+ *                     isAsyncTaskResponse tidak match).
+ *   - Query task    : GET {origin}/api/v1/tasks/{task_id}  ← URL generik,
+ *                     BUKAN {image_endpoint}/{task_id}.
+ *   - Hasil akhir   : { output: { task_status, choices: [{ message: { content:
+ *     [{ image: url }] } }] }, usage }  ← format 'multimodal', sama dgn
+ *     Qwen-Image synchronous.
+ *   - Sync (Qwen)   : response langsung berbentuk output.choices[...] tanpa
+ *     task_id sama sekali.
+ *
+ * Semua jalur di bawah aktif HANYA utk route target dgn mapping='auto';
+ * mode verbatim tetap memakai jalur Kling lama di atas (backward compat).
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** Deteksi response async task gaya DashScope: output.task_id terisi. */
+export function isDashScopeTaskResponse(body: unknown): body is { output: { task_id: string; task_status?: string }; code?: string; message?: string } {
+  if (!body || typeof body !== 'object') return false;
+  const out = (body as Record<string, unknown>).output;
+  if (!out || typeof out !== 'object') return false;
+  const o = out as Record<string, unknown>;
+  return typeof o.task_id === 'string' && o.task_id.length > 0;
+}
+
+/** Deteksi response image gaya DashScope synchronous (output.choices, tanpa task). */
+export function isDashScopeImageBody(body: unknown): boolean {
+  if (!body || typeof body !== 'object') return false;
+  const out = (body as Record<string, unknown>).output;
+  if (!out || typeof out !== 'object') return false;
+  return Array.isArray((out as Record<string, unknown>).choices);
+}
+
+/**
+ * Bangun URL polling task DashScope: {origin}/api/v1/tasks/{task_id}.
+ * Endpoint task bersifat generik per-host (bukan turunan endpoint image),
+ * jadi cukup ambil origin dari baseUrl provider.
+ */
+export function buildDashScopePollUrl(provider: Provider, taskId: string): string {
+  try {
+    const origin = new URL(provider.baseUrl).origin;
+    return `${origin}/api/v1/tasks/${encodeURIComponent(taskId)}`;
+  } catch {
+    // baseUrl aneh (relatif dsb) — fallback best-effort concat.
+    return `${provider.baseUrl.replace(/\/+$/, '')}/api/v1/tasks/${encodeURIComponent(taskId)}`;
+  }
+}
+
+/**
+ * Ekstrak URL gambar dari output DashScope (task final maupun sync).
+ * Mendukung dua varian output:
+ *   - choices[].message.content[] : [{image: url}] (multimodal — Qwen-Image,
+ *     Kling via Model Studio). Content entry bisa object {image} atau string.
+ *   - results[] : [{url}] (image-synthesis async lama, qwen-image-plus).
+ */
+function extractDashScopeImages(output: unknown): Array<{ url: string; revised_prompt?: string }> {
+  if (!output || typeof output !== 'object') return [];
+  const o = output as Record<string, unknown>;
+  const urls: Array<{ url: string; revised_prompt?: string }> = [];
+  if (Array.isArray(o.choices)) {
+    for (const choice of o.choices as any[]) {
+      const content = choice?.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const part of content) {
+        if (typeof part === 'string' && part) urls.push({ url: part });
+        else if (part && typeof part === 'object' && typeof part.image === 'string' && part.image) {
+          urls.push({ url: part.image });
+        }
+      }
+    }
+  }
+  if (urls.length === 0 && Array.isArray(o.results)) {
+    for (const r of o.results as any[]) {
+      if (r && typeof r.url === 'string' && r.url) urls.push({ url: r.url });
+    }
+  }
+  return urls;
+}
+
+/** Convert response image DashScope (synchronous) → format OpenAI. */
+export function convertDashScopeImageBody(body: Record<string, unknown>): { created: number; data: Array<{ url: string }> } | null {
+  const images = extractDashScopeImages(body.output);
+  if (images.length === 0) return null;
+  return buildOpenAIImageResponse(images) as { created: number; data: Array<{ url: string }> };
+}
+
+/**
+ * Poll task DashScope sampai selesai. Status di output.task_status
+ * (PENDING/RUNNING/SUCCEEDED/FAILED/CANCELED/UNKNOWN — UNKNOWN diperlakukan
+ * permisif: lanjut polling). Error DashScope datang sebagai {code, message}
+ * top-level (bukan data.task_status_msg).
+ */
+export async function pollDashScopeTaskUntilDone(
+  provider: Provider,
+  pollUrl: string,
+  opts: { maxIterations?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void>; signal?: AbortSignal; dispatcher?: unknown } = {},
+): Promise<PollOutcome> {
+  const maxIterations = opts.maxIterations ?? POLL_MAX_ITERATIONS;
+  const intervalMs = opts.intervalMs ?? POLL_INTERVAL_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+  for (let i = 0; i < maxIterations; i++) {
+    if (opts.signal?.aborted) {
+      return { status: 'failed', message: 'Request aborted by client.' };
+    }
+    await sleep(intervalMs);
+
+    const headers = buildAuthHeaders(provider);
+    let res: Response;
+    try {
+      res = await fetch(pollUrl, { method: 'GET', headers, signal: opts.signal, ...(opts.dispatcher ? { dispatcher: opts.dispatcher } : {}) });
+    } catch (err) {
+      return { status: 'failed', message: `Failed to reach ${provider.id} (poll iteration ${i + 1}): ${(err as Error).message}` };
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try {
+        detail = (await res.clone().text()).slice(0, 200);
+      } catch {
+        /* ignore */
+      }
+      return { status: 'failed', message: `${provider.id} task polling returned ${res.status}${detail ? `: ${detail}` : ''}` };
+    }
+
+    let body: any;
+    try {
+      body = await res.json();
+    } catch {
+      return { status: 'failed', message: `${provider.id} task polling returned non-JSON body.` };
+    }
+
+    const taskStatus = String(body?.output?.task_status ?? '').toLowerCase();
+    const message = typeof body?.message === 'string' ? body.message : '';
+
+    // Error DashScope: top-level {code, message} (mis. InvalidApiKey).
+    if (typeof body?.code === 'string' && body.code) {
+      return { status: 'failed', message: message || `Task failed (code ${body.code}).`, taskStatus };
+    }
+
+    if (FAILED_STATUSES.has(taskStatus)) {
+      return { status: 'failed', message: message || `Task failed with status '${taskStatus}'.`, taskStatus };
+    }
+
+    if (SUCCESS_STATUSES.has(taskStatus)) {
+      const images = extractDashScopeImages(body?.output);
+      if (images.length === 0) {
+        return { status: 'failed', message: 'Task succeeded but no image URLs found.', taskStatus };
+      }
+      return { status: 'succeed', images };
+    }
+
+    // PENDING / RUNNING / UNKNOWN → lanjut iterasi.
+  }
+
+  return { status: 'failed', message: `Task did not complete within ${maxIterations} polling iterations (${Math.round((maxIterations * intervalMs) / 1000)}s).` };
 }

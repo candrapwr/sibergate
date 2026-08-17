@@ -129,6 +129,8 @@ export function loadConfigFromDb(db?: DB): SiberGateConfig {
         modality: (t.modality as RouteTarget['modality']) ?? null,
         // key upstream spesifik utk target ini (provider_keys.id); null = default.
         keyId: (t.key_id as string | null) ?? null,
+        // mapping mode per-target; null/'verbatim' = teruskan apa adanya (default).
+        mapping: t.mapping === 'auto' ? 'auto' : 'verbatim',
       })),
   }));
 

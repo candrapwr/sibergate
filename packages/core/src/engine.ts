@@ -95,6 +95,9 @@ export async function executeRoute(
   // (mis. OpenAI responses + DeepSeek chat di route yg sama, dgn failover
   // antar modality).
   const effectiveModality = (t: RouteTarget): RouteModality => t.modality ?? routeModality;
+  // Mapping mode efektif tiap target: 'auto' hanya bila eksplisit di-set;
+  // selain itu 'verbatim' (default, backward compat — body diteruskan apa adanya).
+  const effectiveMapping = (t: RouteTarget): 'verbatim' | 'auto' => (t.mapping === 'auto' ? 'auto' : 'verbatim');
 
   // Filter targets: enabled + provider enabled + provider supports modality
   // efektif target tsb + model enabled. Provider "supports" modality ketika
@@ -217,7 +220,7 @@ export async function executeRoute(
         ...(proxyResolved ? { proxy: { poolId: proxyResolved.poolId, country: proxyResolved.country, type: proxyResolved.type } } : {}),
       });
       const response = await withTargetTimeout(signal, perTargetBudgetMs, (targetSignal) =>
-        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, passthroughHeaders, dispatcher, relay }),
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, mapping: effectiveMapping(target), passthroughHeaders, dispatcher, relay }),
       );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);

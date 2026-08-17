@@ -282,6 +282,11 @@ function migrate(db: DB): void {
   addColumnIfMissing(db, 'requests', 'upstream_key_id', 'TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_requests_upstream_key ON requests(upstream_key_id)');
 
+  // ── migrasi: kolom mapping di route_targets (per-target body mapping) ──
+  // 'auto' = gateway menerjemahkan body request/response ke format native
+  // provider target (image mapper dst). NULL = verbatim (default lama).
+  addColumnIfMissing(db, 'route_targets', 'mapping', 'TEXT');
+
   // ── migrasi: kolom is_default di provider_keys + pindah credentials lama ──
   // Pengelolaan key disatukan di provider_keys (UI hanya punya satu tempat). Key
   // default provider (yg lalu disimpan di providers.credentials) dipindah otomatis

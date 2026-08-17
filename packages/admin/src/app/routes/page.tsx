@@ -221,7 +221,7 @@ function EditButton({ route }: { route: Route }) {
   );
 }
 
-interface TargetInput { uid: string; provider: string; model: string; priority: number; weight: number; modality: string; key: string }
+interface TargetInput { uid: string; provider: string; model: string; priority: number; weight: number; modality: string; key: string; mapping: string }
 
 /** Stable id for a target row, so React preserves row identity (and input
  * focus) across reorders. priority is the payload field; uid is UI-only. */
@@ -240,9 +240,9 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
     modality: route?.modality ?? 'chat',
     strategy: route?.strategy ?? 'fallback',
     timeoutMs: route?.timeoutMs ?? 30000,
-    targets: (route?.targets ?? []).map((t) => ({ uid: newTargetUid(), provider: t.provider, model: t.model, priority: t.priority, weight: t.weight, modality: (t as any).modality ?? '', key: (t as any).key ?? '' })) as TargetInput[],
+    targets: (route?.targets ?? []).map((t) => ({ uid: newTargetUid(), provider: t.provider, model: t.model, priority: t.priority, weight: t.weight, modality: (t as any).modality ?? '', key: (t as any).key ?? '', mapping: (t as any).mapping === 'auto' ? 'auto' : '' })) as TargetInput[],
   });
-  const [newTarget, setNewTarget] = useState({ provider: '', model: '', modality: '', key: '' });
+  const [newTarget, setNewTarget] = useState({ provider: '', model: '', modality: '', key: '', mapping: '' });
   const [dragIndex, setDragIndex] = useState<number | null>(null);
 
   // Only providers that support the selected modality can be picked as targets.
@@ -251,7 +251,7 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
   const addTarget = () => {
     if (!newTarget.provider || !newTarget.model) return;
     setForm({ ...form, targets: [...form.targets, { uid: newTargetUid(), ...newTarget, priority: form.targets.length, weight: 1 }] });
-    setNewTarget({ provider: '', model: '', modality: '', key: '' });
+    setNewTarget({ provider: '', model: '', modality: '', key: '', mapping: '' });
   };
   const removeTarget = (i: number) => setForm({ ...form, targets: form.targets.filter((_, idx) => idx !== i).map((t, idx) => ({ ...t, priority: idx })) });
   const updateTarget = (i: number, patch: Partial<TargetInput>) =>
@@ -283,6 +283,9 @@ function RouteForm({ title, submitLabel, route, onSubmit }: { title: string; sub
         ...(t.modality ? { modality: t.modality } : {}),
         // key: string kosong → undefined → backend simpan NULL (pakai key default provider).
         ...(t.key ? { key: t.key } : {}),
+        // mapping: 'auto' = gateway translate body OpenAI⇄native utk target ini;
+        // kosong/verbatim = teruskan apa adanya (default).
+        ...(t.mapping === 'auto' ? { mapping: 'auto' } : {}),
       })),
       ...(isEdit ? { __edit: true } : {}),
     };
@@ -370,7 +373,7 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
           <Label>Modality</Label>
           <select
             value={form.modality}
-            onChange={(e) => { setForm({ ...form, modality: e.target.value as typeof form.modality, targets: [] }); setNewTarget({ provider: '', model: '', modality: '', key: '' }); }}
+            onChange={(e) => { setForm({ ...form, modality: e.target.value as typeof form.modality, targets: [] }); setNewTarget({ provider: '', model: '', modality: '', key: '', mapping: '' }); }}
             className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]"
           >
             {MODALITIES.map((m) => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
@@ -441,6 +444,17 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                       {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                     </select>
                   )}
+                  {form.modality === 'image' && (
+                    <select
+                      value={t.mapping}
+                      onChange={(e) => updateTarget(i, { mapping: e.target.value })}
+                      className="h-7 rounded-md border border-border bg-background px-1.5 text-[11px]"
+                      title="Body mapping — verbatim: teruskan request/response apa adanya (default). auto: translate body ke format native target (Kling/Qwen/OpenAI edits) dan convert response balik ke format OpenAI."
+                    >
+                      <option value="">verbatim</option>
+                      <option value="auto">auto-map</option>
+                    </select>
+                  )}
                   <KeySelect provider={t.provider} value={t.key} onChange={(v) => updateTarget(i, { key: v })} />
                   <div className="flex shrink-0 flex-col">
                     <button type="button" onClick={() => moveTarget(i, i - 1)} disabled={i === 0} className="leading-none text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up">
@@ -455,7 +469,7 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
               );
             })}
             <div className="flex items-center gap-2">
-              <select value={newTarget.provider} onChange={(e) => setNewTarget({ provider: e.target.value, model: '', modality: '', key: '' })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
+              <select value={newTarget.provider} onChange={(e) => setNewTarget({ provider: e.target.value, model: '', modality: '', key: '', mapping: '' })} className="h-9 flex-1 rounded-md border border-border bg-background px-2 text-[12px]">
                 <option value="">provider…</option>
                 {capableProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -472,6 +486,17 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                 >
                   <option value="">default ({form.modality})</option>
                   {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </select>
+              )}
+              {form.modality === 'image' && (
+                <select
+                  value={newTarget.mapping}
+                  onChange={(e) => setNewTarget({ ...newTarget, mapping: e.target.value })}
+                  className="h-9 w-28 rounded-md border border-border bg-background px-2 text-[11px]"
+                  title="Body mapping — verbatim: teruskan apa adanya (default). auto: translate body ke format native target dan convert response balik ke format OpenAI."
+                >
+                  <option value="">verbatim</option>
+                  <option value="auto">auto-map</option>
                 </select>
               )}
               {newTarget.provider && (

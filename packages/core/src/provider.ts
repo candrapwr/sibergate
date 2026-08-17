@@ -48,6 +48,12 @@ export interface AdapterCall {
    * dispatcher (edge relay = no ProxyAgent).
    */
   relay?: { url: string; injectHeaders: Record<string, string> };
+  /**
+   * Body mapping mode for this dispatch (dari route target). 'auto' = adapter
+   * menerjemahkan body OpenAI-kanonik ke format native provider ini; undefined
+   * atau 'verbatim' = teruskan apa adanya (perilaku default/lama).
+   */
+  mapping?: 'verbatim' | 'auto';
 }
 
 const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> = {
@@ -142,11 +148,13 @@ export async function sendUpstream(opts: {
 }): Promise<Response> {
   const { provider, body, signal } = opts;
   let url = opts.url;
-  // Build upstream headers: Content-Type, provider custom headers, then any
-  // allowlisted client headers (passthrough). Passthrough comes LAST so it can
-  // override Content-Type if the client explicitly set it (e.g. multipart).
+  // Build upstream headers: Content-Type (kecuali body FormData — boundary
+  // multipart harus di-set oleh fetch, Content-Type manual justru merusak),
+  // provider custom headers, then any allowlisted client headers (passthrough).
+  // Passthrough comes LAST so it can override Content-Type if the client
+  // explicitly set it (e.g. multipart).
   const headers: Record<string, string> = {
-    'Content-Type': opts.contentType ?? 'application/json',
+    ...(body instanceof FormData ? {} : { 'Content-Type': opts.contentType ?? 'application/json' }),
     ...provider.headers,
     ...(opts.passthroughHeaders ?? {}),
     // Edge relay inject headers (mis. x-relay-target) ditaruh terakhir shg

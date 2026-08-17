@@ -107,6 +107,14 @@ export {
   type ReasoningEffort,
 } from './reasoning-mapper.js';
 export {
+  mapImageInput,
+  parseImageSizeClass,
+  detectImageDialect,
+  type ImageSizeClass,
+  type ImageDialect,
+  type MappedImageRequest,
+} from './image-mapper.js';
+export {
   // runtime
   resolveProxy,
   buildDispatcher,
