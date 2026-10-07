@@ -94,6 +94,8 @@ export interface ApiKey {
   enabled: boolean;
   lastUsedAt: string | null;
   createdAt: string;
+  // Empty means unrestricted for backwards compatibility; non-empty is the allowlist.
+  routeIds: string[];
   // plaintext only present right after creation
   plaintext?: string;
 }

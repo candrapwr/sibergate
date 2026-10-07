@@ -321,6 +321,15 @@ export function useToggleApiKey() {
   });
 }
 
+export function useSetApiKeyRoutes() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, routeIds }: { id: string; routeIds: string[] }) =>
+      api.put<ApiKey>(`api-keys/${id}/routes`, { routeIds }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
+  });
+}
+
 export function useDeleteApiKey() {
   const qc = useQueryClient();
   return useMutation({

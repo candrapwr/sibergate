@@ -624,22 +624,12 @@ export function createApiKey(name: string): CreatedKey {
   return { apiKey: getApiKey(id)!, plaintext: gen.plaintext };
 }
 
-export function listApiKeys(): Record<string, unknown>[] {
-  return (getDb().prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[]).map(
-    (row) => ({
-      id: row.id,
-      name: row.name,
-      keyPrefix: row.key_prefix,
-      enabled: row.enabled === 1,
-      lastUsedAt: row.last_used_at,
-      createdAt: row.created_at,
-    }),
-  );
+function apiKeyRouteIds(db: DB, apiKeyId: string): string[] {
+  return (db.prepare('SELECT route_id FROM api_key_routes WHERE api_key_id = ? ORDER BY route_id').all(apiKeyId) as any[])
+    .map((row) => row.route_id);
 }
 
-export function getApiKey(id: string): Record<string, unknown> | null {
-  const row = getDb().prepare('SELECT * FROM api_keys WHERE id = ?').get(id) as any;
-  if (!row) return null;
+function redactApiKeyRow(db: DB, row: any): Record<string, unknown> {
   return {
     id: row.id,
     name: row.name,
@@ -647,7 +637,43 @@ export function getApiKey(id: string): Record<string, unknown> | null {
     enabled: row.enabled === 1,
     lastUsedAt: row.last_used_at,
     createdAt: row.created_at,
+    // Empty means unrestricted in the current API representation. A key with
+    // an explicit empty policy is rejected by the gateway and is not created
+    // through the UI; non-empty arrays are the normal allowlist state.
+    routeIds: apiKeyRouteIds(db, row.id),
   };
+}
+
+export function listApiKeys(): Record<string, unknown>[] {
+  const db = getDb();
+  return (db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[])
+    .map((row) => redactApiKeyRow(db, row));
+}
+
+export function setApiKeyRoutes(apiKeyId: string, routeIds: string[]): Record<string, unknown> | null {
+  const db = getDb();
+  const key = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(apiKeyId) as any;
+  if (!key) return null;
+  const unique = [...new Set(routeIds.map((id) => String(id).trim()).filter(Boolean))];
+  const missing = unique.filter((id) => !db.prepare('SELECT 1 FROM routes WHERE id = ?').get(id));
+  if (missing.length) throw new ValidationError(`Unknown route(s): ${missing.join(', ')}`);
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM api_key_routes WHERE api_key_id = ?').run(apiKeyId);
+    const insert = db.prepare('INSERT INTO api_key_routes (api_key_id, route_id) VALUES (?, ?)');
+    for (const routeId of unique) insert.run(apiKeyId, routeId);
+  });
+  tx();
+  return redactApiKeyRow(db, key);
+}
+
+export function getApiKeyRouteIds(apiKeyId: string): string[] {
+  return apiKeyRouteIds(getDb(), apiKeyId);
+}
+
+export function getApiKey(id: string): Record<string, unknown> | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM api_keys WHERE id = ?').get(id) as any;
+  return row ? redactApiKeyRow(db, row) : null;
 }
 
 export function deleteApiKey(id: string): boolean {

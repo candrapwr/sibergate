@@ -111,6 +111,16 @@ function migrate(db: DB): void {
     );
     CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 
+    -- Optional per-key route allowlist. If a key has no rows here, it keeps
+    -- backward-compatible unrestricted access to every enabled route.
+    CREATE TABLE IF NOT EXISTS api_key_routes (
+      api_key_id TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+      route_id   TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+      PRIMARY KEY (api_key_id, route_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_key_routes_key ON api_key_routes(api_key_id);
+    CREATE INDEX IF NOT EXISTS idx_api_key_routes_route ON api_key_routes(route_id);
+
     -- Upstream API keys per provider (multi-account support). One provider may
     -- own several keys (e.g. multiple OpenAI accounts); each is assigned to a
     -- route target so the engine can pick a specific account per target.
@@ -265,6 +275,19 @@ function migrate(db: DB): void {
   // tapi salah satu target (OpenAI) diakses via modality 'responses'. Bila NULL,
   // target memakai route.modality (behavior lama, backward compatible).
   addColumnIfMissing(db, 'route_targets', 'modality', 'TEXT');
+
+  // ── migrasi: API Route allowlist ───────────────────────────────────────
+  // Keys without entries in api_key_routes remain unrestricted for backwards
+  // compatibility; once configured, only the listed enabled routes are allowed.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS api_key_routes (
+      api_key_id TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+      route_id   TEXT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+      PRIMARY KEY (api_key_id, route_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_key_routes_key ON api_key_routes(api_key_id);
+    CREATE INDEX IF NOT EXISTS idx_api_key_routes_route ON api_key_routes(route_id);
+  `);
 
   // ── migrasi: kolom api_key_id di requests (statistik per API key) ────
   // Catat API key mana yg dipakai tiap request supaya usage bisa dikelompokkan

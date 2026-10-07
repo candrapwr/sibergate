@@ -54,7 +54,7 @@ export {
 } from './console-log.js';
 export { ConfigStore } from './config-store.js';
 export * as admin from './admin.js';
-export { ConflictError, ValidationError } from './admin.js';
+export { ConflictError, ValidationError, setApiKeyRoutes, getApiKeyRouteIds } from './admin.js';
 export { KNOWN_PROVIDERS, KNOWN_STATS } from './known-providers.js';
 export type { KnownProvider, KnownModel } from './known-providers.js';
 export {

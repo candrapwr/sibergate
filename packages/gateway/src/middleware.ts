@@ -7,6 +7,7 @@ export interface Vars {
   requestId: string;
   startedAt: number;
   apiKeyId: string | null;
+  apiKeyRouteIds: string[] | null;
 }
 
 /**
@@ -23,6 +24,7 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
     const path = new URL(c.req.url).pathname;
     // Public paths + admin + auth (these have their own auth handling).
     if (path === '/' || path === '/health' || path.startsWith('/admin') || path.startsWith('/auth')) {
+      c.set('apiKeyRouteIds', null);
       await next();
       return;
     }
@@ -31,6 +33,7 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
     }
     // Open mode when no keys configured.
     if (keyCount === 0) {
+      c.set('apiKeyRouteIds', null);
       await next();
       return;
     }
@@ -66,6 +69,18 @@ export function authMiddleware(): MiddlewareHandler<{ Variables: Vars }> {
       );
     }
     c.set('apiKeyId', row.id);
+    const routePolicy = getDb()
+      .prepare(`
+        SELECT CASE WHEN EXISTS (
+          SELECT 1 FROM api_key_routes WHERE api_key_id = ?
+        ) THEN 1 ELSE 0 END AS configured
+      `)
+      .get(row.id) as { configured: number };
+    const allowedRoutes = getDb()
+      .prepare('SELECT route_id FROM api_key_routes WHERE api_key_id = ?')
+      .all(row.id) as Array<{ route_id: string }>;
+    // null means unrestricted; an array (including []) means explicitly configured.
+    c.set('apiKeyRouteIds', routePolicy.configured === 1 ? allowedRoutes.map((r) => r.route_id) : null);
     touchApiKey(row.id);
     await next();
   };

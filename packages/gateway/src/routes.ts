@@ -38,6 +38,14 @@ import {
  * Build audit-log metadata for an upstream failure, merging the failover trail
  * with the failing upstream diagnostics (URL/status/body) when present.
  */
+function enforceApiRoute(c: Context, routeId: string): Response | null {
+  const allowed = c.get('apiKeyRouteIds');
+  if (allowed && !allowed.includes(routeId)) {
+    return errorResponse(c, 403, `API key is not allowed to access route '${routeId}'.`, 'permission_error');
+  }
+  return null;
+}
+
 function errorMetadata(
   e: Error & { trail?: import('@sibergate/core').FailoverStep[]; upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null; requestHeaders?: Record<string,string> | null } },
 ): Record<string, unknown> | undefined {
@@ -413,6 +421,8 @@ export function createApp(configStore: ConfigStore) {
     const rawClientBody = structuredClone(body);
 
     const routeId = String(body.model ?? '');
+    const routeAccessError = enforceApiRoute(c, routeId);
+    if (routeAccessError) return routeAccessError;
     let route;
     try {
       route = getRoute(config, routeId);
@@ -829,6 +839,8 @@ async function modalityHandler(
   }
 
   const routeId = String(body.model ?? '');
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
   let route;
   try {
     route = getRoute(config, routeId);
@@ -1221,6 +1233,8 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
   if (!routeId) {
     return errorResponse(c, 404, `Route '${splat}' not found.`, 'invalid_request_error', 'model_not_found', 'model');
   }
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
 
   // Path suffix setelah route id (sisanya dari splat) — disuntik ke template
   // upstream via placeholder {path}.

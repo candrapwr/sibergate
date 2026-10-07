@@ -302,11 +302,25 @@ export function createAdminRouter(configStore: ConfigStore) {
   });
 
   app.patch('/api-keys/:id', async (c) => {
-    const { enabled } = await c.req.json();
-    const ok = admin.toggleApiKey(c.req.param('id'), enabled);
+    const { enabled, routeIds } = await c.req.json();
+    const id = c.req.param('id');
+    const ok = admin.toggleApiKey(id, enabled);
     if (!ok) return c.json(notFound('api_key'), 404);
+    if (Array.isArray(routeIds)) admin.setApiKeyRoutes(id, routeIds);
     reload();
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...(admin.getApiKey(id) ?? {}) });
+  });
+
+  app.put('/api-keys/:id/routes', async (c) => {
+    const id = c.req.param('id');
+    const body = await c.req.json();
+    if (!Array.isArray(body.routeIds)) {
+      return c.json({ error: { message: 'routeIds must be an array', type: 'invalid_request_error', param: 'routeIds', code: null } }, 400);
+    }
+    const updated = admin.setApiKeyRoutes(id, body.routeIds);
+    if (!updated) return c.json(notFound('api_key'), 404);
+    reload();
+    return c.json(updated);
   });
 
   // Rotate the secret of an existing key (same id/name, new secret). Returns the

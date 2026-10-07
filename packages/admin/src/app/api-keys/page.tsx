@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Plus, Trash2, KeyRound, Copy, Check, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
-import { useApiKeys, useCreateApiKey, useToggleApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/queries';
+import { useApiKeys, useRoutes, useCreateApiKey, useToggleApiKey, useDeleteApiKey, useRegenerateApiKey, useSetApiKeyRoutes } from '@/lib/queries';
 import type { ApiKey } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button } from '@/components/ui/button';
@@ -46,6 +46,7 @@ export default function ApiKeysPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>API Route</TableHead>
               <TableHead>Prefix</TableHead>
               <TableHead>Last used</TableHead>
               <TableHead>Created</TableHead>
@@ -76,9 +77,50 @@ export default function ApiKeysPage() {
 function KeyRow({ apiKey }: { apiKey: ApiKey }) {
   const toggle = useToggleApiKey();
   const del = useDeleteApiKey();
+  const { data: routesData } = useRoutes();
+  const setRoutes = useSetApiKeyRoutes();
+  const routes = routesData?.data ?? [];
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>(apiKey.routeIds ?? []);
+  const saveRoutes = async () => {
+    try {
+      await setRoutes.mutateAsync({ id: apiKey.id, routeIds: selected });
+      setOpen(false);
+      toast.success('API Route access updated');
+    } catch (e) {
+      toast.error((e as Error).message);
+    }
+  };
   return (
     <TableRow>
       <TableCell>{apiKey.name}</TableCell>
+      <TableCell>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <Button variant="outline" size="sm" onClick={() => { setSelected(apiKey.routeIds ?? []); setOpen(true); }}>
+            {(apiKey.routeIds?.length ?? 0) > 0 ? `${apiKey.routeIds.length} route(s)` : 'All routes'}
+          </Button>
+          <DialogContent>
+            <DialogHeader><DialogTitle>API Route access — {apiKey.name}</DialogTitle></DialogHeader>
+            <p className="text-[13px] text-muted-foreground">No selection means this key can access all routes. Select routes to restrict it.</p>
+            <div className="max-h-64 space-y-2 overflow-y-auto">
+              {routes.map((route) => (
+                <label key={route.id} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(route.id)}
+                    onChange={(e) => setSelected((current) => e.target.checked ? [...current, route.id] : current.filter((id) => id !== route.id))}
+                  />
+                  <span className="font-mono">{route.id}</span>
+                </label>
+              ))}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setSelected([])}>Allow all</Button>
+              <Button onClick={saveRoutes} disabled={setRoutes.isPending}>Save</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </TableCell>
       <TableCell className="font-mono text-[12px] text-muted-foreground">{apiKey.keyPrefix}…</TableCell>
       <TableCell className="text-muted-foreground">{formatTs(apiKey.lastUsedAt)}</TableCell>
       <TableCell className="text-muted-foreground">{formatTs(apiKey.createdAt)}</TableCell>
