@@ -5,6 +5,7 @@ import { mcpToolsCall, type McpCallOptions } from './client.js';
 import { normalizeToolCall, type NormalizedToolCall } from './normalize.js';
 import { mapToToolArguments, sizeToClass } from './schema-map.js';
 import { parseIntent } from '../image-mapper.js';
+import { ensureHostedAssetRefs } from './upload.js';
 
 /**
  * Alur media (image/video) di atas MCP client:
@@ -141,16 +142,19 @@ export async function mcpImageFlow(
 ): Promise<Response> {
   const { tool, variant } = splitToolModel(model, toolMeta, body);
   const intent = parseIntent(body);
+  // Ref inline (data-URI/base64) → upload via file_upload jadi URL hosted;
+  // input model Kling menolak non-URL absolut.
+  const hostedImages = await ensureHostedAssetRefs(provider, intent.images, opts);
   const flatArgs = mapToToolArguments(toolMeta?.inputSchema, {
     prompt: intent.prompt,
     negativePrompt: intent.negativePrompt,
     sizeClass: intent.sizeClass ?? null,
-    imageRefs: intent.images,
+    imageRefs: hostedImages,
     n: intent.n,
     model: variant,
     extra: intent.openaiExtras,
   });
-  const args = buildToolPayload(toolMeta, flatArgs, variant, intent.images);
+  const args = buildToolPayload(toolMeta, flatArgs, variant, hostedImages);
   pushConsoleLog('info', 'mcp', `image via ${provider.id}/${tool}${variant ? ` (model ${variant})` : ''}`, {
     provider: provider.id, tool, args: redactArgs(args),
   });
@@ -226,10 +230,10 @@ export async function mcpVideoSubmit(
   opts?: McpCallOptions,
 ): Promise<NormalizedToolCall> {
   const { tool, variant } = splitToolModel(model, toolMeta, body, ['video_model']);
-  const imageRefs = [
+  const imageRefs = await ensureHostedAssetRefs(provider, [
     ...([body.input_reference].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
     ...([body.image].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
-  ];
+  ], opts);
   const seconds = body.seconds !== undefined ? Number(body.seconds) : body.duration !== undefined ? Number(body.duration) : undefined;
   const size = typeof body.size === 'string' ? body.size : undefined;
 

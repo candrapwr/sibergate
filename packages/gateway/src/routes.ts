@@ -903,7 +903,7 @@ async function modalityHandler(
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const { response, servedBy, latencyMs, servedByKeyId, trail } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
 
     // Forward the body verbatim with the upstream Content-Type (binary or JSON).
@@ -913,6 +913,9 @@ async function modalityHandler(
     // so filling a model's price later makes it count with no code change.
     const model = config.models.find((m) => m.id === servedBy.modelId);
     const costUsd = computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0);
+    // Trail failover disertakan di metadata (auto-set had_failover oleh logger)
+    // + raw trace saat ada target yg gagal — konsisten dgn handler chat.
+    const successTraced = traceOnSuccess({ requestId, c, route: route.id, trail, servedBy });
     logRequest({
       ...baseLog,
       provider: servedBy.providerId,
@@ -920,6 +923,7 @@ async function modalityHandler(
       upstreamKeyId: servedByKeyId ?? null,
       latencyMs,
       costUsd,
+      metadata: successTraced ? { trail, hasTrace: true } : { trail },
     });
     return new Response(buf, {
       status: 200,
@@ -1021,8 +1025,11 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const { response, servedBy, latencyMs, servedByKeyId, trail } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
     const upstreamKeyId = servedByKeyId ?? null;
+    // Trail failover utk metadata log sukses (auto-set had_failover logger) —
+    // konsisten dgn handler chat; raw trace tersimpan bila ada target gagal.
+    const successTraced = traceOnSuccess({ requestId, c, route: route.id, trail, servedBy });
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
     const buf = Buffer.from(await response.arrayBuffer());
 
@@ -1071,6 +1078,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
         upstreamKeyId,
         latencyMs: totalLatency,
         costUsd,
+        metadata: successTraced ? { trail, hasTrace: true } : { trail },
       });
       return c.json(buildOpenAIImageResponse(images));
     };
@@ -1089,6 +1097,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
         errorCode: 'image_task_failed',
         errorMessage: message?.slice(0, 300),
         costUsd,
+        metadata: successTraced ? { trail, hasTrace: true } : { trail },
       });
       return errorResponse(
         c, 502,
@@ -1149,6 +1158,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
           upstreamKeyId,
           latencyMs,
           costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+          metadata: successTraced ? { trail, hasTrace: true } : { trail },
         });
         return c.json(converted);
       }
@@ -1165,6 +1175,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       upstreamKeyId,
       latencyMs,
       costUsd,
+      metadata: successTraced ? { trail, hasTrace: true } : { trail },
     });
     return new Response(buf, {
       status: 200,
@@ -1300,7 +1311,8 @@ async function videoCreateHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const { response, servedBy, latencyMs, servedByKeyId, trail } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const successTraced = traceOnSuccess({ requestId, c, route: route.id, trail, servedBy });
     // Adapter video (MCP) mengembalikan payload ternormalisasi (JSON).
     const payload = (await response.json().catch(() => null)) as
       | { taskRef?: string | null; status?: string | null; videoUrls?: string[]; otherUrls?: string[]; text?: string; taskStatus?: string | null }
@@ -1336,6 +1348,7 @@ async function videoCreateHandler(c: Context, configStore: ConfigStore) {
       upstreamKeyId: servedByKeyId ?? null,
       latencyMs,
       costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+      metadata: successTraced ? { trail, hasTrace: true } : { trail },
     });
     return c.json(videoJobToObject(job));
   } catch (err) {
@@ -1595,10 +1608,11 @@ async function mcpCallToolHandler(c: Context, configStore: ConfigStore) {
   };
 
   try {
-    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const { response, servedBy, latencyMs, servedByKeyId, trail } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
     const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
     const buf = Buffer.from(await response.arrayBuffer());
     const model = config.models.find((m) => m.id === servedBy.modelId);
+    const successTraced = traceOnSuccess({ requestId, c, route: route.id, trail, servedBy });
     logRequest({
       ...baseLog,
       provider: servedBy.providerId,
@@ -1607,6 +1621,7 @@ async function mcpCallToolHandler(c: Context, configStore: ConfigStore) {
       upstreamKeyId: servedByKeyId ?? null,
       latencyMs,
       costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+      metadata: successTraced ? { trail, hasTrace: true } : { trail },
     });
     return new Response(buf, {
       status: 200,
