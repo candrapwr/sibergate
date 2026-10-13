@@ -37,11 +37,17 @@ export async function callToolNormalized(
   const result = await mcpToolsCall(provider, tool, args, opts);
   const normalized = normalizeToolCall(tool, result);
   if (normalized.isError) {
+    // Sertakan PAYLOAD REQUEST (tools/call) di diagnostics supaya trail log &
+    // raw trace menampilkan persis apa yg dikirim ke server — debugging error
+    // validasi argumen jadi langsung terlihat.
     throw new GatewayCallError(
       'server_error',
       `MCP tool '${tool}' error: ${normalized.text.slice(0, 300) || '(no message)'}`,
       undefined,
-      { upstreamBody: JSON.stringify(result.content).slice(0, 1000) },
+      {
+        upstreamRequestBody: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name: tool, arguments: args } }).slice(0, 8000),
+        upstreamBody: JSON.stringify(result.content).slice(0, 1000),
+      },
     );
   }
   return normalized;

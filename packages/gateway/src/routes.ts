@@ -144,11 +144,18 @@ function maybeSaveRequestTrace(opts: {
   /** Headers actually sent to the upstream (already redacted by provider). */
   upstreamRequestHeaders?: Record<string, string> | null;
   hadFailover: boolean;
+  /**
+   * Simpan trace TANPA syarat (dipakai error-path handler: semua respons
+   * non-200 wajib menyimpan request yg dikirim — termasuk 400 validasi
+   * tanpa diagnostik upstream — supaya bisa dilihat di drawer detail log).
+   */
+  force?: boolean;
 }): boolean {
   // Only capture when there was an actual upstream error (final failure or a
-  // recovered failover). Success requests are not traced (disk hygiene).
+  // recovered failover) — or when explicitly forced (non-200 responses).
+  // Success requests are not traced (disk hygiene).
   const upstreamPresent = opts.upstreamUrl || opts.upstreamStatus != null;
-  if (!opts.hadFailover && !upstreamPresent) return false;
+  if (!opts.force && !opts.hadFailover && !upstreamPresent) return false;
   try {
     const data: RequestTraceData = {
       requestId: opts.requestId,
@@ -538,6 +545,7 @@ export function createApp(configStore: ConfigStore) {
           provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
           upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
           hadFailover,
+          force: true,
         });
         const meta = errorMetadata(e);
         if (traced && meta) meta.hasTrace = true;
@@ -760,6 +768,7 @@ export function createApp(configStore: ConfigStore) {
         provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
         upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
         hadFailover,
+        force: true,
       });
       const meta = errorMetadata(e);
       if (traced && meta) meta.hasTrace = true;
@@ -938,6 +947,7 @@ async function modalityHandler(
       provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
       upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
       hadFailover: false,
+      force: true,
     });
     logRequest({
       ...baseLog,
@@ -1190,6 +1200,7 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
       provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
       upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
       hadFailover: false,
+      force: true,
     });
     logRequest({
       ...baseLog,
@@ -1360,6 +1371,7 @@ async function videoCreateHandler(c: Context, configStore: ConfigStore) {
       provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
       upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
       hadFailover: false,
+      force: true,
     });
     logRequest({
       ...baseLog,
@@ -1636,6 +1648,7 @@ async function mcpCallToolHandler(c: Context, configStore: ConfigStore) {
       provider: e.servedBy?.provider ?? null, model: toolName,
       upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
       hadFailover: false,
+      force: true,
     });
     logRequest({
       ...baseLog,
@@ -1809,6 +1822,7 @@ async function genericHandler(c: Context, configStore: ConfigStore) {
       provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
       upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
       hadFailover: false,
+      force: true,
     });
     logRequest({
       ...baseLog,
