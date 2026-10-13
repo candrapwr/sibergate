@@ -4,18 +4,64 @@ export interface Provider {
   id: string;
   name: string;
   baseUrl: string;
+  /** 'openai' (default) = REST; 'mcp' = Model Context Protocol server. */
+  protocol: 'openai' | 'mcp';
+  /** Opsi provider MCP (mode penanganan vendor + tool polling async). */
+  mcpOptions: { mode?: 'generic' | 'kling'; pollTool?: string; pollToolArg?: string } | null;
   authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   hasCredentials: boolean;
   /** Jumlah upstream key tambahan di provider_keys (multi-account). */
   keyCount: number;
   endpoints: Record<string, string>;
-  /** Modalities this provider can serve (keys of `endpoints`). */
+  /**
+   * Modalities this provider can serve. REST: keys of `endpoints`.
+   * MCP: kelas kemampuan dari tool hasil sync ('mcp' selalu ada + image/video).
+   */
   modalities: string[];
   headers: Record<string, string>;
   timeoutMs: number | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Status sesi OAuth provider MCP (GET /admin/providers/:id/mcp/status). */
+export interface McpOAuthStatus {
+  providerId: string;
+  status: 'pending' | 'connected' | 'error';
+  clientId: string;
+  redirectUri: string;
+  scope: string | null;
+  expiresAt: number | null;
+  userInfo: unknown;
+  lastError: string | null;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  updatedAt: string;
+}
+
+/** Hasil POST /admin/providers/:id/mcp/sync. */
+export interface McpSyncResult {
+  providerId: string;
+  toolsFound: number;
+  /** Tool generasi (image/video) yg jadi model BARU. */
+  toolsImported: number;
+  /** Tool generasi yg model-nya diperbarui. */
+  toolsUpdated: number;
+  /** Model lama yg dihapus/disable (hilang dr server / bukan tool generasi). */
+  toolsRemoved: number;
+  /** Tool utilitas yg TIDAK jadi model (who_am_i, query_tasks, dll). */
+  toolsSkipped: number;
+  pollTool: string | null;
+  tools: Array<{ name: string; modalities: string[] }>;
+}
+
+/** Tool MCP live (GET /admin/providers/:id/mcp/tools). */
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
 }
 
 /** An upstream API key milik sebuah provider (multi-account). Plaintext tidak pernah dikembalikan API. */
@@ -42,6 +88,14 @@ export interface Model {
   inputPricePer1m: number | null;
   outputPricePer1m: number | null;
   capabilities: Record<string, boolean>;
+  /** Metadata tool MCP bila model hasil sync tools; null = model biasa. */
+  toolMeta: {
+    mcpTool: true;
+    toolName: string;
+    inputSchema?: Record<string, unknown>;
+    annotations?: Record<string, unknown>;
+    pollTool?: string;
+  } | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -77,6 +131,8 @@ export interface Route {
 export type RouteModality =
   | 'chat'
   | 'image'
+  | 'video'
+  | 'mcp'
   | 'speech'
   | 'transcribe'
   | 'embed'

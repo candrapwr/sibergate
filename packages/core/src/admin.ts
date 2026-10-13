@@ -7,6 +7,21 @@ import { resetLatency } from './latency.js';
 import { listSignatures as listSigs, resetSignatures as resetSigs, type SignatureList } from './signatures.js';
 import { clearRequestTraces as clearTraces } from './request-trace.js';
 import { clearProxyLogs } from './proxy/log.js';
+import { pushConsoleLog } from './console-log.js';
+import type { McpToolMeta, Provider, VideoJob, VideoJobStatus } from './types.js';
+import { mcpToolsCall, mcpToolsList, resetMcpClient } from './mcp/client.js';
+import {
+  buildModelParams,
+  detectArgEnvelope,
+  detectPollTool,
+  detectPollToolArg,
+  guessToolModalities,
+  isGenerationTool,
+  normalizeToolCall,
+  parseWhoAmIToolModels,
+  type WhoAmIToolSpec,
+} from './mcp/normalize.js';
+import { disconnectMcpOAuth, setMcpOAuthUserInfo } from './mcp/oauth.js';
 
 /**
  * Admin repository — CRUD operations over the master-data tables.
@@ -78,6 +93,10 @@ export interface ProviderInput {
   id: string;
   name?: string;
   baseUrl: string;
+  /** Wire protocol: 'openai' (REST adapters, default) | 'mcp' (MCP client). */
+  protocol?: 'openai' | 'mcp';
+  /** Opsi provider MCP (mode/pollTool) — diabaikan utk REST. */
+  mcpOptions?: { mode?: 'generic' | 'kling'; pollTool?: string; pollToolArg?: string } | null;
   authScheme?: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   /** Plaintext API key — encrypted here, never returned, never logged. */
   apiKey?: string;
@@ -102,10 +121,16 @@ export function updateProvider(id: string, input: Partial<ProviderInput>): Recor
   const existing = db.prepare('SELECT * FROM providers WHERE id = ?').get(id) as any;
   if (!existing) return null;
   // Map existing DB row (snake_case) into ProviderInput, then apply the patch.
+  const existingMcpOptions = safeParse<ProviderInput['mcpOptions']>(
+    existing.mcp_options ?? 'null',
+    null,
+  ) ?? null;
   const merged: ProviderInput = {
     id: existing.id,
     name: existing.name,
     baseUrl: existing.base_url,
+    protocol: existing.protocol === 'mcp' ? 'mcp' : 'openai',
+    mcpOptions: existingMcpOptions,
     authScheme: existing.auth_scheme,
     credentials: existing.credentials, // keep existing encrypted blob unless apiKey provided
     endpoints: safeParse(existing.endpoints ?? '{}', {}),
@@ -114,6 +139,11 @@ export function updateProvider(id: string, input: Partial<ProviderInput>): Recor
     enabled: existing.enabled === 1,
   };
   Object.assign(merged, input);
+  // PATCH parsial mcpOptions: merge SHALLOW di atas nilai lama supaya field
+  // yg tidak dikirim (mis. pollTool hasil sync) tidak terhapus diam-diam.
+  if (input.mcpOptions) {
+    merged.mcpOptions = { ...(existingMcpOptions ?? {}), ...input.mcpOptions };
+  }
   return upsertProvider(merged);
 }
 
@@ -131,16 +161,19 @@ function upsertProvider(input: ProviderInput): Record<string, unknown> {
     // kemudian via POST /providers/:id/keys. Pakai blob kosong (NOT NULL constraint).
     credentials = json(encryptJSON({ apiKey: '' }));
   }
+  const protocol = input.protocol === 'mcp' ? 'mcp' : 'openai';
   db.prepare(
-    `INSERT INTO providers (id, name, base_url, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
-     VALUES (@id, @name, @baseUrl, @authScheme, @credentials, @endpoints, @headers, @timeoutMs, @enabled)
+    `INSERT INTO providers (id, name, base_url, protocol, mcp_options, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
+     VALUES (@id, @name, @baseUrl, @protocol, @mcpOptions, @authScheme, @credentials, @endpoints, @headers, @timeoutMs, @enabled)
      ON CONFLICT(id) DO UPDATE SET
-       name=@name, base_url=@baseUrl, auth_scheme=@authScheme, credentials=@credentials,
+       name=@name, base_url=@baseUrl, protocol=@protocol, mcp_options=@mcpOptions, auth_scheme=@authScheme, credentials=@credentials,
        endpoints=@endpoints, headers=@headers, timeout_ms=@timeoutMs, enabled=@enabled, updated_at=datetime('now')`,
   ).run({
     id: input.id,
     name: input.name ?? input.id,
     baseUrl: input.baseUrl,
+    protocol,
+    mcpOptions: input.mcpOptions ? json(input.mcpOptions) : null,
     authScheme: input.authScheme ?? 'bearer',
     credentials,
     endpoints: json(input.endpoints ?? {}),
@@ -165,12 +198,470 @@ export function listProviders(): Record<string, unknown>[] {
 
 export function deleteProvider(id: string): boolean {
   try {
-    return getDb().prepare('DELETE FROM providers WHERE id = ?').run(id).changes > 0;
+    const changed = getDb().prepare('DELETE FROM providers WHERE id = ?').run(id).changes > 0;
+    if (changed) {
+      // Bersihkan state runtime MCP (session cache; row mcp_oauth ikut CASCADE).
+      resetMcpClient(id);
+    }
+    return changed;
   } catch {
     throw new ConflictError(
       `provider '${id}' is still referenced by a model or route target. Remove those first.`,
     );
   }
+}
+
+/* ─────────────────────────── MCP PROVIDER TOOLS ───────────────────────────
+ * Operasi khusus provider protocol='mcp': discovery tools (live), sync ke
+ * models, dan test-call. Kredensial (OAuth/key) di-resolve runtime — fungsi
+ * di sini membangun objek Provider transient dari row DB.
+ */
+
+/** Bangun objek Provider runtime dari row DB (decrypt key default + OAuth). */
+export function loadMcpRuntimeProvider(providerId: string): Provider {
+  const row = getDb().prepare('SELECT * FROM providers WHERE id = ?').get(providerId) as any;
+  if (!row) throw new ValidationError(`Provider '${providerId}' tidak ditemukan.`);
+  if (row.protocol !== 'mcp') throw new ValidationError(`Provider '${providerId}' bukan provider MCP (protocol='${row.protocol}').`);
+  let apiKey = '';
+  try {
+    const creds = decryptJSON<{ apiKey?: string }>(JSON.parse(row.credentials) as EncryptedBlob);
+    apiKey = creds.apiKey ?? '';
+  } catch {
+    apiKey = '';
+  }
+  // Key default dari provider_keys menang atas credentials legacy (sama seperti
+  // loadConfigFromDb) supaya multi-account konsisten.
+  const defaultKey = getDb()
+    .prepare('SELECT credentials FROM provider_keys WHERE provider_id = ? AND is_default = 1 AND enabled = 1')
+    .get(providerId) as { credentials: string } | undefined;
+  if (defaultKey) {
+    try {
+      const creds = decryptJSON<{ apiKey?: string }>(JSON.parse(defaultKey.credentials) as EncryptedBlob);
+      if (creds.apiKey) apiKey = creds.apiKey;
+    } catch {
+      /* pakai apiKey lama */
+    }
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    baseUrl: row.base_url,
+    protocol: 'mcp',
+    mcpOptions: safeParse(row.mcp_options ?? 'null', null),
+    authScheme: row.auth_scheme,
+    apiKey,
+    headers: safeParse(row.headers, {}),
+    timeoutMs: row.timeout_ms ?? undefined,
+    enabled: row.enabled === 1,
+    endpoints: {},
+  };
+}
+
+/** Live tools/list dari server MCP (tanpa menyimpan apa pun). */
+export async function listMcpToolsLive(providerId: string): Promise<Record<string, unknown>[]> {
+  const provider = loadMcpRuntimeProvider(providerId);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    return (await mcpToolsList(provider, { signal: controller.signal })) as unknown as Record<string, unknown>[];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface McpSyncResult {
+  providerId: string;
+  toolsFound: number;
+  toolsImported: number;
+  toolsUpdated: number;
+  toolsRemoved: number;
+  pollTool: string | null;
+  tools: Array<{ name: string; modalities: string[] }>;
+}
+
+export interface McpSyncResult {
+  providerId: string;
+  toolsFound: number;
+  /** Tool generasi (image/video) yg jadi model BARU. */
+  toolsImported: number;
+  /** Tool generasi yg model-nya diperbarui (sudah ada dr sync sebelumnya). */
+  toolsUpdated: number;
+  /** Model lama yg dihapus/disable (tool hilang dr server ATAU bukan tool generasi). */
+  toolsRemoved: number;
+  /** Tool utilitas yg TIDAK di-import sebagai model (who_am_i, query_tasks, dll). */
+  toolsSkipped: number;
+  pollTool: string | null;
+  tools: Array<{ name: string; modalities: string[] }>;
+}
+
+/**
+ * Sync tools server MCP → models.
+ *
+ * Urutan sumber (mode kling maupun generic):
+ *   1. **who_am_i DULU** — kling menyimpan referensi model di
+ *      `availableModels` (parameter `model` WAJIB; daftarnya TIDAK ada di
+ *      schema tools/list). Tiap tool generasi jadi model dasar (dipin ke
+ *      `defaultModel`) + satu model per varian `{tool}@{model}` dgn
+ *      inputSchema SINTETIS dari arguments/inputs per model.
+ *   2. Fallback: enum `model` di inputSchema tools/list (server MCP lain).
+ *   3. Deteksi nama (isGenerationTool) bila who_am_i tak dikenali.
+ *
+ * Tool utilitas (who_am_i, query_tasks, element_*, dll.) tidak menjadi model
+ * — jalankan lewat panel "Run tool" / endpoint generik. Model lama yg tidak
+ * lagi valid dihapus (bila masih direferensikan route → disable).
+ */
+export async function syncMcpTools(providerId: string): Promise<McpSyncResult> {
+  const db = getDb();
+  const provider = loadMcpRuntimeProvider(providerId);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  let tools;
+  try {
+    tools = await mcpToolsList(provider, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!tools.length) throw new ValidationError('Server MCP tidak mengembalikan tool apa pun.');
+
+  // ── Langkah 1: who_am_i — sumber referensi model (fail-soft). ──
+  let whoSpecs: WhoAmIToolSpec[] = [];
+  const toolNames = new Set(tools.map((t) => t.name));
+  try {
+    const whoTimer = setTimeout(() => controller.abort(), 30_000);
+    let whoRaw;
+    try {
+      whoRaw = await mcpToolsCall(provider, 'who_am_i', {}, { signal: controller.signal });
+    } finally {
+      clearTimeout(whoTimer);
+    }
+    setMcpOAuthUserInfo(providerId, whoRaw);
+    // content text = JSON {user, availableModels, ...}
+    const text = whoRaw.content
+      .filter((b) => b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text as string)
+      .join('\n');
+    whoSpecs = parseWhoAmIToolModels(tryParseJsonLoose(text) ?? whoRaw.structuredContent);
+    // Hanya tool yg benar-benar ada di tools/list (harus bisa dipanggil).
+    whoSpecs = whoSpecs.filter((s) => toolNames.has(s.tool));
+    if (whoSpecs.length) {
+      pushConsoleLog('info', 'mcp', `who_am_i: ${whoSpecs.length} tool generasi dgn ${whoSpecs.reduce((n, s) => n + s.models.length, 0)} varian model`, {
+        provider: providerId, tools: whoSpecs.map((s) => s.tool),
+      });
+    }
+  } catch (err) {
+    pushConsoleLog('warn', 'mcp', `who_am_i gagal (lanjut fallback schema/nama): ${(err as Error).message?.slice(0, 160)}`, {
+      provider: providerId,
+    });
+  }
+  const whoByTool = new Map(whoSpecs.map((s) => [s.tool, s]));
+
+  // Deteksi poll tool sekali utk seluruh provider (memindai semua tool,
+  // termasuk utilitas — query_tasks memang bukan tool generasi).
+  // Catatan: safeParse('null', …) MENGEMBALIKAN null (bukan fallback) karena
+  // JSON.parse('null') sukses — jadi guard ?? {} eksplisit.
+  const currentOptions = safeParse<{ mode?: 'generic' | 'kling'; pollTool?: string; pollToolArg?: string }>(
+    (db.prepare('SELECT mcp_options FROM providers WHERE id = ?').get(providerId) as any)?.mcp_options ?? 'null',
+    {},
+  ) ?? {};
+  const mode = currentOptions.mode === 'kling' ? 'kling' : 'generic';
+  let pollTool = detectPollTool(tools);
+  let pollToolArg: string | undefined;
+  if (pollTool) {
+    pollToolArg = detectPollToolArg(tools.find((t) => t.name === pollTool));
+  }
+  if (mode === 'kling') {
+    pollTool = pollTool ?? 'query_tasks';
+    const pollSchema = tools.find((t) => t.name === pollTool);
+    pollToolArg = pollToolArg ?? detectPollToolArg(pollSchema) ?? 'generation_id';
+  }
+  // Jangan menimpa override manual operator kecuali hasil deteksi baru valid;
+  // mode SELALU dipertahankan (field ini milik operator/preset).
+  const nextOptions = {
+    mode,
+    pollTool: currentOptions.pollTool ?? pollTool ?? undefined,
+    pollToolArg: currentOptions.pollToolArg ?? pollToolArg ?? undefined,
+  };
+  db.prepare('UPDATE providers SET mcp_options = ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(Object.keys(nextOptions).length ? json(nextOptions) : null, providerId);
+
+  const result: McpSyncResult = {
+    providerId,
+    toolsFound: tools.length,
+    toolsImported: 0,
+    toolsUpdated: 0,
+    toolsRemoved: 0,
+    toolsSkipped: 0,
+    pollTool: nextOptions.pollTool ?? null,
+    tools: [],
+  };
+
+  const existingIds = new Set(
+    (db.prepare('SELECT id FROM models WHERE provider_id = ? AND tool_meta IS NOT NULL').all(providerId) as Array<{ id: string }>)
+      .map((r) => r.id),
+  );
+
+  for (const tool of tools) {
+    if (!tool.name) continue;
+    const whoSpec = whoByTool.get(tool.name);
+    // Tool generasi = terdaftar di who_am_i.availableModels ATAU deteksi nama.
+    const generation = !!whoSpec || isGenerationTool(tool.name, tool.description ?? '');
+    if (!generation) {
+      result.toolsSkipped += 1;
+      continue;
+    }
+    // Modalitas ditentukan NAMA tool (who_am_i tidak menyebut jenis media).
+    const displayModalities = guessToolModalities(tool.name, tool.description ?? '');
+
+    /** Insert/update satu model (dasar / varian) + hitung hasil sync. */
+    const upsertToolModel = (modelId: string, displayName: string, toolMeta: McpToolMeta, exists: boolean) => {
+      db.prepare(
+        `INSERT INTO models (id, provider_id, display_name, modalities, capabilities, tool_meta, enabled)
+         VALUES (?, ?, ?, ?, '{}', ?, 1)
+         ON CONFLICT(provider_id, id) DO UPDATE SET
+           display_name=excluded.display_name, modalities=excluded.modalities,
+           tool_meta=excluded.tool_meta, enabled=1, updated_at=datetime('now')`,
+      ).run(modelId, providerId, displayName, json(displayModalities), json(toolMeta));
+      if (exists) {
+        result.toolsUpdated += 1;
+        existingIds.delete(modelId);
+      } else {
+        result.toolsImported += 1;
+      }
+      result.tools.push({ name: displayName, modalities: displayModalities });
+    };
+
+    const baseId = `${providerId}/${tool.name}`;
+    const baseMeta: McpToolMeta = {
+      mcpTool: true,
+      toolName: tool.name,
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations,
+      pollTool: nextOptions.pollTool ?? undefined,
+    };
+
+    if (whoSpec?.models.length) {
+      // ── Sumber utama: who_am_i. Parameter `model` WAJIB → model dasar
+      // dipin ke defaultModel supaya route dasar langsung jalan.
+      // Envelope ditentukan schema tools/list ASLI: Kling memakai 'pairs'
+      // (model top-level + arguments[{name,value}] + inputs[]), server lain
+      // 'flat' (argumen = properti langsung).
+      const envelope = detectArgEnvelope(tool.inputSchema);
+      const allModels = whoSpec.models.map((m) => m.model);
+      /** Meta per model: schema sintetis (arguments only) + slot media. */
+      const metaFor = (m: import('./mcp/normalize.js').WhoAmIModelSpec): McpToolMeta => {
+        const params = buildModelParams(allModels, m);
+        const baseProps = (params.schema.properties ?? {}) as Record<string, unknown>;
+        const schema = envelope === 'pairs'
+          ? params.schema // slot media dikirim via inputs[] — tidak jadi properti
+          : {
+              ...params.schema,
+              properties: {
+                ...baseProps,
+                ...Object.fromEntries(params.inputSlots.map((s) => [s, { type: 'string' }])),
+              },
+            };
+        return {
+          ...baseMeta,
+          modelVariant: m.model,
+          modelLabel: m.alias?.split(',')[0]?.trim(),
+          inputSchema: schema,
+          argEnvelope: envelope,
+          ...(envelope === 'pairs' ? { inputSlots: params.inputSlots } : {}),
+        };
+      };
+      const defaultVariant = whoSpec.defaultModel && whoSpec.models.some((m) => m.model === whoSpec.defaultModel)
+        ? whoSpec.defaultModel
+        : whoSpec.models[0]!.model;
+      const defaultSpec = whoSpec.models.find((m) => m.model === defaultVariant)!;
+      upsertToolModel(baseId, tool.name, metaFor(defaultSpec), existingIds.has(baseId));
+      for (const m of whoSpec.models) {
+        const variantId = `${providerId}/${tool.name}@${m.model}`;
+        upsertToolModel(
+          variantId,
+          `${tool.name} (${m.alias?.split(',')[0]?.trim() || m.model})`,
+          metaFor(m),
+          existingIds.has(variantId),
+        );
+      }
+      continue;
+    }
+
+    // ── Fallback: model dasar tanpa varian (server generic)…
+    upsertToolModel(baseId, tool.name, baseMeta, existingIds.has(baseId));
+
+    // …plus varian dari enum schema tools/list bila ada.
+    const modelProp = (tool.inputSchema?.properties ?? {}) as Record<string, { enum?: unknown }>;
+    const modelEnumProp = Object.entries(modelProp).find(
+      ([key, schema]) => /^model(_name)?$/.test(key) && Array.isArray(schema?.enum),
+    );
+    if (modelEnumProp) {
+      const variants = (modelEnumProp[1].enum as unknown[]).filter(
+        (v): v is string => typeof v === 'string' && !!v,
+      );
+      for (const variant of variants) {
+        const variantId = `${providerId}/${tool.name}@${variant}`;
+        upsertToolModel(
+          variantId,
+          `${tool.name} (${variant})`,
+          { ...baseMeta, modelVariant: variant },
+          existingIds.has(variantId),
+        );
+      }
+    }
+  }
+
+  // Sisa model lama: hilang dr server / bukan tool generasi / varian sudah
+  // tidak tersedia. Hapus; bila masih direferensikan route (FK) → disable.
+  for (const staleId of existingIds) {
+    try {
+      db.prepare('DELETE FROM models WHERE provider_id = ? AND id = ?').run(providerId, staleId);
+    } catch {
+      db.prepare('UPDATE models SET enabled = 0, updated_at = datetime(\'now\') WHERE id = ?').run(staleId);
+    }
+    result.toolsRemoved += 1;
+  }
+  return result;
+}
+
+/** Parse JSON longgar: terima object langsung atau string JSON. */
+function tryParseJsonLoose(text: unknown): unknown {
+  if (text && typeof text === 'object') return text;
+  if (typeof text !== 'string') return null;
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+/** Test-call sebuah tool dari admin (args bebas) — hasil ternormalisasi. */
+export async function testMcpTool(
+  providerId: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const provider = loadMcpRuntimeProvider(providerId);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const raw = await mcpToolsCall(provider, tool, args, { signal: controller.signal });
+    return normalizeToolCall(tool, raw) as unknown as Record<string, unknown>;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Putuskan sesi OAuth provider MCP (juga dipakai saat ganti auth mode). */
+export function disconnectProviderMcp(providerId: string): boolean {
+  resetMcpClient(providerId);
+  return disconnectMcpOAuth(providerId);
+}
+
+/* ─────────────────────────── VIDEO JOBS ───────────────────────────
+ * Persistensi job video (modality 'video', endpoint /v1/videos). Job dibuat
+ * gateway saat POST; status di-update saat GET poll (query_tasks via MCP).
+ */
+
+function rowToVideoJob(row: any): VideoJob {
+  return {
+    id: row.id,
+    routeId: row.route_id,
+    providerId: row.provider_id,
+    modelId: row.model_id,
+    pollTool: row.poll_tool ?? null,
+    taskRef: row.task_ref ?? null,
+    status: row.status,
+    progress: row.progress ?? 0,
+    result: safeParse(row.result ?? 'null', null),
+    videoUrls: safeParse(row.video_urls ?? '[]', []),
+    error: row.error ?? null,
+    apiKeyId: row.api_key_id ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function createVideoJob(input: {
+  routeId: string;
+  providerId: string;
+  modelId: string;
+  pollTool?: string | null;
+  taskRef?: string | null;
+  status: VideoJobStatus;
+  result?: Record<string, unknown> | null;
+  videoUrls?: string[];
+  apiKeyId?: string | null;
+}): VideoJob {
+  const db = getDb();
+  const id = `video_${randomUUID().replace(/-/g, '').slice(0, 20)}`;
+  db.prepare(
+    `INSERT INTO video_jobs (id, route_id, provider_id, model_id, poll_tool, task_ref, status, progress, result, video_urls, error, api_key_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+  ).run(
+    id,
+    input.routeId,
+    input.providerId,
+    input.modelId,
+    input.pollTool ?? null,
+    input.taskRef ?? null,
+    input.status,
+    input.status === 'completed' ? 100 : 0,
+    input.result ? json(input.result) : null,
+    json(input.videoUrls ?? []),
+    input.apiKeyId ?? null,
+  );
+  return getVideoJob(id)!;
+}
+
+export function getVideoJob(id: string): VideoJob | null {
+  const row = getDb().prepare('SELECT * FROM video_jobs WHERE id = ?').get(id) as any;
+  return row ? rowToVideoJob(row) : null;
+}
+
+export function updateVideoJob(id: string, patch: {
+  status?: VideoJobStatus;
+  progress?: number;
+  result?: Record<string, unknown> | null;
+  videoUrls?: string[];
+  taskRef?: string | null;
+  error?: string | null;
+}): VideoJob | null {
+  const db = getDb();
+  const sets: string[] = ['updated_at = datetime(\'now\')'];
+  const values: unknown[] = [];
+  if (patch.status !== undefined) {
+    sets.push('status = ?');
+    values.push(patch.status);
+  }
+  if (patch.progress !== undefined) {
+    sets.push('progress = ?');
+    values.push(patch.progress);
+  }
+  if (patch.result !== undefined) {
+    sets.push('result = ?');
+    values.push(patch.result ? json(patch.result) : null);
+  }
+  if (patch.videoUrls !== undefined) {
+    sets.push('video_urls = ?');
+    values.push(json(patch.videoUrls));
+  }
+  if (patch.taskRef !== undefined) {
+    sets.push('task_ref = ?');
+    values.push(patch.taskRef);
+  }
+  if (patch.error !== undefined) {
+    sets.push('error = ?');
+    values.push(patch.error);
+  }
+  values.push(id);
+  db.prepare(`UPDATE video_jobs SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return getVideoJob(id);
+}
+
+export function deleteVideoJob(id: string): boolean {
+  return getDb().prepare('DELETE FROM video_jobs WHERE id = ?').run(id).changes > 0;
 }
 
 /* ───────────────────────── PROVIDER KEYS (multi-account) ─────────────────────────
@@ -340,16 +831,37 @@ function redactProvider(row: any): Record<string, unknown> | null {
       c: number;
     }
   ).c;
+  const protocol = row.protocol === 'mcp' ? 'mcp' : 'openai';
+  // Untuk provider MCP, kemampuan modality datang dari tool-toolnya (models
+  // hasil sync), bukan endpoints map — supaya filter provider di UI Routes
+  // tetap bekerja (image/video/mcp).
+  let modalities: string[] = Object.keys(safeParse(row.endpoints ?? '{}', {}));
+  if (protocol === 'mcp') {
+    const toolRows = getDb()
+      .prepare('SELECT modalities FROM models WHERE provider_id = ? AND tool_meta IS NOT NULL')
+      .all(row.id) as Array<{ modalities: string }>;
+    const caps = new Set<string>(['mcp']);
+    for (const tr of toolRows) {
+      for (const cap of safeParse<string[]>(tr.modalities, [])) {
+        if (cap === 'image-generation') caps.add('image');
+        else if (cap === 'video-generation') caps.add('video');
+      }
+    }
+    modalities = [...caps];
+  }
   return {
     id: row.id,
     name: row.name,
     baseUrl: row.base_url,
+    protocol,
+    mcpOptions: safeParse(row.mcp_options ?? 'null', null),
     authScheme: row.auth_scheme,
     hasCredentials: hasCredentials || keyCount > 0,
     keyCount,
     endpoints: safeParse(row.endpoints ?? '{}', {}),
-    // Convenience: which modalities this provider can serve (endpoint keys).
-    modalities: Object.keys(safeParse(row.endpoints ?? '{}', {})),
+    // Convenience: which modalities this provider can serve (endpoint keys;
+    // provider MCP: kelas kemampuan dari tool-toolnya + 'mcp').
+    modalities,
     headers: safeParse(row.headers, {}),
     timeoutMs: row.timeout_ms,
     enabled: row.enabled === 1,
@@ -370,6 +882,8 @@ export interface ModelInput {
   inputPricePer1m?: number;
   outputPricePer1m?: number;
   capabilities?: Record<string, boolean>;
+  /** Metadata tool MCP (model hasil sync tools). Null/undefined = model biasa. */
+  toolMeta?: McpToolMeta | null;
   enabled?: boolean;
 }
 
@@ -396,13 +910,13 @@ export function upsertModel(input: ModelInput): Record<string, unknown> {
   // yg kebetulan memakai id sama — inilah bug "model baru menimpa provider lain".
   db.prepare(
     `INSERT INTO models (id, provider_id, display_name, modalities, context_window, max_output,
-       input_price_per_1m, output_price_per_1m, capabilities, enabled)
+       input_price_per_1m, output_price_per_1m, capabilities, tool_meta, enabled)
      VALUES (@id, @providerId, @displayName, @modalities, @contextWindow, @maxOutput,
-       @inputPrice, @outputPrice, @capabilities, @enabled)
+       @inputPrice, @outputPrice, @capabilities, @toolMeta, @enabled)
      ON CONFLICT(provider_id, id) DO UPDATE SET
        display_name=@displayName, modalities=@modalities,
        context_window=@contextWindow, max_output=@maxOutput, input_price_per_1m=@inputPrice,
-       output_price_per_1m=@outputPrice, capabilities=@capabilities, enabled=@enabled,
+       output_price_per_1m=@outputPrice, capabilities=@capabilities, tool_meta=@toolMeta, enabled=@enabled,
        updated_at=datetime('now')`,
   ).run({
     id: input.id,
@@ -414,6 +928,7 @@ export function upsertModel(input: ModelInput): Record<string, unknown> {
     inputPrice: input.inputPricePer1m ?? null,
     outputPrice: input.outputPricePer1m ?? null,
     capabilities: json(input.capabilities ?? {}),
+    toolMeta: input.toolMeta ? json(input.toolMeta) : null,
     enabled: input.enabled === false ? 0 : 1,
   });
   return getModel(input.id)!;
@@ -469,6 +984,7 @@ function redactModel(row: any): Record<string, unknown> | null {
     inputPricePer1m: row.input_price_per_1m,
     outputPricePer1m: row.output_price_per_1m,
     capabilities: safeParse(row.capabilities, {}),
+    toolMeta: safeParse(row.tool_meta ?? 'null', null),
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -481,7 +997,7 @@ export interface RouteInput {
   id: string;
   name?: string;
   /** Which adapter handles this route. Defaults to 'chat'. */
-  modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | 'tools-text-stream' | 'tools-text-nonstream';
+  modality?: 'chat' | 'image' | 'video' | 'mcp' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | 'tools-text-stream' | 'tools-text-nonstream';
   strategy?: 'fallback' | 'fastest' | 'weighted';
   timeoutMs?: number;
   maxRetries?: number;
@@ -497,7 +1013,7 @@ export interface RouteInput {
     model: string;
     priority?: number;
     weight?: number;
-    modality?: 'chat' | 'image' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | 'tools-text-stream' | 'tools-text-nonstream' | null;
+    modality?: 'chat' | 'image' | 'video' | 'mcp' | 'speech' | 'transcribe' | 'embed' | 'music' | 'generic' | 'responses' | 'tools-text' | 'tools-text-stream' | 'tools-text-nonstream' | null;
     /** 'auto' = body mapping aktif utk target ini; selain itu verbatim. */
     mapping?: 'verbatim' | 'auto' | null;
   }>;
@@ -1044,13 +1560,13 @@ export function importKnownProviders(providers: import('./known-providers.js').K
   const db = getDb();
   const result: ImportResult = { providersImported: 0, providersSkipped: 0, modelsImported: 0, modelsSkipped: 0 };
 
-  const existingProvider = db.prepare('SELECT id FROM providers WHERE id = ?');
+  const existingProvider = db.prepare('SELECT id, endpoints, protocol FROM providers WHERE id = ?');
   // Cek duplikat by composite (provider_id, id) — bukan id global. Sehingga
   // model dgn nama sama milik provider berbeda tetap diimpor sebagai baris baru.
   const existingModel = db.prepare('SELECT id FROM models WHERE provider_id = ? AND id = ?');
   const insertProvider = db.prepare(
-    `INSERT INTO providers (id, name, base_url, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
-     VALUES (@id, @name, @baseUrl, @authScheme, @credentials, @endpoints, @headers, @timeoutMs, 0)`,
+    `INSERT INTO providers (id, name, base_url, protocol, mcp_options, auth_scheme, credentials, endpoints, headers, timeout_ms, enabled)
+     VALUES (@id, @name, @baseUrl, @protocol, @mcpOptions, @authScheme, @credentials, @endpoints, @headers, @timeoutMs, 0)`,
   );
   const insertModel = db.prepare(
     `INSERT INTO models (id, provider_id, display_name, modalities, context_window, max_output,
@@ -1063,26 +1579,33 @@ export function importKnownProviders(providers: import('./known-providers.js').K
 
   db.transaction(() => {
     for (const p of providers) {
+      // Provider MCP (mis. Kling) tidak memakai endpoints REST — tools-nya
+      // di-sync live via /admin/providers/:id/mcp/sync setelah kredensial ok.
+      const isMcp = p.protocol === 'mcp';
+      const catalogEndpoints = isMcp ? {} : providerEndpoints(p);
       if (existingProvider.get(p.id)) {
         result.providersSkipped += 1;
         // Provider exists — merge in any modality endpoints from the catalog
         // that aren't already declared, so old providers (seeded before
         // multi-modality, with only {chat}) gain image/speech/etc. without
         // clobbering operator customizations. Credentials/enabled untouched.
-        const row = existingProvider.get(p.id) as { endpoints?: string } | undefined;
-        const current = safeParse<Record<string, string>>(row?.endpoints ?? '{}', {});
-        const catalog = providerEndpoints(p);
-        const merged = { ...catalog, ...current }; // current wins for conflicts
-        db.prepare('UPDATE providers SET endpoints = ? WHERE id = ?').run(json(merged), p.id);
+        const row = existingProvider.get(p.id) as { endpoints?: string; protocol?: string } | undefined;
+        if (row?.protocol !== 'mcp') {
+          const current = safeParse<Record<string, string>>(row?.endpoints ?? '{}', {});
+          const merged = { ...catalogEndpoints, ...current }; // current wins for conflicts
+          db.prepare('UPDATE providers SET endpoints = ? WHERE id = ?').run(json(merged), p.id);
+        }
         // Still try to import any missing models for this provider.
       } else {
         insertProvider.run({
           id: p.id,
           name: p.name,
           baseUrl: p.baseUrl,
+          protocol: isMcp ? 'mcp' : 'openai',
+          mcpOptions: isMcp && p.mcpOptions?.mode ? json({ mode: p.mcpOptions.mode }) : null,
           authScheme: p.authScheme,
           credentials: blankCreds,
-          endpoints: json(providerEndpoints(p)),
+          endpoints: json(catalogEndpoints),
           headers: json({}),
           timeoutMs: null,
         });

@@ -21,6 +21,12 @@ import {
   updateUser,
   type ConsoleLogEntry,
   type SiberGateConfig,
+  handleMcpOAuthCallback,
+  startMcpOAuth,
+  getMcpOAuthStatus,
+  setMcpOAuthUserInfo,
+  mcpToolsCall,
+  resetMcpClient,
 } from '@sibergate/core';
 import { adminAuthMiddleware } from './admin-middleware.js';
 
@@ -149,6 +155,83 @@ export function createAdminRouter(configStore: ConfigStore) {
     if (!ok) return c.json(notFound('provider key'), 404);
     reload();
     return c.json({ ok: true });
+  });
+
+  /* ─────────────────── /admin/providers/:id/mcp (protocol='mcp') ─────── */
+  // Discovery & sync tools, test-call, dan OAuth connect/disconnect utk
+  // provider MCP (mis. Kling). Callback OAuth ada di router terpisah
+  // (createMcpOauthCallbackRouter) karena diakses browser operator TANPA
+  // admin key.
+  app.get('/providers/:id/mcp/tools', async (c) => {
+    try {
+      const tools = await admin.listMcpToolsLive(c.req.param('id'));
+      return c.json({ data: tools });
+    } catch (err) {
+      return mcpError(c, err);
+    }
+  });
+
+  app.post('/providers/:id/mcp/sync', async (c) => {
+    try {
+      const result = await admin.syncMcpTools(c.req.param('id'));
+      reload();
+      pushConsoleLog('success', 'mcp', `sync tools ${result.providerId}: ${result.toolsImported} baru, ${result.toolsUpdated} update, poll tool=${result.pollTool ?? '(none)'}`, {
+        provider: result.providerId, imported: result.toolsImported, updated: result.toolsUpdated,
+      });
+      return c.json(result);
+    } catch (err) {
+      return mcpError(c, err);
+    }
+  });
+
+  app.post('/providers/:id/mcp/test', async (c) => {
+    const body = await c.req.json();
+    if (!body.tool) {
+      return c.json({ error: 'invalid_input', message: 'Field "tool" wajib diisi.' }, 400);
+    }
+    try {
+      const result = await admin.testMcpTool(
+        c.req.param('id'),
+        String(body.tool),
+        (body.arguments ?? {}) as Record<string, unknown>,
+      );
+      return c.json(result);
+    } catch (err) {
+      return mcpError(c, err);
+    }
+  });
+
+  app.get('/providers/:id/mcp/status', (c) => {
+    const provider = admin.getProvider(c.req.param('id'));
+    if (!provider) return c.json(notFound('provider'), 404);
+    return c.json({
+      oauth: getMcpOAuthStatus(c.req.param('id')),
+      // Tool hasil sync terakhir (models dgn tool_meta).
+      syncedTools: admin.listModels().filter(
+        (m) => m.provider === c.req.param('id') && (m as { toolMeta?: unknown }).toolMeta,
+      ),
+    });
+  });
+
+  app.post('/providers/:id/mcp/oauth/start', async (c) => {
+    const provider = admin.getProvider(c.req.param('id'));
+    if (!provider) return c.json(notFound('provider'), 404);
+    if (provider.protocol !== 'mcp') {
+      return c.json({ error: 'invalid_input', message: `Provider '${provider.id}' bukan provider MCP.` }, 400);
+    }
+    try {
+      const start = await startMcpOAuth(c.req.param('id'), String(provider.baseUrl));
+      pushConsoleLog('info', 'mcp', `OAuth flow dimulai utk ${provider.id}`, { provider: provider.id });
+      return c.json(start);
+    } catch (err) {
+      return mcpError(c, err);
+    }
+  });
+
+  app.post('/providers/:id/mcp/oauth/disconnect', (c) => {
+    const ok = admin.disconnectProviderMcp(c.req.param('id'));
+    reload();
+    return c.json({ ok, disconnected: ok });
   });
 
   /* ───────────────────────────── /admin/models ───────────────────────── */
@@ -570,4 +653,86 @@ function notFound(resource: string) {
       code: 'not_found',
     },
   };
+}
+
+/** Map error operasi MCP (ValidationError / upstream MCP) → respons admin API.
+ *  Bentuk body = standar {error:{message,code}} supaya toast UI menampilkan
+ *  pesan lengkap (api-client membaca error.message). */
+function mcpError(c: { json: (body: unknown, status?: number) => Response }, err: unknown): Response {
+  const e = err as Error & { status?: number; code?: string };
+  pushConsoleLog('error', 'mcp', `MCP operation failed: ${e.message?.slice(0, 300)}`, {
+    code: e.code, status: e.status,
+  });
+  if (e.name === 'ValidationError') {
+    return c.json(
+      { error: { message: e.message, type: 'invalid_input', param: null, code: 'invalid_input' } },
+      400,
+    );
+  }
+  return c.json(
+    {
+      error: {
+        message: e.message ?? 'MCP operation failed.',
+        type: 'mcp_error',
+        param: null,
+        code: e.code ?? 'mcp_error',
+      },
+    },
+    e.status && e.status >= 400 && e.status < 600 ? e.status : 502,
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * MCP OAuth callback — dipasang DI LUAR auth admin (mount di index.ts
+ * SEBELUM router admin) karena URL ini diakses browser operator via redirect
+ * dari server OAuth (Kling); browser tidak membawa SIBERGATE_ADMIN_KEY.
+ * Path: GET /admin/mcp/oauth/callback?code=...&state=...
+ * ───────────────────────────────────────────────────────────────────────── */
+export function createMcpOauthCallbackRouter() {
+  const app = new Hono();
+  app.get('/callback', async (c) => {
+    const finish = (ok: boolean, title: string, detail: string) =>
+      c.html(
+        `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>` +
+        `<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#0b0f17;color:#e5e7eb}` +
+        `.card{max-width:480px;padding:32px;border-radius:12px;background:#151b28;border:1px solid #2a3347;text-align:center}` +
+        `h1{font-size:18px;margin:0 0 12px}p{font-size:13px;color:#9aa4b2;line-height:1.6;margin:0 0 16px;word-break:break-word}` +
+        `button{padding:8px 16px;border-radius:8px;border:0;background:#3b82f6;color:#fff;cursor:pointer}</style></head>` +
+        `<body><div class="card"><h1>${title}</h1><p>${detail}</p><button onclick="window.close();setTimeout(()=>location.href='/',1500)">Tutup</button></div>` +
+        `<script>setTimeout(()=>window.close(),3000)</script></body></html>`,
+      );
+    try {
+      const result = await handleMcpOAuthCallback({
+        code: c.req.query('code'),
+        state: c.req.query('state'),
+        error: c.req.query('error'),
+        errorDescription: c.req.query('error_description'),
+      });
+      if (!result.ok) {
+        return finish(false, 'Koneksi Dibatalkan', result.error ?? 'Authorization denied.');
+      }
+      // Best-effort: panggil who_am_i utk info akun (gagal ≠ fatal).
+      try {
+        const provider = admin.loadMcpRuntimeProvider(result.providerId);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15_000);
+        try {
+          const raw = await mcpToolsCall(provider, 'who_am_i', {}, { signal: controller.signal });
+          setMcpOAuthUserInfo(result.providerId, raw);
+        } finally {
+          clearTimeout(timer);
+        }
+      } catch {
+        /* who_am_i opsional */
+      }
+      resetMcpClient(result.providerId);
+      pushConsoleLog('success', 'mcp', `provider ${result.providerId} terhubung via OAuth`, {
+        provider: result.providerId,
+      });
+      return finish(true, 'Berhasil Terhubung ✅', `Provider '${result.providerId}' kini terhubung. Kembali ke halaman Providers lalu klik "Sync tools".`);
+    } catch (err) {
+      return finish(false, 'Koneksi Gagal', (err as Error).message ?? 'Unknown error.');
+    }
+  });
+  return app;
 }

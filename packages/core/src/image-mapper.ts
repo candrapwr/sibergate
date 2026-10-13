@@ -62,8 +62,8 @@ export type MappedImageRequest =
     mask?: string;
   };
 
-/** Intent kanonik hasil parse two-way dari body client. */
-interface CanonicalImageIntent {
+/** Intent kanonik hasil parse two-way dari body client (dipakai adapter MCP). */
+export interface CanonicalImageIntent {
   prompt?: string;
   negativePrompt?: string;
   images: string[];
@@ -154,7 +154,7 @@ const OPENAI_PASSTHROUGH = [
 ] as const;
 
 /** Parse body client (dialek apa pun) → intent kanonik. Pure. */
-function parseIntent(body: Record<string, unknown>): CanonicalImageIntent {
+export function parseIntent(body: Record<string, unknown>): CanonicalImageIntent {
   const intent: CanonicalImageIntent = { images: [], openaiExtras: {} };
   if (typeof body.prompt === 'string' && body.prompt.trim()) intent.prompt = body.prompt;
   if (typeof body.negative_prompt === 'string' && body.negative_prompt.trim()) intent.negativePrompt = body.negative_prompt;

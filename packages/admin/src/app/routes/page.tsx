@@ -27,7 +27,9 @@ const STRATEGIES = [
 
 const MODALITIES = [
   { id: 'chat', label: 'Chat', desc: 'Text conversation (/v1/chat/completions)' },
-  { id: 'image', label: 'Image', desc: 'Image generation (/v1/images/generations)' },
+  { id: 'image', label: 'Image', desc: 'Image generation (/v1/images/generations) — target bisa provider REST atau model tool MCP (mis. Kling text_to_image); campur se-modality dgn failover otomatis' },
+  { id: 'video', label: 'Video', desc: 'Video generation, OpenAI Sora-style (/v1/videos — create, poll status, download) — target model tool MCP (mis. Kling text_to_video)' },
+  { id: 'mcp', label: 'MCP Tools (non-generasi)', desc: 'Panggil tool MCP non-generasi via /v1/mcp/{route}/tools/{tool} (cek kredit, element_*, dll.). Generasi image/video TIDAK pakai modality ini — pakai modality Image/Video biasa' },
   { id: 'speech', label: 'Speech', desc: 'Text-to-speech (/v1/audio/speech)' },
   { id: 'transcribe', label: 'Transcribe', desc: 'Audio→text (/v1/audio/transcriptions)' },
   { id: 'embed', label: 'Embed', desc: 'Embeddings (/v1/embeddings)' },
@@ -309,6 +311,8 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
   'tools-text-stream': ['text-to-text', 'vision'],
   'tools-text-nonstream': ['text-to-text', 'vision'],
   image: ['image-generation'],
+  video: ['video-generation'],
+  mcp: [], // tool dipilih per-request dari URL — model target hanya placeholder
   speech: ['audio'],
   transcribe: ['audio-transcription'],
   embed: ['embeddings'],
@@ -325,9 +329,10 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
       return m.modalities.some((cap) => neededCaps.includes(cap));
     }) ?? [];
 
-  // Generic passthrough has no real "model", but route_targets needs a model FK.
-  // Offer a one-click placeholder so operators aren't forced to leave this page.
-  const isGeneric = form.modality === 'generic';
+  // Generic passthrough / MCP tools has no real "model", but route_targets needs
+  // a model FK. Offer a one-click placeholder so operators aren't forced to
+  // leave this page. (MCP: tool dipilih per-request via URL, bukan per-target.)
+  const isGeneric = form.modality === 'generic' || form.modality === 'mcp';
   const providerHasModels = availableModels.length > 0;
   const createDefaultModel = async () => {
     if (!newTarget.provider) return;
@@ -337,8 +342,8 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
         id,
         provider: newTarget.provider,
         displayName: `${newTarget.provider} (default)`,
-        // Tag generic-route placeholders as 'api' so they're clearly non-LLM.
-        modalities: form.modality === 'generic' ? ['api'] : [],
+        // Tag generic/mcp-route placeholders as 'api' so they're clearly non-LLM.
+        modalities: form.modality === 'generic' || form.modality === 'mcp' ? ['api'] : [],
       } as any);
       setNewTarget({ ...newTarget, model: id });
       toast.success(`Created placeholder model '${id}'`);

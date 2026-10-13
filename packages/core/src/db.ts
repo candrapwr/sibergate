@@ -438,6 +438,64 @@ function migrate(db: DB): void {
   // startup (idempoten — 0 row bila tidak ada orphan). Fix di deleteEdgeRelay
   // mencegah orphan baru, ini bersihkan data yg sudah orphan sebelum fix.
   db.exec('DELETE FROM proxy_pool_members WHERE edge_relay_id IS NOT NULL AND edge_relay_id NOT IN (SELECT id FROM edge_relays)');
+
+  // ── MCP provider layer (protocol='mcp') ─────────────────────────────────
+  // providers.protocol: 'openai' (default, REST adapters) | 'mcp' (Model
+  // Context Protocol client — baseUrl = MCP endpoint, tools = models).
+  addColumnIfMissing(db, 'providers', 'protocol', "TEXT NOT NULL DEFAULT 'openai'");
+  // providers.mcp_options: JSON {pollTool, pollToolArg} — tool polling task
+  // async (auto-deteksi saat sync tools, mis. 'query_tasks' di Kling).
+  addColumnIfMissing(db, 'providers', 'mcp_options', 'TEXT');
+  // models.tool_meta: JSON McpToolMeta {mcpTool, toolName, inputSchema,
+  // annotations, pollTool} — metadata tool utk model hasil import tools/list.
+  addColumnIfMissing(db, 'models', 'tool_meta', 'TEXT');
+
+  // OAuth 2.1 session untuk provider MCP (Kling memakai OAuth login browser,
+  // bukan API key). Satu session per provider. access/refresh token dienkripsi
+  // (AES-256-GCM, crypto.ts) — sama seperti credentials provider lain.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_oauth (
+      provider_id    TEXT PRIMARY KEY REFERENCES providers(id) ON DELETE CASCADE,
+      status         TEXT NOT NULL DEFAULT 'pending',  -- pending|connected|error
+      client_id      TEXT NOT NULL,
+      resource       TEXT,           -- RFC 8707 resource indicator (optional)
+      authorization_endpoint TEXT NOT NULL,
+      token_endpoint        TEXT NOT NULL,
+      registration_endpoint TEXT,    -- dynamic client registration (RFC 7591)
+      scope           TEXT,
+      redirect_uri    TEXT NOT NULL,
+      access_token    TEXT,          -- encrypted blob {iv,ct,tag}
+      refresh_token   TEXT,          -- encrypted blob
+      expires_at      INTEGER,       -- epoch ms; NULL = tidak diketahui
+      user_info       TEXT,          -- JSON hasil who_am_i (display only)
+      last_error      TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  // Job generasi video (modality 'video', OpenAI-style /v1/videos). Dibuat saat
+  // POST /v1/videos; task async upstream (generation_id MCP) dilacak lewat
+  // task_ref + poll tool. Row dihapus saat DELETE /v1/videos/:id.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS video_jobs (
+      id          TEXT PRIMARY KEY,            -- 'video_<random>'
+      route_id    TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      model_id    TEXT NOT NULL,               -- '{provider}/{tool}'
+      poll_tool   TEXT,                        -- null = sync / tidak ada poller
+      task_ref    TEXT,                        -- generation_id / task_id upstream
+      status      TEXT NOT NULL DEFAULT 'queued',  -- queued|in_progress|completed|failed
+      progress    INTEGER NOT NULL DEFAULT 0,
+      result      TEXT,                        -- JSON respons tools/call terakhir
+      video_urls  TEXT,                        -- JSON array URL video final
+      error       TEXT,
+      api_key_id  TEXT,                        -- pembuat job (access control GET/DELETE)
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_created ON video_jobs(created_at);
+  `);
 }
 
 /**

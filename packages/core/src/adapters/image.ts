@@ -1,5 +1,6 @@
 import { sendUpstream, upstreamUrl, GatewayCallError, type AdapterCall } from '../provider.js';
 import { mapImageInput } from '../image-mapper.js';
+import { mcpImageFlow } from '../mcp/media.js';
 
 /**
  * Image generation — OpenAI-compatible /v1/images/generations (JSON in, JSON/SSE out).
@@ -95,6 +96,23 @@ async function buildEditsFormData(
 
 export async function image(call: AdapterCall): Promise<Response> {
   const { provider, model, body, signal } = call;
+
+  // ── provider MCP (protocol='mcp'): tool + polling via MCP client ──
+  // Model target = nama tool (mis. text_to_image). Intent kanonik dipetakan ke
+  // arguments tool via inputSchema; bila tool mengembalikan task async
+  // (generation_id), adapter menunggu (poll tool polling) sampai selesai lalu
+  // mengembalikan response OpenAI images — klien tidak melihat perbedaannya.
+  if (provider.protocol === 'mcp') {
+    return mcpImageFlow(
+      provider,
+      model,
+      call.toolMeta,
+      { pollTool: provider.mcpOptions?.pollTool, pollToolArg: provider.mcpOptions?.pollToolArg },
+      body,
+      { signal, dispatcher: call.dispatcher },
+    );
+  }
+
   const url = upstreamUrl(provider, 'image', model);
 
   // ── mode auto: translate body OpenAI-kanonik → dialek native target ──

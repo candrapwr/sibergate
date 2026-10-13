@@ -31,6 +31,8 @@ export function loadConfigFromDb(db?: DB): SiberGateConfig {
         id: row.id,
         name: row.name,
         baseUrl: row.base_url,
+        protocol: (row.protocol === 'mcp' ? 'mcp' : 'openai') as Provider['protocol'],
+        mcpOptions: safeJsonParse<Provider['mcpOptions']>(row.mcp_options ?? 'null', null),
         authScheme: row.auth_scheme as 'bearer' | 'x-api-key',
         apiKey,
         headers: safeJsonParse(row.headers, {}),
@@ -55,6 +57,7 @@ export function loadConfigFromDb(db?: DB): SiberGateConfig {
       inputPricePer1m: row.input_price_per_1m ?? undefined,
       outputPricePer1m: row.output_price_per_1m ?? undefined,
       capabilities: safeJsonParse(row.capabilities, {}),
+      toolMeta: safeJsonParse<Model['toolMeta']>(row.tool_meta ?? 'null', null),
       enabled: row.enabled === 1,
     }));
 

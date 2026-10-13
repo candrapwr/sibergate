@@ -1,6 +1,8 @@
-import type { Provider, RouteModality } from './types.js';
+import type { McpToolMeta, Provider, RouteModality } from './types.js';
 import { chat } from './adapters/chat.js';
 import { image } from './adapters/image.js';
+import { video } from './adapters/video.js';
+import { mcp as mcpTool } from './adapters/mcp.js';
 import { speech } from './adapters/speech.js';
 import { transcribe } from './adapters/transcribe.js';
 import { embed } from './adapters/embed.js';
@@ -54,11 +56,19 @@ export interface AdapterCall {
    * atau 'verbatim' = teruskan apa adanya (perilaku default/lama).
    */
   mapping?: 'verbatim' | 'auto';
+  /**
+   * Metadata tool MCP utk model target (dari models.tool_meta) — di-set engine
+   * per-target. Hanya relevan utk provider protocol='mcp' (inputSchema dipakai
+   * utk mapping argumen; null = model bukan tool MCP / schema tidak tersimpan).
+   */
+  toolMeta?: McpToolMeta | null;
 }
 
 const ADAPTERS: Record<RouteModality, (call: AdapterCall) => Promise<Response>> = {
   chat,
   image,
+  video,
+  mcp: mcpTool,
   speech,
   transcribe,
   embed,

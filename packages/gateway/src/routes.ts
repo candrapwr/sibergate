@@ -16,8 +16,14 @@ import {
   saveRequestTrace,
   type RequestTraceData,
   type RouteModality,
+  type Route,
+  type SiberGateConfig,
+  type VideoJob,
   resolveProxy,
   buildTransport,
+  mcpToolsList,
+  pollMcpTaskOnce,
+  admin,
 } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { proxySSEStream, proxyResponsesSSEStream, proxyToolsTextSSEStream } from './stream.js';
@@ -791,6 +797,22 @@ export function createApp(configStore: ConfigStore) {
   // SiberGate extension — text-to-music (e.g. DeepInfra ACE-Step).
   app.post('/v1/music/generations', (c) => modalityHandler(c, configStore, 'music', '/v1/music/generations'));
 
+  // SiberGate extension — OpenAI-style video generation (Sora-shaped API,
+  // /v1/videos). Dibackend provider MCP (mis. Kling text_to_video): POST submit
+  // → job id; GET poll status (via tool polling query_tasks); GET content
+  // stream mp4; DELETE hapus job lokal.
+  app.post('/v1/videos', (c) => videoCreateHandler(c, configStore));
+  app.get('/v1/videos/:id', (c) => videoStatusHandler(c, configStore));
+  app.get('/v1/videos/:id/content', (c) => videoContentHandler(c, configStore));
+  app.delete('/v1/videos/:id', (c) => videoDeleteHandler(c, configStore));
+
+  // SiberGate extension — generic MCP tool invocation. Route (modality 'mcp')
+  // memilih provider MCP; tool dipilih dari URL. Body = arguments tool apa
+  // adanya (atau {"arguments": {...}}). Respons = hasil tools/call
+  // ternormalisasi — cocok utk tool di luar image/video (element_*, dll.).
+  app.get('/v1/mcp/:routeId/tools', (c) => mcpListToolsHandler(c, configStore));
+  app.post('/v1/mcp/:routeId/tools/:toolName', (c) => mcpCallToolHandler(c, configStore));
+
   // SiberGate extension — generic REST passthrough. Unlike the OpenAI-shaped
   // endpoints above, this one selects the route from the URL path, forwards
   // the original HTTP method + headers + body verbatim, and returns the upstream
@@ -960,6 +982,8 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   // Kling) — dua ejaan utk maksud yg sama (route masked; nilai client tidak
   // pernah diteruskan ke upstream, adapter selalu inject model asli target).
   const routeId = String(body.model ?? body.model_name ?? '');
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
   let route;
   try {
     route = getRoute(config, routeId);
@@ -1169,6 +1193,448 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
     });
     const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
     return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null, 'image_generation');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * VIDEO (modality 'video') — OpenAI-style /v1/videos, dibackend provider MCP.
+ *
+ * POST   /v1/videos            → submit tool generasi (mis. text_to_video);
+ *                                bila async (generation_id) → job status
+ *                                queued + id; bila sync → langsung completed.
+ * GET    /v1/videos/:id        → poll tool polling (query_tasks) sekali lalu
+ *                                balas status OpenAI video object.
+ * GET    /v1/videos/:id/content→ stream bytes mp4 dari URL aset final.
+ * DELETE /v1/videos/:id        → hapus job lokal (task upstream tak bisa
+ *                                dibatalkan — catatan di README).
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** Bentuk objek video ala OpenAI (Sora API) dari job row. */
+function videoJobToObject(job: VideoJob): Record<string, unknown> {
+  const request = (job.result as { __request?: Record<string, unknown> } | null)?.__request ?? {};
+  const createdEpoch = Math.floor(new Date(job.createdAt.replace(' ', 'T') + 'Z').getTime() / 1000);
+  return {
+    id: job.id,
+    object: 'video',
+    created_at: createdEpoch,
+    status: job.status,
+    progress: job.progress,
+    model: job.modelId,
+    ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
+    ...(request.seconds !== undefined ? { seconds: request.seconds } : {}),
+    ...(request.size !== undefined ? { size: request.size } : {}),
+    // SiberGate extension (non-standar): jejak task upstream + URL hasil.
+    sibergate: {
+      provider: job.providerId,
+      task_ref: job.taskRef,
+      poll_tool: job.pollTool,
+      ...(job.videoUrls.length ? { video_urls: job.videoUrls } : {}),
+    },
+    ...(job.status === 'failed' && job.error ? { error: { message: job.error } } : {}),
+  };
+}
+
+/** URL video final dari payload ternormalisasi (fallback otherUrls tanpa ekstensi). */
+function pickVideoUrls(payload: { videoUrls: string[]; otherUrls: string[] }): string[] {
+  if (payload.videoUrls.length) return payload.videoUrls;
+  return payload.otherUrls.filter((u) => /^https?:\/\//.test(u));
+}
+
+/** Access control: API key pembuat request harus boleh mengakses route job. */
+function enforceVideoJobAccess(c: Context, job: VideoJob): Response | null {
+  const allowed = c.get('apiKeyRouteIds');
+  if (allowed && !allowed.includes(job.routeId)) {
+    return errorResponse(c, 403, `API key is not allowed to access route '${job.routeId}'.`, 'permission_error');
+  }
+  return null;
+}
+
+async function videoCreateHandler(c: Context, configStore: ConfigStore) {
+  const config = configStore.get();
+  const requestId = c.get('requestId');
+  const startedAt = c.get('startedAt');
+  const passthroughHeaders = extractPassthroughHeaders(c);
+  const path = '/v1/videos';
+
+  const parsed = await c.req.json().catch(() => null);
+  if (!parsed) return errorResponse(c, 400, 'Request body must be valid JSON.', 'invalid_request_error');
+  const body = parsed as Record<string, unknown>;
+
+  const routeId = String(body.model ?? '');
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
+  let route;
+  try {
+    route = getRoute(config, routeId);
+  } catch {
+    return errorResponse(c, 404, `Model/route '${routeId}' not found.`, 'invalid_request_error', 'model_not_found', 'model');
+  }
+  if ((route.modality ?? 'chat') !== 'video') {
+    return errorResponse(
+      c, 400,
+      `Route '${routeId}' is a ${route.modality ?? 'chat'} route, not a video route.`,
+      'invalid_request_error', 'modality_mismatch', 'model',
+    );
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 60_000);
+  c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+
+  emitIncoming(c, route.id, 'video');
+
+  const baseLog = {
+    requestId,
+    method: 'POST',
+    path,
+    route: route.id,
+    strategy: route.strategy,
+    modality: 'video' as RouteModality,
+    streamed: false,
+    status: 200,
+    latencyMs: 0,
+    clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
+  };
+
+  try {
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    // Adapter video (MCP) mengembalikan payload ternormalisasi (JSON).
+    const payload = (await response.json().catch(() => null)) as
+      | { taskRef?: string | null; status?: string | null; videoUrls?: string[]; otherUrls?: string[]; text?: string; taskStatus?: string | null }
+      | null;
+    if (!payload) {
+      throw Object.assign(new Error('Video adapter returned a non-JSON body.'), { code: 'server_error' });
+    }
+    const failed = payload.status === 'failed';
+    const completed = payload.status === 'completed'
+      || (!payload.taskRef && (payload.videoUrls?.length || payload.otherUrls?.length));
+    const pollTool = config.providers.find((p) => p.id === servedBy.providerId)?.mcpOptions?.pollTool ?? null;
+    const job = admin.createVideoJob({
+      routeId: route.id,
+      providerId: servedBy.providerId,
+      modelId: servedBy.modelId,
+      pollTool,
+      taskRef: payload.taskRef ?? null,
+      status: failed ? 'failed' : completed ? 'completed' : ((payload.status as VideoJob['status']) ?? 'queued'),
+      result: {
+        // Echo request utk objek video (prompt/seconds/size) — dipertahankan
+        // saat update poll (merge by key __request).
+        __request: { prompt: body.prompt, seconds: body.seconds, size: body.size },
+        ...payload,
+      },
+      videoUrls: completed ? pickVideoUrls(payload as { videoUrls: string[]; otherUrls: string[] }) : [],
+      apiKeyId: c.get('apiKeyId') ?? null,
+    });
+    const model = config.models.find((m) => m.id === servedBy.modelId);
+    logRequest({
+      ...baseLog,
+      provider: servedBy.providerId,
+      model: servedBy.modelId,
+      upstreamKeyId: servedByKeyId ?? null,
+      latencyMs,
+      costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+    });
+    return c.json(videoJobToObject(job));
+  } catch (err) {
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null; requestHeaders?: Record<string,string> | null } };
+    const status = mapUpstreamErrorStatus(e);
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const traced = maybeSaveRequestTrace({
+      requestId, c, body, route: route.id,
+      provider: e.servedBy?.provider ?? null, model: e.servedBy?.model ?? null,
+      upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
+      hadFailover: false,
+    });
+    logRequest({
+      ...baseLog,
+      status,
+      latencyMs,
+      provider: e.servedBy?.provider ?? null,
+      model: e.servedBy?.model ?? null,
+      upstreamKeyId: e.servedBy?.keyId ?? null,
+      errorCode: e.code ?? null,
+      errorMessage: (e.message ?? String(e)).slice(0, 300),
+      metadata: traced ? { hasTrace: true } : undefined,
+    });
+    const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
+    return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null, 'video_generation');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function videoStatusHandler(c: Context, configStore: ConfigStore) {
+  const config = configStore.get();
+  const id = String(c.req.param('id'));
+  let job = admin.getVideoJob(id);
+  if (!job) {
+    return errorResponse(c, 404, `Video '${id}' not found.`, 'invalid_request_error', 'video_not_found');
+  }
+  const accessError = enforceVideoJobAccess(c, job);
+  if (accessError) return accessError;
+
+  // Poll sekali per GET selama task masih berjalan (klien yang mengatur ritme
+  // polling — sama seperti pola OpenAI Videos API).
+  if ((job.status === 'queued' || job.status === 'in_progress') && job.taskRef && job.pollTool) {
+    const provider = config.providers.find((p) => p.id === job!.providerId && p.enabled && p.protocol === 'mcp');
+    if (provider) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30_000);
+        let normalized;
+        try {
+          normalized = await pollMcpTaskOnce(
+            provider,
+            { pollTool: job!.pollTool!, pollToolArg: provider.mcpOptions?.pollToolArg },
+            job!.taskRef!,
+            { signal: controller.signal },
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+        if (normalized.status === 'completed') {
+          job = admin.updateVideoJob(job.id, {
+            status: 'completed',
+            progress: 100,
+            videoUrls: pickVideoUrls(normalized),
+            result: { ...(job.result ?? {}), ...normalized },
+          }) ?? job;
+        } else if (normalized.status === 'failed') {
+          job = admin.updateVideoJob(job.id, {
+            status: 'failed',
+            error: normalized.text.slice(0, 300) || normalized.taskStatus || 'generation failed',
+            result: { ...(job.result ?? {}), ...normalized },
+          }) ?? job;
+        } else {
+          job = admin.updateVideoJob(job.id, {
+            status: normalized.status ?? 'in_progress',
+            progress: normalized.progress ?? job.progress,
+            result: { ...(job.result ?? {}), ...normalized },
+          }) ?? job;
+        }
+      } catch (err) {
+        // Poll gagal (transient — rate limit/network): JANGAN gagalkan job;
+        // balas status terakhir + catatan error utk klien.
+        pushConsoleLog('warn', 'mcp', `video job ${job.id} poll failed: ${(err as Error).message?.slice(0, 200)}`, {
+          route: job.routeId, provider: job.providerId, taskRef: job.taskRef,
+        });
+        return c.json({
+          ...videoJobToObject(job),
+          sibergate: {
+            ...(videoJobToObject(job).sibergate as Record<string, unknown>),
+            last_poll_error: (err as Error).message?.slice(0, 200),
+          },
+        });
+      }
+    }
+  }
+  return c.json(videoJobToObject(job));
+}
+
+async function videoContentHandler(c: Context, configStore: ConfigStore) {
+  const id = String(c.req.param('id'));
+  const job = admin.getVideoJob(id);
+  if (!job) {
+    return errorResponse(c, 404, `Video '${id}' not found.`, 'invalid_request_error', 'video_not_found');
+  }
+  const accessError = enforceVideoJobAccess(c, job);
+  if (accessError) return accessError;
+  if (job.status !== 'completed' || !job.videoUrls.length) {
+    return errorResponse(
+      c, 400,
+      `Video '${id}' is not ready yet (status: ${job.status}). Poll GET /v1/videos/${id} until status='completed'.`,
+      'invalid_request_error', 'video_not_ready',
+    );
+  }
+  const url = job.videoUrls[0]!;
+  // Data URI (data:video/...;base64,) → serve bytes langsung.
+  const dataUri = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+  if (dataUri) {
+    const bytes = Buffer.from(dataUri[2]!, 'base64');
+    return new Response(new Uint8Array(bytes), {
+      status: 200,
+      headers: { 'Content-Type': dataUri[1]!, 'Content-Length': String(bytes.length) },
+    });
+  }
+  // URL aset (pre-signed; valid 24 jam di Kling) → proxy stream bytes supaya
+  // klien tidak perlu mengakses CDN upstream langsung.
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch (err) {
+    return errorResponse(c, 502, `Failed to fetch video content: ${(err as Error).message}`, 'upstream_error', 'video_fetch_failed');
+  }
+  if (!res.ok || !res.body) {
+    return errorResponse(c, 502, `Failed to fetch video content (upstream ${res.status}). URL aset mungkin kedaluwarsa (valid 24 jam di Kling).`, 'upstream_error', 'video_fetch_failed');
+  }
+  return new Response(res.body, {
+    status: 200,
+    headers: {
+      'Content-Type': res.headers.get('content-type')?.startsWith('video/') ? res.headers.get('content-type')! : 'video/mp4',
+      ...(res.headers.get('content-length') ? { 'Content-Length': res.headers.get('content-length')! } : {}),
+    },
+  });
+}
+
+function videoDeleteHandler(c: Context, _configStore: ConfigStore) {
+  const id = String(c.req.param('id'));
+  const job = admin.getVideoJob(id);
+  if (!job) {
+    return errorResponse(c, 404, `Video '${id}' not found.`, 'invalid_request_error', 'video_not_found');
+  }
+  const accessError = enforceVideoJobAccess(c, job);
+  if (accessError) return accessError;
+  admin.deleteVideoJob(id);
+  // Catatan: task upstream TIDAK bisa dibatalkan (kebijakan Kling) — ini hanya
+  // menghapus job lokal + memutus pelacakan.
+  return c.body(null, 204);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * MCP generik (modality 'mcp') — POST /v1/mcp/{route}/tools/{tool}.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/** Resolve provider MCP pertama yg usable dari route modality 'mcp'. */
+function firstMcpTargetProvider(config: SiberGateConfig, route: Route) {
+  for (const t of route.targets) {
+    if (!t.enabled) continue;
+    const provider = config.providers.find((p) => p.id === t.providerId && p.enabled && p.protocol === 'mcp');
+    if (provider) return provider;
+  }
+  return null;
+}
+
+async function mcpListToolsHandler(c: Context, configStore: ConfigStore) {
+  const config = configStore.get();
+  const routeId = String(c.req.param('routeId'));
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
+  let route;
+  try {
+    route = getRoute(config, routeId);
+  } catch {
+    return errorResponse(c, 404, `Route '${routeId}' not found.`, 'invalid_request_error', 'model_not_found');
+  }
+  if ((route.modality ?? 'chat') !== 'mcp') {
+    return errorResponse(
+      c, 400,
+      `Route '${routeId}' is a ${route.modality ?? 'chat'} route, not an mcp route.`,
+      'invalid_request_error', 'modality_mismatch',
+    );
+  }
+  const provider = firstMcpTargetProvider(config, route);
+  if (!provider) {
+    return errorResponse(c, 400, `Route '${routeId}' has no enabled MCP provider target.`, 'invalid_request_error', 'no_mcp_target');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30_000);
+  try {
+    const tools = await mcpToolsList(provider, { signal: controller.signal });
+    return c.json({ object: 'list', data: tools });
+  } catch (err) {
+    const e = err as Error & { status?: number; code?: string };
+    return errorResponse(c, mapUpstreamErrorStatus(e), e.message ?? 'MCP tools/list failed.', 'upstream_error', e.code ?? null);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function mcpCallToolHandler(c: Context, configStore: ConfigStore) {
+  const config = configStore.get();
+  const requestId = c.get('requestId');
+  const startedAt = c.get('startedAt');
+  const passthroughHeaders = extractPassthroughHeaders(c);
+  const routeId = String(c.req.param('routeId'));
+  const toolName = String(c.req.param('toolName'));
+  const path = `/v1/mcp/${routeId}/tools/${toolName}`;
+
+  const routeAccessError = enforceApiRoute(c, routeId);
+  if (routeAccessError) return routeAccessError;
+  let route;
+  try {
+    route = getRoute(config, routeId);
+  } catch {
+    return errorResponse(c, 404, `Route '${routeId}' not found.`, 'invalid_request_error', 'model_not_found');
+  }
+  if ((route.modality ?? 'chat') !== 'mcp') {
+    return errorResponse(
+      c, 400,
+      `Route '${routeId}' is a ${route.modality ?? 'chat'} route, not an mcp route.`,
+      'invalid_request_error', 'modality_mismatch',
+    );
+  }
+
+  const parsed = await c.req.json().catch(() => null);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return errorResponse(c, 400, 'Request body must be a JSON object (tool arguments, or {"arguments": {...}}).', 'invalid_request_error');
+  }
+  // Nama tool dari URL di-inject ke body — adapter mcp membacanya dari sana.
+  const body = { ...(parsed as Record<string, unknown>), __mcpTool: toolName };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), route.timeoutMs ?? 60_000);
+  c.req.raw.signal?.addEventListener('abort', () => controller.abort(), { once: true });
+
+  emitIncoming(c, route.id, 'mcp');
+
+  const baseLog = {
+    requestId,
+    method: 'POST',
+    path,
+    route: route.id,
+    strategy: route.strategy,
+    modality: 'mcp' as RouteModality,
+    streamed: false,
+    status: 200,
+    latencyMs: 0,
+    clientIp: c.req.header('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
+    apiKeyId: c.get('apiKeyId') ?? null,
+  };
+
+  try {
+    const { response, servedBy, latencyMs, servedByKeyId } = await executeRoute(config, route, body, controller.signal, passthroughHeaders);
+    const upstreamContentType = response.headers.get('content-type') ?? 'application/json';
+    const buf = Buffer.from(await response.arrayBuffer());
+    const model = config.models.find((m) => m.id === servedBy.modelId);
+    logRequest({
+      ...baseLog,
+      provider: servedBy.providerId,
+      // Tool adalah "model" yg bermakna utk log (modelId target = placeholder).
+      model: toolName,
+      upstreamKeyId: servedByKeyId ?? null,
+      latencyMs,
+      costUsd: computeCost(model?.inputPricePer1m, model?.outputPricePer1m, 0, 0),
+    });
+    return new Response(buf, {
+      status: 200,
+      headers: { 'Content-Type': upstreamContentType, 'Content-Length': String(buf.length) },
+    });
+  } catch (err) {
+    const e = err as Error & { code?: string; status?: number; servedBy?: { provider: string; model: string; keyId?: string | null }; upstream?: { url?: string; status?: number; body?: string | null; requestBody?: string | null; requestHeaders?: Record<string,string> | null } };
+    const status = mapUpstreamErrorStatus(e);
+    const latencyMs = Math.round(performance.now() - startedAt);
+    const traced = maybeSaveRequestTrace({
+      requestId, c, body, route: route.id,
+      provider: e.servedBy?.provider ?? null, model: toolName,
+      upstreamUrl: e.upstream?.url, upstreamStatus: e.upstream?.status, upstreamBody: e.upstream?.body, upstreamRequestBody: e.upstream?.requestBody, upstreamRequestHeaders: e.upstream?.requestHeaders,
+      hadFailover: false,
+    });
+    logRequest({
+      ...baseLog,
+      status,
+      latencyMs,
+      provider: e.servedBy?.provider ?? null,
+      model: toolName,
+      upstreamKeyId: e.servedBy?.keyId ?? null,
+      errorCode: e.code ?? null,
+      errorMessage: (e.message ?? String(e)).slice(0, 300),
+      metadata: traced ? { hasTrace: true } : undefined,
+    });
+    const type = e.code === 'timeout' ? 'timeout_error' : e.code === 'rate_limited' ? 'rate_limit_exceeded' : 'upstream_error';
+    return errorResponse(c, status, e.message ?? 'Upstream error.', type, e.code ?? null);
   } finally {
     clearTimeout(timeout);
   }

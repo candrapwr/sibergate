@@ -27,6 +27,13 @@ export interface KnownProvider {
   id: string;
   name: string;
   baseUrl: string;
+  /**
+   * Wire protocol. 'openai' (default) = REST provider (endpoint templates).
+   * 'mcp' = Model Context Protocol server — baseUrl adalah MCP endpoint,
+   * tools di-discover live via tools/list (tombol "Sync tools" di UI), auth
+   * via OAuth browser login atau API key statis (authScheme).
+   */
+  protocol?: 'openai' | 'mcp';
   authScheme: 'bearer' | 'x-api-key' | 'query' | 'basic' | 'none';
   /** Env var name convention for the key (informational; key is blank until set). */
   apiKeyEnv: string;
@@ -35,8 +42,11 @@ export interface KnownProvider {
    * Per-modality endpoint templates. Providers that expose the standard
    * OpenAI-compatible surface omit this and inherit the default map below.
    * Custom inference providers (DeepInfra, novita image) override.
+   * Ignored for protocol='mcp' providers (they have no REST endpoints).
    */
   endpoints?: Record<string, string>;
+  /** Opsi provider MCP (mode penanganan vendor: generic | kling). */
+  mcpOptions?: { mode?: 'generic' | 'kling' };
   models: KnownModel[];
 }
 
@@ -54,10 +64,31 @@ const OPENAI_ENDPOINTS: Record<string, string> = {
 
 /** Resolve a provider's effective endpoints (declared or the OpenAI default). */
 export function providerEndpoints(p: KnownProvider): Record<string, string> {
+  // Provider MCP tidak punya endpoint REST — tools-nya di-sync live.
+  if (p.protocol === 'mcp') return {};
   return p.endpoints ?? OPENAI_ENDPOINTS;
 }
 
 export const KNOWN_PROVIDERS: KnownProvider[] = [
+  // ── MCP (Model Context Protocol) providers ──────────────────────────
+  // Tools di-discover live via tools/list (klik "Sync tools" di halaman
+  // Providers setelah koneksi OAuth berhasil). Tidak ada model preset —
+  // model = tool hasil sync (text_to_image, text_to_video, dst.).
+  {
+    id: 'kling-mcp',
+    name: 'Kling AI (MCP)',
+    baseUrl: 'https://kling.ai/mcp',
+    protocol: 'mcp',
+    // Mode penanganan spesifik Kling (poll query_tasks/generation_id, dst.) —
+    // server MCP lain memakai mode 'generic' atau mode barunya sendiri.
+    mcpOptions: { mode: 'kling' },
+    // Kling MCP memakai OAuth login browser ("Connect & Sign in" di UI admin);
+    // authScheme 'none' karena tidak ada key statis default.
+    authScheme: 'none',
+    apiKeyEnv: '—',
+    docsUrl: 'https://kling.ai/app/mcp/guide',
+    models: [],
+  },
   {
     id: 'openai',
     name: 'OpenAI',

@@ -16,6 +16,9 @@ import type {
   EdgeVerifyResult,
   GeoIpStatus,
   ListResponse,
+  McpOAuthStatus,
+  McpSyncResult,
+  McpToolInfo,
   Model,
   Provider,
   ProviderKey,
@@ -154,6 +157,73 @@ export function useProviderKeys(providerId: string | null | undefined) {
     queryKey: ['provider-keys', providerId],
     queryFn: () => api.get<ListResponse<ProviderKey>>(`providers/${providerId}/keys`),
     enabled: !!providerId,
+  });
+}
+
+/* ──────────────────────── MCP provider (protocol='mcp') ────────────────── */
+
+/** Status MCP provider: sesi OAuth + tool hasil sync terakhir. */
+export function useMcpStatus(providerId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['mcp-status', providerId],
+    queryFn: () => api.get<{ oauth: McpOAuthStatus | null; syncedTools: Model[] }>(`providers/${providerId}/mcp/status`),
+    enabled: !!providerId,
+  });
+}
+
+/** Sync tools server MCP → models (juga deteksi ulang tool polling). */
+export function useMcpSyncTools() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api.post<McpSyncResult>(`providers/${providerId}/mcp/sync`, {}),
+    onSuccess: (_data, providerId) => {
+      qc.invalidateQueries({ queryKey: ['mcp-status', providerId] });
+      qc.invalidateQueries({ queryKey: ['models'] });
+      qc.invalidateQueries({ queryKey: ['providers'] });
+      qc.invalidateQueries({ queryKey: ['system'] });
+    },
+  });
+}
+
+/** Mulai flow OAuth (buka authorizationUrl di tab baru via pemanggil). */
+export function useMcpOAuthStart() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api.post<{ authorizationUrl: string; redirectUri: string }>(`providers/${providerId}/mcp/oauth/start`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mcp-status'] });
+    },
+  });
+}
+
+/** Putuskan sesi OAuth provider MCP. */
+export function useMcpOAuthDisconnect() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api.post(`providers/${providerId}/mcp/oauth/disconnect`, {}),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mcp-status'] });
+    },
+  });
+}
+
+/** Daftar tool LIVE dari server MCP (tools/list) — utk panel "Run tool". */
+export function useMcpLiveTools(providerId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['mcp-live-tools', providerId],
+    queryFn: () => api.get<ListResponse<McpToolInfo>>(`providers/${providerId}/mcp/tools`),
+    enabled: !!providerId && enabled,
+  });
+}
+
+/** Jalankan sebuah tool dari admin (test-call) — args bebas, hasil ternormalisasi. */
+export function useMcpTestTool() {
+  return useMutation({
+    mutationFn: ({ providerId, tool, args }: { providerId: string; tool: string; args: Record<string, unknown> }) =>
+      api.post<Record<string, unknown>>(`providers/${providerId}/mcp/test`, { tool, arguments: args }),
   });
 }
 

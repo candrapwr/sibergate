@@ -68,6 +68,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🎨 Enam modalitas AI + passthrough REST + Responses API** — chat, image generation, text-to-speech, transkripsi, embedding, dan **text-to-music** (DeepInfra ACE-Step), plus modality **generic** yang mem-proxy API non-LLM apa pun (GET/POST/PUT/DELETE) dengan routing + failover yang sama. Ada juga modality **responses** untuk provider OpenAI-compat Responses API — klien tetap format chat/completions, gateway yang auto-convert dua arah (termasuk streaming SSE dan tool/function calling).
 - **🛠️ Tool/function calling penuh di Responses** — definisi tools, `tool_calls` di response (streaming maupun non-streaming), `finish_reason: tool_calls`, dan multi-turn (role `tool` → `function_call_output`) — semuanya di-convert transparan dari/ke format chat/completions.
 - **🪄 Tool calling via text/XML (`tools-text`)** — modality paralel yg membungkam native function calling dgn alasan kuat: (1) **chunk parsial** argumen token-by-token (UX typing, vs native Gemini yg atomic); (2) **bypass quirk provider** — tidak ada `thought_signature`, `extra_content`, atau `finish_reason` salah di Gemini; (3) **hemat ~50% token** (input −49%, output −33%, krn tool definition compact vs JSON schema berat); (4) **enable tool calling di model/provider yg sebelumnya tidak support** native function calling — cukup mampu chat. Gateway inject system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, stream text di-reparse ke format OpenAI. Opt-in per route target. Lihat [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
+- **🧩 MCP Provider (Model Context Protocol)** — server MCP (mis. **Kling AI**) jadi satu provider sendiri: connect via **OAuth browser login** (atau API key), tools di-discover otomatis (`Sync tools`), lalu dipakai lewat endpoint OpenAI-compatible — image via `/v1/images/generations` (gateway otomatis poll `generation_id` → `query_tasks`), **video** via `/v1/videos` (pola Sora: create → poll → download mp4), dan **tool MCP apa pun** via `/v1/mcp/{route}/tools/{tool}`. Token OAuth di-encrypt + auto-refresh. Lihat [MCP Provider](#-mcp-provider--model-context-protocol).
 - **🖼️ Image generation async (Kling/vd2 style)** — beberapa provider tidak langsung balas URL gambar, tapi kembalikan `task_id`. SiberGate otomatis poll endpoint status tiap 5 detik (maks 10×), lalu kembalikan format OpenAI `{created, data:[{url}]}` ke klien. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
 - **🔀 Modality per-target** — dalam satu route chat, tiap target boleh punya modality sendiri (mis. OpenAI via Responses, DeepSeek via chat). Failover antar-modality berfungsi penuh — gateway ganti converter di tengah jalan.
 - **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
@@ -861,6 +862,173 @@ Klien (selalu JSON, format OpenAI)
 
 ---
 
+## 🧩 MCP Provider (Model Context Protocol)
+
+SiberGate bisa menjadi **MCP client**: server MCP ditambahkan sebagai provider
+(`protocol: 'mcp'`), tool-toolnya di-discover otomatis via `tools/list`, lalu
+dipakai lewat endpoint OpenAI-compatible — klien Anda tidak perlu tahu MCP sama
+sekali. Contoh utama: **Kling AI** (`https://kling.ai/mcp`) untuk generasi
+image & video.
+
+```
+Klien (format OpenAI)                SiberGate                        Server MCP
+──────────────────                 ───────────                      ──────────
+POST /v1/images/generations  ───▶  map prompt/size → args tool ───▶  text_to_image
+POST /v1/videos              ───▶  map prompt/seconds → args  ───▶  text_to_video
+GET  /v1/videos/:id          ───▶  poll task (query_tasks)   ───▶  status + URL mp4
+POST /v1/mcp/{route}/tools/{tool} ▶ arguments verbatim        ───▶  tool apa pun
+```
+
+### Autentikasi: dua mode
+
+| Mode | Cara kerja | Contoh |
+|---|---|---|
+| **OAuth 2.1 (browser login)** | Operator klik **Connect & Sign in** di Admin → Providers → jendela browser OAuth → login akun → token disimpan **terenkripsi** (AES-256-GCM) & di-refresh otomatis | Kling AI |
+| **API key statis** | Pakai auth scheme biasa (bearer / x-api-key / query / basic) lewat section API keys | Server MCP lain |
+
+Implementasi OAuth mengikuti spesifikasi MCP: discovery
+(`/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`),
+**dynamic client registration** (RFC 7591), **PKCE S256**, dan refresh token
+otomatis saat expired/ditolak (401). Redirect URI default
+`http://localhost:8787/admin/mcp/oauth/callback` — set `SIBERGATE_PUBLIC_URL`
+bila gateway diakses dari host/port lain.
+
+### Setup Kling AI (contoh lengkap)
+
+1. **Settings → Import known providers** — pilih **Kling AI (MCP)**
+   (`https://kling.ai/mcp`, protocol `mcp`).
+2. **Providers → edit "kling-mcp"** — aktifkan provider (hasil import katalog
+   selalu berstatus disabled), lalu klik **Connect & Sign in** — login akun
+   Kling di jendela browser yang terbuka. Status berubah **connected** (info
+   `who_am_i` ikut tersimpan).
+3. **Sync tools** — HANYA tool generasi yang menjadi model:
+   `text_to_image`, `image_to_image`, `text_to_video`, `image_to_video`,
+   `motion_control`. Tool utilitas (`who_am_i`, `query_tasks`, `element_*`,
+   cek kredit, dll.) sengaja TIDAK menjadi model — jalankan lewat panel
+   **Run tool** di modal provider. Tool polling (`query_tasks` +
+   `generation_id`) terdeteksi otomatis; preset Kling juga membawa **mode
+   `kling`** (default poll spesifik Kling; server MCP lain pakai mode
+   `generic` atau mode barunya sendiri).
+4. **Buat route** (halaman Routes):
+   - Modality **Image** → target model `kling-mcp/text_to_image` — route ini
+     otomatis melayani `/v1/images/generations` (gateway menunggu polling
+     selesai, lalu balas format OpenAI; set timeout route ≥ 120 detik).
+     Target MCP BISA DICAMPUR dengan provider image lain dalam satu route
+     (mis. DALL-E fallback ke Kling) — sama-modality, failover otomatis:
+     `dead-rest/dalle-3` (priority 0) + `kling-mcp/text_to_image` (priority 1).
+   - Modality **Video** → target `kling-mcp/text_to_video` (atau
+     `image_to_video`) — melayani `/v1/videos`.
+   - Modality **MCP Tools** → target placeholder model — melayani
+     `/v1/mcp/{routeId}/tools/{tool}` untuk tool apa pun.
+5. **Panggil dari aplikasi** seperti API OpenAI biasa.
+
+### Contoh pemakaian
+
+```bash
+# Image — sama persis seperti DALL·E
+curl -X POST http://localhost:8787/v1/images/generations \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"model": "kling-image", "prompt": "kucing astronot", "size": "1280x720"}'
+# → {"created":..., "data":[{"url":"https://...png"}], "sibergate":{...}}
+
+# Video — pola Sora: create → poll → download
+curl -X POST http://localhost:8787/v1/videos \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"model": "kling-video", "prompt": "kucing menari", "seconds": "5", "size": "1280x720"}'
+# → {"id":"video_ab12...","status":"queued",...}
+curl http://localhost:8787/v1/videos/video_ab12... -H "Authorization: Bearer sg_live_..."
+# → {"status":"completed","progress":100,"sibergate":{"video_urls":["https://...mp4"]}}
+curl http://localhost:8787/v1/videos/video_ab12.../content -H "..." -o video.mp4
+
+# Tool MCP apa pun (image-to-video, element, dll) — arguments verbatim
+curl -X POST http://localhost:8787/v1/mcp/kling-tools/tools/image_to_video \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"image": "https://.../cat.png", "prompt": "animate it", "duration": 5}'
+# → {"object":"mcp_tool_call","tool":"image_to_video","taskRef":"gen_...","status":"queued",...}
+```
+
+### Kebijakan sync & tool utilitas
+
+- **Hanya tool generasi (image/video) yang menjadi model** — daftar model
+  tetap bersih; tool utilitas (who_am_i, query_tasks, element_*, cek kredit)
+  tidak menajadi model/route. Model lama non-generasi hasil sync versi awal
+  dibersihkan otomatis saat sync ulang.
+- **Modalitas mengikuti yang sudah ada** — tool generasi MCP adalah model
+  modality `image-generation`/`video-generation` biasa, BUKAN modality
+  tersendiri. Route modality Image/Video bisa mencampur target MCP dan
+  provider lain dengan failover otomatis. Modality `MCP Tools` hanya untuk
+  tool non-generasi (`/v1/mcp/{route}/tools/{tool}`).
+- **Run tool dari modal provider** — panel "Run tool (utilitas)" di
+  Admin → Providers → edit provider MCP menjalankan tool apa pun langsung:
+  pilih tool → tulis arguments JSON → Run. Contoh: `who_am_i` (identitas
+  akun), `query_membership_and_credits` (sisa kredit).
+- **Mode penanganan vendor** — field *MCP mode* di form provider:
+  `generic` (default, auto-deteksi) atau `kling` (default poll
+  `query_tasks`/`generation_id` + titik ekstensi quirk Kling berikutnya).
+  Server MCP lain yang butuh perlakuan beda akan mendapat mode baru.
+
+### Pilih model (varian)
+
+**Sync membaca `who_am_i` DULU** — di Kling, daftar model hanya ada di
+`availableModels` hasil who_am_i (parameter `model` bahkan wajib, dan tidak
+dideklarasikan di schema `tools/list`). Tiap tool generasi di-import sebagai
+model dasar (dipin ke `defaultModel`) + **satu model per varian**:
+
+```
+kling-mcp/text_to_image                    ← varian default server
+kling-mcp/text_to_image@kling-v2           ← khusus kling-v2
+kling-mcp/text_to_image@kling-v2-master    ← khusus kling-v2-master
+```
+
+Gateway juga otomatis memakai format pemanggilan (envelope) sesuai schema
+`tools/list` server: Kling memakai `model` top-level + `arguments` array
+pasangan `{name, value}` + `inputs` array `{name, inputType: 'URL', url}` —
+semua itu ditangani internal, klien tetap format OpenAI.
+
+Pilih varian sebagai **target route** (konsep sama dengan provider REST), atau
+override dari klien via field `model_variant` di body request:
+
+```bash
+curl -X POST .../v1/images/generations -d '{"model":"kling-image","prompt":"...","model_variant":"kling-v2-master"}'
+```
+
+Daftar model yg tersedia di akun bisa dilihat lewat panel **Run tool** →
+`who_am_i`.
+
+### Cara kerja mapping (image/video)
+
+Request OpenAI dipetakan ke arguments tool **berbasis `inputSchema` tool**
+(JSON Schema dari `tools/list`): `prompt` → properti prompt-like, `size`
+`1280x720` → `aspect_ratio` `16:9` (dipilih dari enum schema), `seconds` →
+`duration`, `input_reference`/`image` → `image`, `n` → `num_images`, dll.
+Argumen yang tidak dikenali schema tidak diteruskan. Tool generasi Kling
+mengembalikan `generation_id` → gateway men-track via `query_tasks`:
+
+- **Image**: gateway **menunggu** (poll tiap 5 detik, dibatasi timeout route)
+  sampai `succeed` lalu balas `{created, data:[{url}]}` — klien satu request.
+- **Video**: POST langsung balas `queued` + id job (tabel `video_jobs`);
+  setiap `GET /v1/videos/:id` mem-poll upstream sekali — klien yang mengatur
+  ritme polling, persis pola OpenAI Videos/Sora API.
+
+Endpoint generik `/v1/mcp/{route}/tools/{tool}` **tidak** memetakan argumen —
+body diteruskan verbatim sebagai arguments tool (Anda yang tahu schema-nya),
+hasilnya dinormalisasi (`taskRef`, `status`, `imageUrls`, `videoUrls`, `text`,
+`content`).
+
+### Catatan & batasan
+
+- **URL hasil Kling valid 24 jam** — segera unduh/simpan file hasilnya.
+- **Task tidak bisa dibatalkan** setelah submit (`DELETE /v1/videos/:id` hanya
+  menghapus job lokal).
+- **Rate limit Kling**: 5 QPS; non-subscriber hanya 1 task video bersamaan.
+- Failover engine tetap berlaku: bila tool call gagal (rate limit/server
+  error), SiberGate mencoba target berikutnya seperti modality lain.
+- Testing tanpa akun Kling: `node scripts/mcp-mock-server.mjs` — server MCP
+  mock lengkap (streamable HTTP + SSE + OAuth + tools ala Kling) untuk uji
+  coba end-to-end lokal.
+- Modality `chat` via MCP (server MCP yang mengekspos LLM sebagai tool) belum
+  didukung — gunakan tool lewat endpoint generik bila ada.
+
 ## 🔌 Referensi API
 
 | Method | Path | Deskripsi |
@@ -873,6 +1041,12 @@ Klien (selalu JSON, format OpenAI)
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Embedding teks |
 | `POST` | `/v1/music/generations` | Text-to-music (ekstensi SiberGate) |
+| `POST` | `/v1/videos` | **Generasi video** (OpenAI Sora-style) — submit job, dibackend provider MCP (mis. Kling `text_to_video`). Lihat [MCP Provider](#-mcp-provider--model-context-protocol) |
+| `GET` | `/v1/videos/:id` | Status job video (poll; satu GET = satu poll upstream) |
+| `GET` | `/v1/videos/:id/content` | Download/stream bytes video (mp4) hasil job |
+| `DELETE` | `/v1/videos/:id` | Hapus job video lokal (task upstream tidak bisa dibatalkan) |
+| `GET` | `/v1/mcp/:routeId/tools` | Daftar tool di server MCP target route (modality `mcp`) |
+| `POST` | `/v1/mcp/:routeId/tools/:tool` | **Panggil tool MCP apa pun** — body = arguments tool (ekstensi SiberGate) |
 | `ANY` | `/v1/generic/:routeId/*` | **Passthrough REST generik** — proxy API non-LLM (GET/POST/PUT/PATCH/DELETE), body & response diteruskan verbatim (ekstensi SiberGate) |
 
 `model` selalu berupa **id route** (mis. `smart`), bukan id model vendor. Error

@@ -108,10 +108,20 @@ export async function executeRoute(
     const p = config.providers.find((x) => x.id === t.providerId && x.enabled);
     if (!p) return false;
     const em = effectiveModality(t);
-    // Modality tools-text* reuse endpoint chat (tool calling via text generation,
-    // upstream tetap /v1/chat/completions). Anggap supported bila endpoint chat ada.
-    const endpointKey = isToolsTextModality(em) ? 'chat' : em;
-    if (!p.endpoints[endpointKey]) return false;
+    if (p.protocol === 'mcp') {
+      // Provider MCP tidak punya endpoints map — kemampuannya = tool-toolnya
+      // (models dgn tool_meta). Modality yg dilayani jalur MCP: mcp (tools
+      // generik), image, video. Modality lain (chat dkk.) tidak didukung.
+      if (em !== 'mcp' && em !== 'image' && em !== 'video') return false;
+    } else {
+      // Modality mcp/video = jalur MCP-only (video REST passthrough belum ada).
+      if (em === 'mcp' || em === 'video') return false;
+      // Modality tools-text* reuse endpoint chat (tool calling via text
+      // generation, upstream tetap /v1/chat/completions). Anggap supported bila
+      // endpoint chat ada.
+      const endpointKey = isToolsTextModality(em) ? 'chat' : em;
+      if (!p.endpoints[endpointKey]) return false;
+    }
     const m = config.models.find((x) => x.id === t.modelId && x.enabled);
     if (!m) return false;
     if (t.keyId) {
@@ -219,8 +229,11 @@ export async function executeRoute(
         targetBudgetMs: perTargetBudgetMs,
         ...(proxyResolved ? { proxy: { poolId: proxyResolved.poolId, country: proxyResolved.country, type: proxyResolved.type } } : {}),
       });
+      // Metadata tool MCP utk model target (inputSchema utk mapping argumen) —
+      // dicari per-target supaya failover antar tool berbeda tetap benar.
+      const targetModelMeta = config.models.find((m) => m.id === target.modelId)?.toolMeta ?? null;
       const response = await withTargetTimeout(signal, perTargetBudgetMs, (targetSignal) =>
-        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, mapping: effectiveMapping(target), passthroughHeaders, dispatcher, relay }),
+        callProvider({ provider, model: upstreamModel, body, signal: targetSignal, modality, mapping: effectiveMapping(target), passthroughHeaders, dispatcher, relay, toolMeta: targetModelMeta }),
       );
       const latencyMs = Date.now() - start;
       recordLatency(target.providerId, target.modelId, latencyMs);

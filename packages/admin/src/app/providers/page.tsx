@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Trash2, Pencil, Boxes } from 'lucide-react';
+import { Plus, Trash2, Pencil, Boxes, Plug, PlugZap, RefreshCw, Wrench, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   useProviders,
@@ -14,6 +14,13 @@ import {
   useUpdateProviderKey,
   useDeleteProviderKey,
   useSetDefaultProviderKey,
+  useMcpStatus,
+  useMcpSyncTools,
+  useMcpOAuthStart,
+  useMcpOAuthDisconnect,
+  useMcpLiveTools,
+  useMcpTestTool,
+  useToggleModel,
 } from '@/lib/queries';
 import type { Provider, ProviderKey } from '@/lib/types';
 import { PageHeader } from '@/components/layout/page-header';
@@ -104,11 +111,18 @@ function ProviderRow({ provider }: { provider: Provider }) {
   return (
     <TableRow>
       <TableCell className="font-mono text-[12px]">{provider.id}</TableCell>
-      <TableCell>{provider.name}</TableCell>
+      <TableCell>
+        {provider.name}
+        {provider.protocol === 'mcp' && (
+          <Badge variant="muted" className="ml-1.5 px-1 py-0 text-[9px]">MCP</Badge>
+        )}
+      </TableCell>
       <TableCell className="max-w-xs truncate text-muted-foreground">{provider.baseUrl}</TableCell>
       <TableCell><Badge variant="muted">{provider.authScheme}</Badge></TableCell>
       <TableCell>
-        {provider.hasCredentials ? <Badge variant="success">set</Badge> : <Badge variant="warning">missing</Badge>}
+        {provider.protocol === 'mcp' ? (
+          <Badge variant="muted">OAuth/key</Badge>
+        ) : provider.hasCredentials ? <Badge variant="success">set</Badge> : <Badge variant="warning">missing</Badge>}
         {provider.keyCount > 0 && <Badge variant="muted" className="ml-1">+{provider.keyCount} key{provider.keyCount !== 1 ? 's' : ''}</Badge>}
       </TableCell>
       <TableCell>
@@ -213,8 +227,11 @@ function ProviderForm({
     id: provider?.id ?? '',
     name: provider?.name ?? '',
     baseUrl: provider?.baseUrl ?? '',
+    protocol: provider?.protocol ?? 'openai',
+    mcpMode: provider?.mcpOptions?.mode ?? 'generic',
     authScheme: provider?.authScheme ?? 'bearer',
   });
+  const isMcp = form.protocol === 'mcp';
   // Per-modality endpoint templates (e.g. {generic:"/anything/{path}"}).
   // Initialized from the provider's existing endpoints map on edit.
   const [endpoints, setEndpoints] = useState<Array<{ key: string; value: string }>>(
@@ -232,11 +249,18 @@ function ProviderForm({
       id: form.id,
       name: form.name || form.id,
       baseUrl: form.baseUrl,
+      protocol: form.protocol,
       authScheme: form.authScheme,
+      // Mode penanganan MCP (generic | kling). Backend merge-shallow dengan
+      // mcpOptions lama — pollTool hasil sync tidak terhapus.
+      ...(isMcp ? { mcpOptions: { mode: form.mcpMode } } : {}),
+      // Provider MCP tidak memakai endpoints REST — pastikan {} (bukan inherit
+      // default OpenAI) supaya provider tidak dianggap REST provider.
+      ...(isMcp ? { endpoints: endpointMap } : {}),
       // Only send endpoints when the operator added custom templates; otherwise
       // the provider inherits the OpenAI-compatible defaults at the catalog/
       // config layer (empty {} would wipe them).
-      ...(Object.keys(endpointMap).length > 0 ? { endpoints: endpointMap } : {}),
+      ...(!isMcp && Object.keys(endpointMap).length > 0 ? { endpoints: endpointMap } : {}),
       // API key tidak lagi di-set di sini — key dikelola via section "API keys"
       // di bawah (provider_keys), termasuk key default. Create provider tanpa
       // key dulu lalu tambah key setelahnya.
@@ -270,7 +294,57 @@ function ProviderForm({
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="purl">Base URL</Label>
-          <Input id="purl" value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" required />
+          <Input
+            id="purl"
+            value={form.baseUrl}
+            onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
+            placeholder={isMcp ? 'https://kling.ai/mcp' : 'https://api.openai.com/v1'}
+            required
+          />
+          {isMcp && (
+            <p className="text-[10px] text-muted-foreground">
+              Endpoint MCP (Streamable HTTP). Contoh: <code className="font-mono">https://kling.ai/mcp</code>.
+            </p>
+          )}
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="pprotocol">Protocol</Label>
+          <select
+            id="pprotocol"
+            value={form.protocol}
+            onChange={(e) => setForm({ ...form, protocol: e.target.value as Provider['protocol'] })}
+            className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]"
+          >
+            <option value="openai">openai — REST (endpoint templates)</option>
+            <option value="mcp">mcp — Model Context Protocol (tools)</option>
+          </select>
+          {isMcp && (
+            <>
+            <div className="space-y-1.5 pt-1">
+              <Label htmlFor="pmcpmode">MCP mode</Label>
+              <select
+                id="pmcpmode"
+                value={form.mcpMode}
+                onChange={(e) => setForm({ ...form, mcpMode: e.target.value as 'generic' | 'kling' })}
+                className="flex h-9 w-full rounded-md border border-border bg-background px-3 text-[13px]"
+              >
+                <option value="generic">generic — server MCP apa pun (auto-deteksi)</option>
+                <option value="kling">kling — Kling AI (penanganan spesifik)</option>
+              </select>
+              <p className="text-[10px] text-muted-foreground">
+                Mode menentukan penanganan vendor: <code className="font-mono">kling</code> memakai default
+                spesifik Kling (poll <code className="font-mono">query_tasks</code> +{' '}
+                <code className="font-mono">generation_id</code>). Server MCP lain kelak punya mode-nya sendiri —
+                tool generasinya tetap jadi model modality image/video biasa dan bisa dicampur dengan provider lain.
+              </p>
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Provider MCP: tool generasi di-discover via <code className="font-mono">tools/list</code> (tombol{' '}
+              <b>Sync tools</b> setelah provider dibuat) — hanya tool image/video yg jadi model; auth via OAuth
+              login browser atau API key statis (auth scheme di bawah).
+            </p>
+            </>
+          )}
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="pauth">Auth scheme</Label>
@@ -284,14 +358,21 @@ function ProviderForm({
             <option value="x-api-key">x-api-key</option>
             <option value="query">query (?api_key=)</option>
             <option value="basic">basic (HTTP Basic)</option>
-            <option value="none">none (public)</option>
+            <option value="none">none (public / OAuth-only)</option>
           </select>
+          {isMcp && (
+            <p className="text-[10px] text-muted-foreground">
+              Auth scheme berlaku bila memakai API key statis. Provider OAuth (mis. Kling): pilih{' '}
+              <code className="font-mono">none</code> lalu klik <b>Connect &amp; Sign in</b> setelah provider dibuat.
+            </p>
+          )}
         </div>
-        {/* Per-modality endpoint templates.
+        {/* Per-modality endpoint templates — HANYA untuk provider REST.
             Most providers inherit the OpenAI-compatible defaults automatically,
             so this is empty for them. It matters for `generic` (the passthrough
             modality) where you MUST set the upstream path, optionally with
             {model} / {path} placeholders. */}
+        {!isMcp && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <Label htmlFor="pendpoints">Endpoint templates</Label>
@@ -338,12 +419,18 @@ function ProviderForm({
             ))}
           </div>
         </div>
+        )}
+
+        {/* Section MCP — hanya untuk provider protocol='mcp' (edit mode).
+            OAuth connect/disconnect + sync tools + daftar tool hasil sync. */}
+        {isEdit && provider && isMcp && <McpSection providerId={provider.id} />}
 
         {/* Multi API keys — tambahan key upstream per provider (multi-account).
             Hanya tampil saat EDIT (provider sudah ada). Key utama tetap kolom
             API key di atas (provider.credentials default); section ini utk key
-            tambahan yg bisa di-assign ke route target (target.keyId). */}
-        {isEdit && provider && <ProviderKeysSection providerId={provider.id} />}
+            tambahan yg bisa di-assign ke route target (target.keyId).
+            (Provider OAuth-only seperti Kling tidak memerlukannya.) */}
+        {isEdit && provider && !isMcp && <ProviderKeysSection providerId={provider.id} />}
 
         <DialogFooter><Button type="submit" disabled={submitting}>{submitLabel}</Button></DialogFooter>
       </form>
@@ -492,6 +579,287 @@ function ProviderKeysSection({ providerId }: { providerId: string }) {
           <Plus size={13} /> Add
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Section MCP untuk provider protocol='mcp' (edit mode).
+ *
+ * 1. OAuth: tombol "Connect & Sign in" → ambil authorizationUrl dari gateway
+ *    lalu buka di tab baru (operator login di browser, callback kembali ke
+ *    gateway). Status koneksi + info who_am_i tampil setelah tersambung.
+ * 2. Sync tools → HANYA tool generasi (image/video) yg menjadi model (target
+ *    route). Tool polling async (query_tasks) di-deteksi otomatis.
+ * 3. Run tool: jalankan tool UTILITAS (who_am_i, query_membership_and_credits,
+ *    element_*, dll.) langsung dari sini — cek sisa kredit, identitas akun,
+ *    dsb. tanpa perlu route.
+ */
+function McpSection({ providerId }: { providerId: string }) {
+  const { data, isLoading, refetch } = useMcpStatus(providerId);
+  const syncTools = useMcpSyncTools();
+  const oauthStart = useMcpOAuthStart();
+  const oauthDisconnect = useMcpOAuthDisconnect();
+  const toggleModel = useToggleModel();
+  const oauth = data?.oauth ?? null;
+  const tools = data?.syncedTools ?? [];
+  const connected = oauth?.status === 'connected';
+
+  const connect = async () => {
+    try {
+      const { authorizationUrl } = await oauthStart.mutateAsync(providerId);
+      window.open(authorizationUrl, '_blank', 'noopener');
+      toast.success('Jendela login dibuka — selesaikan login, lalu kembali ke sini dan refresh status.');
+      // Status berubah setelah callback OAuth selesai; refetch berkala ringan.
+      setTimeout(() => refetch(), 4_000);
+      setTimeout(() => refetch(), 12_000);
+    } catch (err) {
+      toast.error((err as Error).message);
+    }
+  };
+
+  return (
+    <div className="space-y-3 rounded-md border border-border/60 p-2.5">
+      <div className="flex items-center justify-between">
+        <Label className="flex items-center gap-1.5"><Wrench size={13} /> MCP</Label>
+        {oauth && (
+          <Badge variant={connected ? 'success' : oauth.status === 'error' ? 'destructive' : 'warning'}>
+            {oauth.status}
+          </Badge>
+        )}
+      </div>
+
+      {/* ── Koneksi (OAuth / key statis) ── */}
+      <div className="space-y-1.5">
+        {isLoading ? (
+          <div className="h-8 animate-pulse rounded bg-secondary/40" />
+        ) : (
+          <>
+            {connected ? (
+              <div className="space-y-1 rounded border border-border/40 bg-background px-2 py-1.5">
+                <p className="text-[11px] text-muted-foreground">
+                  Terhubung via OAuth{oauth?.expiresAt ? ` (token exp ${new Date(oauth.expiresAt).toLocaleTimeString()})` : ''}.
+                  {' '}Gateway me-refresh token otomatis saat kedaluwarsa.
+                </p>
+                {oauth?.lastError && (
+                  <p className="text-[11px] text-destructive">last error: {oauth.lastError}</p>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={oauthDisconnect.isPending}
+                  onClick={async () => {
+                    try {
+                      await oauthDisconnect.mutateAsync(providerId);
+                      toast.success('Sesi OAuth diputus.');
+                      refetch();
+                    } catch (err) {
+                      toast.error((err as Error).message);
+                    }
+                  }}
+                >
+                  <Plug size={13} /> Disconnect
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-[11px] text-muted-foreground">
+                  Provider OAuth (mis. Kling): klik Connect lalu login di jendela browser yang terbuka.
+                  {' '}Token disimpan terenkripsi di gateway dan di-refresh otomatis.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={oauthStart.isPending}
+                  onClick={connect}
+                >
+                  <PlugZap size={13} /> {oauthStart.isPending ? 'Starting…' : 'Connect & Sign in'}
+                </Button>
+                {oauth?.status === 'error' && oauth.lastError && (
+                  <p className="text-[11px] text-destructive">Koneksi gagal: {oauth.lastError}</p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* ── Sync tools (hanya tool generasi → model) ── */}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={syncTools.isPending}
+            onClick={async () => {
+              try {
+                const result = await syncTools.mutateAsync(providerId);
+                toast.success(
+                  `Sync selesai: ${result.toolsImported} tool generasi baru, ${result.toolsUpdated} diperbarui` +
+                    (result.toolsSkipped ? `, ${result.toolsSkipped} utilitas dilewati` : '') +
+                    (result.toolsRemoved ? `, ${result.toolsRemoved} model lama dibersihkan` : '') +
+                    (result.pollTool ? `, poll: ${result.pollTool}` : ''),
+                );
+                refetch();
+              } catch (err) {
+                toast.error((err as Error).message);
+              }
+            }}
+          >
+            <RefreshCw size={13} className={syncTools.isPending ? 'animate-spin' : ''} />
+            {syncTools.isPending ? 'Syncing…' : 'Sync tools'}
+          </Button>
+          <span className="text-[10px] text-muted-foreground">
+            {tools.length} model generasi (target route)
+          </span>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Hanya <b>tool generasi</b> (image/video) yang menjadi model &amp; target route — client memanggil API standar
+          (<code className="font-mono">/v1/images/generations</code>, <code className="font-mono">/v1/videos</code>),
+          task async ditangani internal oleh gateway. Tool utilitas (who_am_i, cek kredit, dll.) tidak menjadi model —
+          jalankan lewat panel <b>Run tool</b> di bawah.
+        </p>
+
+        {tools.length > 0 && (
+          <div className="max-h-44 space-y-1 overflow-y-auto">
+            {tools.map((t) => (
+              <div
+                key={t.id}
+                className="flex items-center gap-2 rounded border border-border/40 bg-background px-2 py-1.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate font-mono text-[11px]">{t.toolMeta?.toolName ?? t.id}</div>
+                  <div className="truncate text-[10px] text-muted-foreground">
+                    {t.displayName !== t.id ? t.displayName : '—'}
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {t.modalities.map((m) => (
+                    <Badge key={m} variant="muted" className="px-1 py-0 text-[9px]">{m}</Badge>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className={`rounded px-1.5 py-0.5 text-[10px] ${t.enabled ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}
+                  title={t.enabled ? 'Disable tool/model' : 'Enable tool/model'}
+                  onClick={() =>
+                    toggleModel.mutate(
+                      { id: t.id, enabled: !t.enabled },
+                      {
+                        onSuccess: () => {
+                          toast.success(t.enabled ? `Tool '${t.displayName}' dinonaktifkan` : `Tool '${t.displayName}' diaktifkan`);
+                          refetch();
+                        },
+                        onError: (err) => toast.error((err as Error).message),
+                      },
+                    )
+                  }
+                >
+                  {t.enabled ? 'on' : 'off'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {tools.length === 0 && (
+          <p className="text-[11px] italic text-muted-foreground">
+            Belum ada model generasi. Connect dulu (bila OAuth), lalu klik <b>Sync tools</b>.
+          </p>
+        )}
+      </div>
+
+      {/* ── Run tool (utilitas: who_am_i, cek kredit, element, dll.) ── */}
+      <RunToolPanel providerId={providerId} />
+    </div>
+  );
+}
+
+/**
+ * Panel eksekusi tool utilitas langsung dari modal provider: dropdown tool
+ * (live tools/list) + arguments JSON + hasil. Contoh pemakaian: who_am_i
+ * (identitas akun), query_membership_and_credits (sisa kredit), element_list.
+ */
+function RunToolPanel({ providerId }: { providerId: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading } = useMcpLiveTools(providerId, open);
+  const testTool = useMcpTestTool();
+  const [selected, setSelected] = useState('');
+  const [argsText, setArgsText] = useState('{}');
+  const [result, setResult] = useState<string | null>(null);
+  const liveTools = data?.data ?? [];
+  const selectedTool = liveTools.find((t) => t.name === selected);
+
+  const run = async () => {
+    let args: Record<string, unknown>;
+    try {
+      args = argsText.trim() ? JSON.parse(argsText) : {};
+    } catch {
+      toast.error('Arguments bukan JSON valid.');
+      return;
+    }
+    try {
+      const res = await testTool.mutateAsync({ providerId, tool: selected, args });
+      setResult(JSON.stringify(res, null, 2));
+    } catch (err) {
+      setResult(`ERROR: ${(err as Error).message}`);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border/60 p-2">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between text-left"
+        onClick={() => setOpen(!open)}
+      >
+        <Label className="flex items-center gap-1.5"><Play size={12} /> Run tool (utilitas)</Label>
+        <span className="text-[10px] text-muted-foreground">{open ? '▾' : '▸'}</span>
+      </button>
+      {!open ? (
+        <p className="text-[11px] text-muted-foreground">
+          Jalankan tool non-generasi langsung dari sini — mis. <code className="font-mono">who_am_i</code>{' '}
+          (identitas akun) atau <code className="font-mono">query_membership_and_credits</code> (sisa kredit).
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          <select
+            value={selected}
+            onChange={(e) => {
+              setSelected(e.target.value);
+              setResult(null);
+            }}
+            className="flex h-8 w-full rounded-md border border-border bg-background px-2 font-mono text-[12px]"
+          >
+            <option value="">{isLoading ? 'Memuat tool…' : '— pilih tool —'}</option>
+            {liveTools.map((t) => (
+              <option key={t.name} value={t.name}>{t.name}</option>
+            ))}
+          </select>
+          {selectedTool?.description && (
+            <p className="line-clamp-2 text-[10px] text-muted-foreground">{selectedTool.description}</p>
+          )}
+          <textarea
+            value={argsText}
+            onChange={(e) => setArgsText(e.target.value)}
+            placeholder='{"generation_id": "..."}'
+            spellCheck={false}
+            className="h-16 w-full rounded-md border border-border bg-background p-2 font-mono text-[11px]"
+          />
+          <div className="flex items-center gap-1.5">
+            <Button type="button" size="sm" disabled={!selected || testTool.isPending} onClick={run}>
+              <Play size={12} /> {testTool.isPending ? 'Running…' : 'Run'}
+            </Button>
+            <span className="text-[10px] text-muted-foreground">arguments = JSON apa adanya (tools/call)</span>
+          </div>
+          {result !== null && (
+            <pre className="max-h-40 overflow-auto rounded border border-border/40 bg-secondary/30 p-2 font-mono text-[10px] leading-relaxed">
+              {result}
+            </pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }

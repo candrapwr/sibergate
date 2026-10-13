@@ -2,7 +2,7 @@ import { serve } from '@hono/node-server';
 import { ConfigStore, getDb, loadDotEnv, pushConsoleLog } from '@sibergate/core';
 import { authMiddleware, requestIdMiddleware, type Vars } from './middleware.js';
 import { createApp } from './routes.js';
-import { createAdminRouter } from './admin-routes.js';
+import { createAdminRouter, createMcpOauthCallbackRouter } from './admin-routes.js';
 import { createAuthRouter } from './auth-routes.js';
 import { createCustomScriptPublicRouter, createCustomScriptAdminRouter } from './custom-routes.js';
 import { createProxyAdminRouter } from './proxy-routes.js';
@@ -40,6 +40,12 @@ async function main() {
   const app = createApp(configStore);
   app.use('*', requestIdMiddleware);
   app.use('*', authMiddleware());
+
+  // MCP OAuth callback (GET /admin/mcp/oauth/callback) — dipasang SEBELUM
+  // router admin: URL ini diakses browser operator via redirect dari server
+  // OAuth (mis. Kling) sehingga TIDAK membawa admin key; router ini memang
+  // tanpa auth (state PKCE melindungi flow-nya).
+  app.route('/admin/mcp/oauth', createMcpOauthCallbackRouter());
 
   // Admin REST API (separate auth).
   app.route('/admin', createAdminRouter(configStore));

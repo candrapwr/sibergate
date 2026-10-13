@@ -54,6 +54,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔌 One endpoint, all providers** — OpenAI, DeepSeek, Anthropic, Gemini, Groq, Mistral, and 10+ more, unified behind the OpenAI API you already use.
 - **🧠 Smart routing** — `fallback` (auto-failover), `fastest` (lowest-latency pick), `weighted` (load balancing). Strategies apply to every modality.
 - **🎨 Six AI modalities + REST passthrough** — chat, image generation, text-to-speech, transcription, embeddings, and **text-to-music** (DeepInfra ACE-Step), plus a **generic** modality that proxies any non-LLM API (GET/POST/PUT/DELETE) with the same routing + failover.
+- **🧩 MCP Provider (Model Context Protocol)** — an MCP server (e.g. **Kling AI**) becomes a provider of its own: connect via **OAuth browser login** (or a static API key), tools are auto-discovered (`Sync tools`), then served through OpenAI-compatible endpoints — images via `/v1/images/generations` (the gateway transparently polls `generation_id` → `query_tasks`), **video** via `/v1/videos` (Sora-style: create → poll → download mp4), and **any MCP tool** via `/v1/mcp/{route}/tools/{tool}`. OAuth tokens are encrypted + auto-refreshed. See [MCP Provider](#-mcp-provider-model-context-protocol).
 - **🔑 Multiple API keys per provider** — one provider may own **several keys** (e.g. multiple OpenAI/Gemini accounts), each with a label. Every route target points to a specific key (`provider → model → key`) — handy for cross-account load balancing or quota isolation. One key is marked **default** (used when a target doesn't specify one). Stats are tracked **per upstream key**.
 - **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
 - **🔀 Cross-vendor tool calling without errors** — agentic loops with failover between models of different vendors (e.g. Gemini ↔ DeepSeek) normally crash in multi-turn because each vendor has its own mandatory internal token (Gemini `thought_signature`, DeepSeek `reasoning_content`) that is incompatible and must be round-tripped. SiberGate solves it: set the Gemini target's modality to `tools-text` → the gateway converts `tool_calls` + role `tool` to universal XML text up front, then re-parses back to OpenAI format at the end. The client keeps clean original `tool_calls`, no vendor-specific signature leaks, no `400 missing signature` errors. See [Cross-vendor tool calling](#-cross-vendor-tool-calling).
@@ -856,6 +857,176 @@ Client (always JSON, OpenAI format)
 
 ---
 
+## 🧩 MCP Provider (Model Context Protocol)
+
+SiberGate can act as an **MCP client**: an MCP server is added as a provider
+(`protocol: 'mcp'`), its tools are discovered automatically via `tools/list`,
+and then used through OpenAI-compatible endpoints — your clients never need to
+know MCP exists. Flagship example: **Kling AI** (`https://kling.ai/mcp`) for
+image & video generation.
+
+```
+Client (OpenAI format)               SiberGate                       MCP server
+──────────────────                 ───────────                      ──────────
+POST /v1/images/generations  ───▶  map prompt/size → tool args ───▶  text_to_image
+POST /v1/videos              ───▶  map prompt/seconds → args  ───▶  text_to_video
+GET  /v1/videos/:id          ───▶  poll task (query_tasks)   ───▶  status + mp4 URL
+POST /v1/mcp/{route}/tools/{tool} ▶ arguments verbatim        ───▶  any tool
+```
+
+### Authentication: two modes
+
+| Mode | How it works | Example |
+|---|---|---|
+| **OAuth 2.1 (browser login)** | Operator clicks **Connect & Sign in** in Admin → Providers → a browser OAuth window opens → account login → tokens stored **encrypted** (AES-256-GCM) and refreshed automatically | Kling AI |
+| **Static API key** | Uses the regular auth scheme (bearer / x-api-key / query / basic) via the API keys section | Other MCP servers |
+
+The OAuth implementation follows the MCP authorization spec: discovery
+(`/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`),
+**dynamic client registration** (RFC 7591), **PKCE S256**, and automatic token
+refresh on expiry/rejection (401). The default redirect URI is
+`http://localhost:8787/admin/mcp/oauth/callback` — set `SIBERGATE_PUBLIC_URL`
+if the gateway is reached on a different host/port.
+
+### Kling AI setup (full example)
+
+1. **Settings → Import known providers** — pick **Kling AI (MCP)**
+   (`https://kling.ai/mcp`, protocol `mcp`).
+2. **Providers → edit "kling-mcp"** — enable the provider (catalog imports
+   always start disabled), then click **Connect & Sign in** — log in with your
+   Kling account in the browser window that opens. Status turns **connected**
+   (the `who_am_i` info is stored too).
+3. **Sync tools** — only GENERATION tools become models: `text_to_image`,
+   `image_to_image`, `text_to_video`, `image_to_video`, `motion_control`.
+   Utility tools (`who_am_i`, `query_tasks`, `element_*`, credit checks)
+   deliberately do NOT become models — run them via the **Run tool** panel
+   in the provider modal. The polling tool (`query_tasks` +
+   `generation_id`) is auto-detected; the Kling preset also carries
+   **mode `kling`** (Kling-specific poll defaults; other MCP servers use
+   mode `generic` or their own future modes).
+4. **Create routes** (Routes page):
+   - Modality **Image** → target model `kling-mcp/text_to_image` — serves
+     `/v1/images/generations` (the gateway waits through polling and replies
+     in OpenAI format; set the route timeout ≥ 120s). MCP targets can be
+     MIXED with other image providers in one route (e.g. DALL-E failing over
+     to Kling) — same modality, automatic failover.
+   - Modality **Video** → target `kling-mcp/text_to_video` (or
+     `image_to_video`) — serves `/v1/videos`.
+   - Modality **MCP Tools** → placeholder model target — serves
+     `/v1/mcp/{routeId}/tools/{tool}` for any tool.
+5. **Call it from your app** exactly like the OpenAI API.
+
+### Usage examples
+
+```bash
+# Image — exactly like DALL·E
+curl -X POST http://localhost:8787/v1/images/generations \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"model": "kling-image", "prompt": "astronaut cat", "size": "1280x720"}'
+# → {"created":..., "data":[{"url":"https://...png"}], "sibergate":{...}}
+
+# Video — Sora-style: create → poll → download
+curl -X POST http://localhost:8787/v1/videos \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"model": "kling-video", "prompt": "dancing cat", "seconds": "5", "size": "1280x720"}'
+# → {"id":"video_ab12...","status":"queued",...}
+curl http://localhost:8787/v1/videos/video_ab12... -H "Authorization: Bearer sg_live_..."
+# → {"status":"completed","progress":100,"sibergate":{"video_urls":["https://...mp4"]}}
+curl http://localhost:8787/v1/videos/video_ab12.../content -H "..." -o video.mp4
+
+# Any MCP tool (image-to-video, elements, …) — arguments verbatim
+curl -X POST http://localhost:8787/v1/mcp/kling-tools/tools/image_to_video \
+  -H "Authorization: Bearer sg_live_..." \
+  -d '{"image": "https://.../cat.png", "prompt": "animate it", "duration": 5}'
+# → {"object":"mcp_tool_call","tool":"image_to_video","taskRef":"gen_...","status":"queued",...}
+```
+
+### Sync policy & utility tools
+
+- **Only generation tools (image/video) become models** — the model list
+  stays clean; utility tools (who_am_i, query_tasks, element_*, credit
+  checks) never become models/routes. Old non-generation models from the
+  initial sync are cleaned up automatically on re-sync.
+- **Modalities follow the existing ones** — MCP generation tools are normal
+  `image-generation`/`video-generation` models, NOT a separate modality.
+  Image/Video routes can mix MCP targets and other providers with automatic
+  failover. The `MCP Tools` modality is only for non-generation tools
+  (`/v1/mcp/{route}/tools/{tool}`).
+- **Run tool from the provider modal** — the "Run tool (utilities)" panel in
+  Admin → Providers → edit MCP provider executes any tool directly: pick a
+  tool → type JSON arguments → Run. E.g. `who_am_i` (account identity),
+  `query_membership_and_credits` (remaining credits).
+- **Vendor handling mode** — the *MCP mode* field on the provider form:
+  `generic` (default, auto-detection) or `kling` (poll defaults
+  `query_tasks`/`generation_id` + extension point for future Kling quirks).
+  Other MCP servers needing different handling will get their own modes.
+
+### Model selection (variants)
+
+**Sync reads `who_am_i` FIRST** — on Kling, the model list only exists in
+who_am_i's `availableModels` (the `model` parameter is even required, and is
+not declared in the `tools/list` schema). Each generation tool is imported as
+a base model (pinned to its `defaultModel`) plus **one model per variant**:
+
+```
+kling-mcp/text_to_image                    ← server default variant
+kling-mcp/text_to_image@kling-v2           ← kling-v2 only
+kling-mcp/text_to_image@kling-v2-master    ← kling-v2-master only
+```
+
+The gateway also adapts the tools/call wire format (envelope) to the server's
+`tools/list` schema: Kling uses a top-level `model` + an `arguments` array of
+`{name, value}` pairs + an `inputs` array of `{name, inputType: 'URL', url}`
+— all handled internally; clients keep the OpenAI format.
+
+Pick a variant as the **route target** (same concept as REST providers), or
+override it from the client via the `model_variant` body field:
+
+```bash
+curl -X POST .../v1/images/generations -d '{"model":"kling-image","prompt":"...","model_variant":"kling-v2-master"}'
+```
+
+The models available to your account are listed via the **Run tool** panel →
+`who_am_i`.
+
+### How the mapping works (image/video)
+
+OpenAI requests are mapped to tool arguments **based on the tool's
+`inputSchema`** (JSON Schema from `tools/list`): `prompt` → prompt-like
+property, `size` `1280x720` → `aspect_ratio` `16:9` (picked from the schema
+enum), `seconds` → `duration`, `input_reference`/`image` → `image`, `n` →
+`num_images`, etc. Arguments not present in the schema are dropped. Kling's
+generation tools return a `generation_id`, which the gateway tracks via
+`query_tasks`:
+
+- **Image**: the gateway **waits** (poll every 5s, bounded by the route
+  timeout) until `succeed`, then replies `{created, data:[{url}]}` — one
+  request from the client.
+- **Video**: POST immediately replies `queued` + a job id (`video_jobs`
+  table); each `GET /v1/videos/:id` polls the upstream once — the client
+  controls the polling cadence, exactly like the OpenAI Videos/Sora API.
+
+The generic endpoint `/v1/mcp/{route}/tools/{tool}` does **not** map
+arguments — the body is forwarded verbatim as the tool's arguments (you know
+the schema), and the result is normalized (`taskRef`, `status`, `imageUrls`,
+`videoUrls`, `text`, `content`).
+
+### Notes & limitations
+
+- **Kling result URLs are valid for 24 hours** — download/persist the files
+  promptly.
+- **Tasks cannot be canceled** after submission (`DELETE /v1/videos/:id` only
+  removes the local job).
+- **Kling rate limits**: 5 QPS; non-subscribers get a single concurrent video
+  task.
+- Engine failover still applies: if a tool call fails (rate limit/server
+  error), SiberGate tries the next target like any other modality.
+- Testing without a Kling account: `node scripts/mcp-mock-server.mjs` — a full
+  local mock MCP server (streamable HTTP + SSE + OAuth + Kling-style tools)
+  for end-to-end testing.
+- Chat via MCP (an MCP server exposing an LLM as a tool) is not supported yet
+  — use the generic endpoint for such tools.
+
 ## 🔌 API reference
 
 | Method | Path | Description |
@@ -868,6 +1039,12 @@ Client (always JSON, OpenAI format)
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Text embeddings |
 | `POST` | `/v1/music/generations` | Text-to-music (SiberGate extension) |
+| `POST` | `/v1/videos` | **Video generation** (OpenAI Sora-style) — submit a job, backed by an MCP provider (e.g. Kling `text_to_video`). See [MCP Provider](#-mcp-provider-model-context-protocol) |
+| `GET` | `/v1/videos/:id` | Video job status (polling; one GET = one upstream poll) |
+| `GET` | `/v1/videos/:id/content` | Download/stream the resulting video bytes (mp4) |
+| `DELETE` | `/v1/videos/:id` | Delete a local video job (upstream tasks cannot be canceled) |
+| `GET` | `/v1/mcp/:routeId/tools` | List tools on the route's MCP server (modality `mcp`) |
+| `POST` | `/v1/mcp/:routeId/tools/:tool` | **Invoke any MCP tool** — body = the tool's arguments (SiberGate extension) |
 | `ANY` | `/v1/generic/:routeId/*` | **Generic REST passthrough** — proxy any non-LLM API (GET/POST/PUT/PATCH/DELETE); body & response forwarded verbatim (SiberGate extension) |
 
 `model` is always a **route id** (e.g. `smart`), not a vendor model id. Errors

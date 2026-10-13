@@ -12,6 +12,19 @@ export interface Provider {
   name: string;
   baseUrl: string;
   /**
+   * Upstream wire protocol.
+   *   'openai' (default) = REST provider; baseUrl + endpoints map + authScheme
+   *                describe a plain HTTP API (OpenAI-compatible or vendor-dialect
+   *                via the adapters).
+   *   'mcp'      = Model Context Protocol server (Streamable HTTP). baseUrl is
+   *                the MCP endpoint (e.g. https://kling.ai/mcp); auth is either
+   *                a static key (authScheme) or OAuth 2.1 (mcp_oauth table).
+   *                Tools are discovered via tools/list and imported as models.
+   */
+  protocol?: 'openai' | 'mcp';
+  /** Opsi khusus provider MCP. JSON column mcp_options di DB. */
+  mcpOptions?: McpProviderOptions | null;
+  /**
    * How the provider's key is attached to upstream requests.
    *   bearer    → Authorization: Bearer <key>     (default; OpenAI-style)
    *   x-api-key → x-api-key: <key>                (Anthropic-style)
@@ -36,10 +49,60 @@ export interface Provider {
   endpoints: Partial<Record<RouteModality, string>>;
 }
 
+/** Konfigurasi tambahan untuk provider protocol='mcp'. */
+export interface McpProviderOptions {
+  /**
+   * Mode penanganan vendor. 'generic' (default) = perilaku standar via
+   * auto-deteksi. 'kling' = penanganan spesifik Kling AI (default poll tool
+   * query_tasks/generation_id; titik ekstensi utk quirk Kling berikutnya).
+   * Server MCP lain yg butuh perlakuan beda akan mendapat mode baru.
+   */
+  mode?: 'generic' | 'kling';
+  /**
+   * Nama tool untuk mem-poll task async (generation_id → status + URL hasil).
+   * Auto-deteksi saat sync tools (mis. 'query_tasks' di Kling); bisa dioverride.
+   */
+  pollTool?: string;
+  /** Nama argumen task-id tool polling (default: auto-detect dari inputSchema). */
+  pollToolArg?: string;
+}
+
+/** Metadata sebuah tool MCP — disimpan di models.tool_meta (JSON). */
+export interface McpToolMeta {
+  mcpTool: true;
+  /** Nama tool asli di server MCP (model id = '{providerId}/{toolName}'). */
+  toolName: string;
+  /**
+   * Varian model vendor (mis. 'kling-v2-master') — model id menjadi
+   * '{providerId}/{toolName}@{variant}'. Di-inject sebagai argumen `model`
+   * tool saat dispatch. Pada model DASAR hasil sync who_am_i (Kling), ini
+   * berisi defaultModel tool tsb (server mewajibkan parameter model).
+   */
+  modelVariant?: string;
+  /** Label vendor utk varian (alias dari who_am_i, mis. 'kling3.0'). */
+  modelLabel?: string;
+  /** JSON Schema argumen tool (dari tools/list atau sintetis who_am_i). */
+  inputSchema?: Record<string, unknown>;
+  /**
+   * Envelope pemanggilan tools/call (dari schema tools/list asli):
+   * 'pairs' = Kling (model top-level + arguments[{name,value}] + inputs[]),
+   * 'flat'  = argumen sebagai properti langsung (default).
+   */
+  argEnvelope?: 'flat' | 'pairs';
+  /** Slot media model (image_1, first_image, ...) utk envelope 'pairs'. */
+  inputSlots?: string[];
+  /** Anotasi MCP (title, readOnlyHint, destructiveHint, ...). */
+  annotations?: Record<string, unknown>;
+  /** Tool polling yang dipakai bila tool ini mengembalikan task async. */
+  pollTool?: string;
+}
+
 /** The KIND of gateway request / route (which adapter handles it). */
 export type RouteModality =
   | 'chat'
   | 'image'
+  | 'video'
+  | 'mcp'
   | 'speech'
   | 'transcribe'
   | 'embed'
@@ -72,6 +135,8 @@ export interface Model {
   inputPricePer1m?: number;
   outputPricePer1m?: number;
   capabilities: Record<string, boolean>;
+  /** Untuk model hasil import tool MCP: schema + anotasi tool. Null = model biasa. */
+  toolMeta?: McpToolMeta | null;
   enabled: boolean;
 }
 
@@ -147,6 +212,38 @@ export interface ApiKey {
   keyHash: string;
   keyPrefix: string;
   enabled: boolean;
+}
+
+/** Status video job (OpenAI Sora-style states). */
+export type VideoJobStatus = 'queued' | 'in_progress' | 'completed' | 'failed';
+
+/**
+ * Satu job generasi video (modality 'video', OpenAI-style /v1/videos).
+ * Dibuat saat POST /v1/videos; task async upstream dilacak via task_ref
+ * (generation_id di MCP Kling) dan di-poll lewat tool polling saat GET.
+ */
+export interface VideoJob {
+  id: string;
+  routeId: string;
+  providerId: string;
+  /** Model id namespaced (provider/tool) — tool generasi yang dipakai. */
+  modelId: string;
+  /** Tool polling (mis. query_tasks) untuk task async; null bila sync. */
+  pollTool: string | null;
+  /** Ref task upstream (generation_id / task_id); null bila sync selesai. */
+  taskRef: string | null;
+  status: VideoJobStatus;
+  /** 0-100, best-effort dari status upstream. */
+  progress: number;
+  /** Respons mentah tools/call terakhir (JSON) — audit + ekstraksi URL. */
+  result: Record<string, unknown> | null;
+  /** URL aset video final (dari works[].url dsb.) setelah completed. */
+  videoUrls: string[];
+  error: string | null;
+  /** API key pembuat job — utk access control saat GET/DELETE. */
+  apiKeyId: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** The full runtime config loaded from SQLite. */

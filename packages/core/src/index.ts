@@ -109,11 +109,57 @@ export {
 export {
   mapImageInput,
   parseImageSizeClass,
+  parseIntent as parseImageIntent,
   detectImageDialect,
   type ImageSizeClass,
   type ImageDialect,
   type MappedImageRequest,
+  type CanonicalImageIntent,
 } from './image-mapper.js';
+export {
+  // MCP client (provider protocol='mcp')
+  mcpToolsList,
+  mcpToolsCall,
+  mcpRequest,
+  resetMcpClient,
+  type McpToolInfo,
+  type McpToolResult,
+  type McpCallOptions,
+} from './mcp/client.js';
+export {
+  // MCP OAuth 2.1 (Kling dkk.)
+  startMcpOAuth,
+  handleMcpOAuthCallback,
+  getMcpOAuthStatus,
+  getValidMcpAccessToken,
+  disconnectMcpOAuth,
+  setMcpOAuthUserInfo,
+  mcpOAuthRedirectUri,
+  type McpOAuthStart,
+  type McpOAuthCallbackResult,
+  type McpOAuthEndpoints,
+} from './mcp/oauth.js';
+export {
+  normalizeToolCall,
+  mapTaskStatus,
+  detectPollTool,
+  detectPollToolArg,
+  guessToolModalities,
+  isGenerationTool,
+  type NormalizedToolCall,
+} from './mcp/normalize.js';
+export {
+  mapToToolArguments,
+  sizeToClass,
+} from './mcp/schema-map.js';
+export {
+  callToolNormalized,
+  pollMcpTaskOnce,
+  pollMcpTaskUntilDone,
+  mcpImageFlow,
+  mcpVideoSubmit,
+  type McpPollInfo,
+} from './mcp/media.js';
 export {
   // runtime
   resolveProxy,
