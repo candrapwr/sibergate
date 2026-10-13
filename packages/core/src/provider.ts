@@ -158,13 +158,37 @@ export async function sendUpstream(opts: {
 }): Promise<Response> {
   const { provider, body, signal } = opts;
   let url = opts.url;
+  let requestBody = body;
+  // Anthropic's Messages API rejects `temperature` for models that do not
+  // support sampling controls. Since clients address masked routes, remove it
+  // at dispatch time based on the actual upstream host rather than the route ID.
+  const contentType = opts.contentType ?? 'application/json';
+  let upstreamHost = '';
+  try {
+    upstreamHost = new URL(url).hostname.toLowerCase();
+  } catch {
+    // The URL is validated by fetch below; leave the body untouched here.
+  }
+  if (upstreamHost === 'api.anthropic.com' && typeof body === 'string' && contentType.includes('application/json')) {
+    try {
+      const parsed: unknown = JSON.parse(body);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'temperature' in parsed) {
+        const normalized = { ...(parsed as Record<string, unknown>) };
+        delete normalized.temperature;
+        requestBody = JSON.stringify(normalized);
+      }
+    } catch {
+      // Preserve malformed/non-JSON payloads; normal request error handling
+      // will report the upstream response as usual.
+    }
+  }
   // Build upstream headers: Content-Type (kecuali body FormData — boundary
   // multipart harus di-set oleh fetch, Content-Type manual justru merusak),
   // provider custom headers, then any allowlisted client headers (passthrough).
   // Passthrough comes LAST so it can override Content-Type if the client
   // explicitly set it (e.g. multipart).
   const headers: Record<string, string> = {
-    ...(body instanceof FormData ? {} : { 'Content-Type': opts.contentType ?? 'application/json' }),
+    ...(body instanceof FormData ? {} : { 'Content-Type': contentType }),
     ...provider.headers,
     ...(opts.passthroughHeaders ?? {}),
     // Edge relay inject headers (mis. x-relay-target) ditaruh terakhir shg
@@ -209,7 +233,7 @@ export async function sendUpstream(opts: {
     res = await fetch(url, {
       method: opts.method ?? 'POST',
       headers,
-      body,
+      body: requestBody,
       signal,
       ...(opts.dispatcher ? { dispatcher: opts.dispatcher } : {}),
     });
@@ -273,7 +297,7 @@ export async function sendUpstream(opts: {
       code,
       `${provider.id} returned ${res.status}${detail ? `: ${detail}` : ''}`.slice(0, 400),
       res.status,
-      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null, upstreamRequestBody: typeof body === 'string' ? body : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
+      { upstreamUrl: redactedUrl, upstreamStatus: res.status, upstreamBody: rawBody || null, upstreamRequestBody: typeof requestBody === 'string' ? requestBody : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
     );
   }
 
@@ -302,7 +326,7 @@ export async function sendUpstream(opts: {
       'server_error',
       `${provider.id} returned an HTML page instead of an API response${title ? `: ${title}` : ''} (likely a proxy/CDN error page)`.slice(0, 400),
       res.status,
-      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null, upstreamRequestBody: typeof body === 'string' ? body : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
+      { upstreamUrl: htmlRedactedUrl, upstreamStatus: res.status, upstreamBody: htmlBody || null, upstreamRequestBody: typeof requestBody === 'string' ? requestBody : null, upstreamRequestHeaders: redactUpstreamHeaders(headers) },
     );
   }
   return res;

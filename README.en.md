@@ -692,6 +692,10 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 (Anthropic `thinking:{type:"disabled"}`, Gemini `thinkingBudget:0`), so the
 client can turn off reasoning on models that are reasoning-on by default.
 
+**Anthropic compatibility:** for JSON requests sent directly to the upstream
+host `api.anthropic.com`, the gateway removes the top-level `temperature` field
+before dispatch. The field is preserved for other provider hosts.
+
 Token budgets for budget-based formats: `minimal`→512, `low`→1024,
 `medium`→4096, `high`→16384, `xhigh`→32768.
 

@@ -700,6 +700,10 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 (Anthropic `thinking:{type:"disabled"}`, Gemini `thinkingBudget:0`), sehingga
 klien bisa mematikan reasoning pada model yg default-nya aktif.
 
+**Kompatibilitas Anthropic:** untuk request JSON yang dikirim langsung ke host
+upstream `api.anthropic.com`, gateway menghapus field tingkat atas `temperature`
+sebelum dispatch. Field ini tetap diteruskan ke host provider lain.
+
 Budget token nominal utk format budget-based: `minimal`→512, `low`→1024,
 `medium`→4096, `high`→16384, `xhigh`→32768.
 

@@ -101,6 +101,25 @@ export async function pollMcpTaskUntilDone(
 /* ───────────────────────────── IMAGE ───────────────────────────── */
 
 /**
+ * Kumpulkan ref bernama eksplisit dari body klien. Utk envelope pairs (Kling),
+ * klien boleh menunjuk slot spesifik langsung di body — mis.
+ * {"scene_image": url, "style_image": url, "tail_image": url} — utk semantik
+ * yg tidak bisa ditebak dr urutan (kling-image-v2_1 butuh subject+scene/style).
+ */
+export function collectNamedSlotRefs(
+  body: Record<string, unknown>,
+  slots?: string[],
+): Array<{ name: string; ref: string }> {
+  if (!slots?.length) return [];
+  const out: Array<{ name: string; ref: string }> = [];
+  for (const slot of slots) {
+    const v = body[slot];
+    if (typeof v === 'string' && v.trim()) out.push({ name: slot, ref: v.trim() });
+  }
+  return out;
+}
+
+/**
  * Bentuk payload akhir tools/call sesuai envelope tool.
  *
  * 'pairs' (Kling): {model, arguments: [{name, value}], inputs: [{name,
@@ -113,6 +132,7 @@ function buildToolPayload(
   flatArgs: Record<string, unknown>,
   variant: string | undefined,
   imageRefs: string[],
+  namedRefs: Array<{ name: string; ref: string }> = [],
 ): Record<string, unknown> {
   if (toolMeta?.argEnvelope !== 'pairs') return flatArgs;
   const { model: _model, ...rest } = flatArgs;
@@ -122,10 +142,17 @@ function buildToolPayload(
       .filter(([, v]) => v !== undefined && v !== null && v !== '')
       .map(([name, value]) => ({ name, value: typeof value === 'string' ? value : String(value) })),
   };
+  // Inputs: slot bernama eksplisit dulu (scene_image/style_image/...), lalu
+  // ref generik diisi ke slot kosong berikutnya (subject_image_0, image_1, ...).
   const slots = toolMeta.inputSlots ?? [];
-  const inputs = imageRefs
-    .slice(0, slots.length)
-    .map((url, i) => ({ name: slots[i]!, inputType: 'URL', url }));
+  const namedNames = new Set(namedRefs.map((n) => n.name));
+  const freeSlots = slots.filter((s) => !namedNames.has(s));
+  const inputs = [
+    ...namedRefs.map((n) => ({ name: n.name, inputType: 'URL', url: n.ref })),
+    ...imageRefs
+      .slice(0, freeSlots.length)
+      .map((url, i) => ({ name: freeSlots[i]!, inputType: 'URL', url })),
+  ];
   if (inputs.length) payload.inputs = inputs;
   return payload;
 }
@@ -149,8 +176,24 @@ export async function mcpImageFlow(
   const { tool, variant } = splitToolModel(model, toolMeta, body);
   const intent = parseIntent(body);
   // Ref inline (data-URI/base64) → upload via file_upload jadi URL hosted;
-  // input model Kling menolak non-URL absolut.
-  const hostedImages = await ensureHostedAssetRefs(provider, intent.images, opts);
+  // input model Kling menolak non-URL absolut. Slot bernama (scene_image,
+  // style_image, dst.) dari body ikut di-upload bila inline.
+  const namedRefs = collectNamedSlotRefs(body, toolMeta?.inputSlots);
+  const [hostedImages, hostedNamed] = await Promise.all([
+    ensureHostedAssetRefs(provider, intent.images, opts),
+    ensureHostedAssetRefs(provider, namedRefs.map((n) => n.ref), opts),
+  ]);
+  namedRefs.forEach((n, i) => { n.ref = hostedNamed[i]!; });
+  // Guard: tool generasi TANPA slot input gambar (Kling text_to_image:
+  // inputs kosong) + klien mengirim gambar referensi → tolak jelas, jangan
+  // buang diam-diam (arahkan ke tool image_to_image).
+  if (toolMeta?.argEnvelope === 'pairs' && !(toolMeta.inputSlots?.length) && intent.images.length > 0) {
+    throw new GatewayCallError(
+      'client_error',
+      `Tool '${tool}' (${toolMeta.modelVariant ?? 'default'}) tidak menerima gambar referensi (inputs kosong di who_am_i). ` +
+        `Gunakan route dengan target 'image_to_image' utk edit/reference gambar — atau jalur Elements (element_create) utk subjek reusable.`,
+    );
+  }
   const flatArgs = mapToToolArguments(toolMeta?.inputSchema, {
     prompt: intent.prompt,
     negativePrompt: intent.negativePrompt,
@@ -160,7 +203,7 @@ export async function mcpImageFlow(
     model: variant,
     extra: intent.openaiExtras,
   });
-  const args = buildToolPayload(toolMeta, flatArgs, variant, hostedImages);
+  const args = buildToolPayload(toolMeta, flatArgs, variant, hostedImages, namedRefs);
   pushConsoleLog('info', 'mcp', `image via ${provider.id}/${tool}${variant ? ` (model ${variant})` : ''}`, {
     provider: provider.id, tool, args: redactArgs(args),
   });
@@ -236,10 +279,15 @@ export async function mcpVideoSubmit(
   opts?: McpCallOptions,
 ): Promise<NormalizedToolCall> {
   const { tool, variant } = splitToolModel(model, toolMeta, body, ['video_model']);
-  const imageRefs = await ensureHostedAssetRefs(provider, [
-    ...([body.input_reference].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
-    ...([body.image].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
-  ], opts);
+  const namedRefs = collectNamedSlotRefs(body, toolMeta?.inputSlots);
+  const [imageRefs, hostedNamed] = await Promise.all([
+    ensureHostedAssetRefs(provider, [
+      ...([body.input_reference].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
+      ...([body.image].flat().filter((x): x is string => typeof x === 'string' && !!x.trim())),
+    ], opts),
+    ensureHostedAssetRefs(provider, namedRefs.map((n) => n.ref), opts),
+  ]);
+  namedRefs.forEach((n, i) => { n.ref = hostedNamed[i]!; });
   const seconds = body.seconds !== undefined ? Number(body.seconds) : body.duration !== undefined ? Number(body.duration) : undefined;
   const size = typeof body.size === 'string' ? body.size : undefined;
 
@@ -251,7 +299,7 @@ export async function mcpVideoSubmit(
     n: typeof body.n === 'number' && Number.isFinite(body.n) ? Math.trunc(body.n) : undefined,
     model: variant,
   });
-  const args = buildToolPayload(toolMeta, flatArgs, variant, imageRefs);
+  const args = buildToolPayload(toolMeta, flatArgs, variant, imageRefs, namedRefs);
   if (!Object.keys(args).length) {
     throw new GatewayCallError('client_error', `Request video tidak menghasilkan argumen apa pun utk tool '${tool}' (prompt kosong / schema tidak dikenal).`);
   }
