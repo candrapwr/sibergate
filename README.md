@@ -889,9 +889,14 @@ POST /v1/mcp/{route}/tools/{tool} ▶ arguments verbatim        ───▶  to
 Implementasi OAuth mengikuti spesifikasi MCP: discovery
 (`/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`),
 **dynamic client registration** (RFC 7591), **PKCE S256**, dan refresh token
-otomatis saat expired/ditolak (401). Redirect URI default
-`http://localhost:8787/admin/mcp/oauth/callback` — set `SIBERGATE_PUBLIC_URL`
-bila gateway diakses dari host/port lain.
+otomatis saat expired/ditolak (401).
+
+Redirect URI callback ditentukan otomatis: (1) `SIBERGATE_PUBLIC_URL` env bila
+di-set; (2) **auto-deteksi dari domain yang dipakai operator membuka admin UI**
+(header Origin diteruskan admin proxy — di prod redirect mengikuti domain
+publik Anda, bukan localhost); (3) default `http://localhost:8787`. Domain
+admin panel juga bisa menjadi tujuan callback — admin UI mem-proxy
+`/admin/mcp/oauth/callback` ke gateway.
 
 ### Setup Kling AI (contoh lengkap)
 

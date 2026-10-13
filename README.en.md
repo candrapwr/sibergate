@@ -884,9 +884,15 @@ POST /v1/mcp/{route}/tools/{tool} ▶ arguments verbatim        ───▶  an
 The OAuth implementation follows the MCP authorization spec: discovery
 (`/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`),
 **dynamic client registration** (RFC 7591), **PKCE S256**, and automatic token
-refresh on expiry/rejection (401). The default redirect URI is
-`http://localhost:8787/admin/mcp/oauth/callback` — set `SIBERGATE_PUBLIC_URL`
-if the gateway is reached on a different host/port.
+refresh on expiry/rejection (401).
+
+The callback redirect URI is resolved automatically: (1) the
+`SIBERGATE_PUBLIC_URL` env if set; (2) **auto-detected from the domain the
+operator uses to open the admin UI** (the Origin header is forwarded through
+the admin proxy — in production the redirect follows your public domain, not
+localhost); (3) default `http://localhost:8787`. The admin panel domain can
+also serve as the callback target — the admin UI proxies
+`/admin/mcp/oauth/callback` to the gateway.
 
 ### Kling AI setup (full example)
 

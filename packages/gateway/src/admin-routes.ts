@@ -217,11 +217,15 @@ export function createAdminRouter(configStore: ConfigStore) {
     const provider = admin.getProvider(c.req.param('id'));
     if (!provider) return c.json(notFound('provider'), 404);
     if (provider.protocol !== 'mcp') {
-      return c.json({ error: 'invalid_input', message: `Provider '${provider.id}' bukan provider MCP.` }, 400);
+      return c.json({ error: { message: `Provider '${provider.id}' bukan provider MCP.`, type: 'invalid_input', param: null, code: 'invalid_input' } }, 400);
     }
     try {
-      const start = await startMcpOAuth(c.req.param('id'), String(provider.baseUrl));
-      pushConsoleLog('info', 'mcp', `OAuth flow dimulai utk ${provider.id}`, { provider: provider.id });
+      // Auto-deteksi base URL publik dari request Connect: browser operator
+      // memanggil admin UI (Next proxy) yang meneruskan header Origin/Host —
+      // dipakai utk redirect_uri bila SIBERGATE_PUBLIC_URL tidak di-set, jadi
+      // prod tidak jatuh ke localhost.
+      const start = await startMcpOAuth(c.req.param('id'), String(provider.baseUrl), detectPublicBase(c));
+      pushConsoleLog('info', 'mcp', `OAuth flow dimulai utk ${provider.id} (redirect ${start.redirectUri})`, { provider: provider.id });
       return c.json(start);
     } catch (err) {
       return mcpError(c, err);
@@ -655,11 +659,29 @@ function notFound(resource: string) {
   };
 }
 
+/**
+ * Deteksi base URL publik dari header request Connect (dipakai utk
+ * redirect_uri OAuth bila SIBERGATE_PUBLIC_URL tidak di-set).
+ *
+ * Urutan: Origin (dikirim browser pada POST, diteruskan admin proxy) →
+ * x-forwarded-proto + x-forwarded-host (reverse proxy) → null (fallback
+ * localhost di core). Nilai dibersihkan: hanya http/https diterima.
+ */
+function detectPublicBase(c: { req: { header: (name: string) => string | undefined } }): string | null {
+  const origin = c.req.header('origin');
+  if (origin && /^https?:\/\//i.test(origin)) return origin.replace(/\/+$/, '');
+  const fwdHost = c.req.header('x-forwarded-host');
+  if (fwdHost) {
+    const proto = (c.req.header('x-forwarded-proto') ?? 'https').split(',')[0]!.trim();
+    if (/^https?$/.test(proto)) return `${proto}://${fwdHost.split(',')[0]!.trim()}`;
+  }
+  return null;
+}
+
 /** Map error operasi MCP (ValidationError / upstream MCP) → respons admin API.
  *  Bentuk body = standar {error:{message,code}} supaya toast UI menampilkan
  *  pesan lengkap (api-client membaca error.message). */
-function mcpError(c: { json: (body: unknown, status?: number) => Response }, err: unknown): Response {
-  const e = err as Error & { status?: number; code?: string };
+function mcpError(c: { json: (body: unknown, status?: number) => Response }, err: unknown): Response {  const e = err as Error & { status?: number; code?: string };
   pushConsoleLog('error', 'mcp', `MCP operation failed: ${e.message?.slice(0, 300)}`, {
     code: e.code, status: e.status,
   });

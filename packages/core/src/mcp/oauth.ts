@@ -54,10 +54,20 @@ interface PendingFlow {
 /** Pending authorization flows (state → flow). In-memory; gateway = 1 proses. */
 const pendingFlows = new Map<string, PendingFlow>();
 
-/** Base URL publik gateway (untuk redirect_uri), tanpa trailing slash. */
-export function gatewayPublicBaseUrl(): string {
+/**
+ * Base URL publik gateway (untuk redirect_uri), tanpa trailing slash.
+ *
+ * Prioritas:
+ *   1. SIBERGATE_PUBLIC_URL env (override eksplisit operator).
+ *   2. Base hasil auto-deteksi dari request Connect (Origin / forwarded headers
+ *      browser operator, diteruskan admin proxy) — dipass gateway handler.
+ *   3. Default http://localhost:{SIBERGATE_PORT} (dev/self-host lokal).
+ */
+export function gatewayPublicBaseUrl(detected?: string | null): string {
   const fromEnv = process.env.SIBERGATE_PUBLIC_URL?.trim().replace(/\/+$/, '');
   if (fromEnv) return fromEnv;
+  const cleaned = detected?.trim().replace(/\/+$/, '');
+  if (cleaned && /^https?:\/\//i.test(cleaned)) return cleaned;
   // Konsisten dengan gateway (SIBERGATE_PORT, default 8787) supaya redirect_uri
   // callback bisa dijangkau browser operator tanpa konfigurasi tambahan.
   const port = process.env.SIBERGATE_PORT || '8787';
@@ -65,8 +75,8 @@ export function gatewayPublicBaseUrl(): string {
 }
 
 /** redirect_uri standar utk flow OAuth MCP. */
-export function mcpOAuthRedirectUri(): string {
-  return `${gatewayPublicBaseUrl()}/admin/mcp/oauth/callback`;
+export function mcpOAuthRedirectUri(detectedBase?: string | null): string {
+  return `${gatewayPublicBaseUrl(detectedBase)}/admin/mcp/oauth/callback`;
 }
 
 function base64url(buf: Buffer): string {
@@ -211,10 +221,19 @@ export interface McpOAuthStart {
 /**
  * Mulai flow OAuth utk provider MCP: discovery → registration → PKCE → simpan
  * row pending di mcp_oauth → kembalikan URL otorisasi (dibuka browser operator).
+ *
+ * `detectedBase` = base URL publik hasil auto-deteksi dari request Connect
+ * (Origin/forwarded headers) — dipakai bila SIBERGATE_PUBLIC_URL tidak di-set,
+ * supaya redirect_uri di prod mengikuti domain yang dipakai operator tanpa
+ * konfigurasi manual.
  */
-export async function startMcpOAuth(providerId: string, mcpEndpointUrl: string): Promise<McpOAuthStart> {
+export async function startMcpOAuth(
+  providerId: string,
+  mcpEndpointUrl: string,
+  detectedBase?: string | null,
+): Promise<McpOAuthStart> {
   const db = getDb();
-  const redirectUri = mcpOAuthRedirectUri();
+  const redirectUri = mcpOAuthRedirectUri(detectedBase);
   const endpoints = await discoverMcpOAuth(mcpEndpointUrl);
 
   // Selalu register ulang client (RFC 7591) di tiap start flow — registrasi
