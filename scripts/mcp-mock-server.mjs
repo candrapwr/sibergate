@@ -211,13 +211,15 @@ function taskResult(task, id) {
   const modelTag = task.args?.model ? `-${String(task.args.model).replace(/[^a-z0-9._-]/gi, '')}` : '';
   if (task.pollCount >= pollsNeeded) {
     task.status = 'succeed';
+    // URL gaya Kling ASLI: CDN signed TANPA ekstensi file (query signature) —
+    // mereproduksi bug "selesai tanpa mengembalikan gambar".
     const urlBase = `http://${HOST}:${PORT}/files/${id}${modelTag}`;
     if (task.kind === 'video') {
       return {
         task_status: 'succeed',
         task_result: {
           works: [
-            { url: `${urlBase}.mp4`, type: 'video' },
+            { url: `${urlBase}.mp4?Expires=1799999999&Signature=videofake`, type: 'video' },
           ],
         },
       };
@@ -226,8 +228,8 @@ function taskResult(task, id) {
       task_status: 'succeed',
       task_result: {
         works: [
-          { url: `${urlBase}.png`, type: 'image' },
-          { url: `${urlBase}_2.png`, type: 'image' },
+          { url: `${urlBase}?Expires=1799999999&Signature=fake123&X-Amz-Algorithm=AWS4-HMAC-SHA256`, type: 'image' },
+          { url: `${urlBase}&n=2?Expires=1799999999&Signature=fake456`, type: 'image' },
         ],
       },
     };

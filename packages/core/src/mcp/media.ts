@@ -159,28 +159,38 @@ export async function mcpImageFlow(
 
   let outcome = first;
   // Async task → poll sampai selesai (bounded oleh signal target-budget).
-  if (first.taskRef && first.status !== 'completed' && first.status !== 'failed') {
-    pushConsoleLog('info', 'mcp', `image task ${first.taskRef} submitted — polling via ${pollInfo.pollTool ?? '(none)'}`, {
-      provider: provider.id, tool, taskRef: first.taskRef,
-    });
-    outcome = await pollMcpTaskUntilDone(provider, pollInfo, first.taskRef, opts);
-    if (outcome.status === 'failed') {
-      throw new GatewayCallError(
-        'server_error',
-        `MCP image task failed: ${outcome.text.slice(0, 300) || (outcome.taskStatus ?? 'unknown')}`,
-        undefined,
-        { upstreamBody: JSON.stringify(outcome.content).slice(0, 1000) },
-      );
+  // Kasus khusus: status sudah COMPLETED tapi URL aset belum ada di respons
+  // submit (URL Kling = CDN signed TANPA ekstensi file) → tetap query_tasks
+  // sekali utk mengambil works[] lengkap.
+  if (first.taskRef && first.status !== 'failed') {
+    if (first.status !== 'completed' || (!first.imageUrls.length && !first.otherUrls.length)) {
+      pushConsoleLog('info', 'mcp', `image task ${first.taskRef} — polling via ${pollInfo.pollTool ?? '(none)'}`, {
+        provider: provider.id, tool, taskRef: first.taskRef, firstStatus: first.status ?? 'unknown',
+      });
+      outcome = await pollMcpTaskUntilDone(provider, pollInfo, first.taskRef, opts);
+      if (outcome.status === 'failed') {
+        throw new GatewayCallError(
+          'server_error',
+          `MCP image task failed: ${outcome.text.slice(0, 300) || (outcome.taskStatus ?? 'unknown')}`,
+          undefined,
+          { upstreamBody: JSON.stringify(outcome.content).slice(0, 1000) },
+        );
+      }
     }
   }
 
-  const images = outcome.imageUrls.map((url) =>
+  // URL aset: prefer yang terklasifikasi image; URL CDN Kling TANPA ekstensi
+  // (.png/.jpg) jatuh di otherUrls — fallback ke sana (satu-satunya URL yg ada).
+  const assetUrls = outcome.imageUrls.length
+    ? outcome.imageUrls
+    : [...outcome.otherUrls, ...outcome.imageUrls];
+  const images = assetUrls.map((url) =>
     url.startsWith('data:') ? { b64_json: url.slice(url.indexOf(',') + 1) } : { url },
   );
   if (!images.length) {
     throw new GatewayCallError(
       'server_error',
-      `MCP tool '${tool}' selesai tanpa mengembalikan gambar: ${outcome.text.slice(0, 200) || JSON.stringify(outcome.content).slice(0, 200)}`,
+      `MCP tool '${tool}' selesai tanpa mengembalikan gambar: ${outcome.text.slice(0, 400) || JSON.stringify(outcome.content).slice(0, 400)}`,
       undefined,
       { upstreamBody: JSON.stringify(outcome.content).slice(0, 1000) },
     );
