@@ -5,7 +5,7 @@
  *
  * Why: every vendor exposes "thinking" controls differently:
  *   - OpenAI / OpenAI-compat: top-level `reasoning_effort`
- *   - Anthropic (Claude 3.7+/4.x/5): `thinking` object + `effort` (adaptive)
+ *   - Anthropic adaptive models: `output_config.effort` (+ `thinking` on 4.x)
  *   - Google Gemini 3.x: `generationConfig.thinkingConfig.thinkingLevel`
  *   - Google Gemini 2.5:  `generationConfig.thinkingConfig.thinkingBudget`
  *   - OpenRouter: `reasoning.effort` (OR normalizes downstream)
@@ -16,11 +16,8 @@
  * the mapper runs per-target inside each adapter (the body is never mutated
  * in place — we build a fresh object).
  *
- * When the client sends NO `reasoning_effort`, this module returns the body
- * unchanged (backward compatible — provider defaults apply).
- *
- * Precedence: if the client already sent a provider-NATIVE field
- * (`thinking`, `thinkingConfig`, `reasoning`), we RESPECT it and skip mapping.
+ * When the client sends no reasoning field in any supported dialect, this
+ * module returns the body unchanged (provider defaults apply).
  */
 
 /** The effort values a client may send (the OpenAI super-set). */
@@ -59,9 +56,9 @@ export function effortToBudget(effort: ReasoningEffort): number {
  *   1. OpenAI top-level: `reasoning_effort: "high"`
  *   2. OpenAI nested:    `reasoning: { effort: "high" }`
  *   3. OpenRouter:       `reasoning: { effort: "high", max_tokens: N }`
- *   4. Anthropic:        `thinking: { type: "adaptive"|"enabled"|"disabled" }`
- *                        (+ optional `effort:` sibling or `budget_tokens:`)
- *   5. Gemini:           `generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}`
+ *   4. Anthropic:        `output_config: { effort: "high" }`
+ *   5. Anthropic legacy: `thinking: { type, budget_tokens?, effort? }`
+ *   6. Gemini:           `generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}`
  *
  * This two-way parsing is critical because the client doesn't know the real
  * target — routes are masked (virtual ids), and failover can switch vendors
@@ -85,17 +82,24 @@ function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
     if (typeof mt === 'number') return budgetToEffort(mt);
   }
 
-  // 4. Anthropic: thinking: { type, budget_tokens?, effort? }
+  // 4. Anthropic current API: output_config: { effort }.
+  const outputConfig = body.output_config;
+  if (outputConfig && typeof outputConfig === 'object' && !Array.isArray(outputConfig)) {
+    const e = (outputConfig as { effort?: unknown }).effort;
+    if (typeof e === 'string') return normalizeEffort(e);
+  }
+
+  // 5. Anthropic legacy thinking: { type, budget_tokens?, effort? }
   const thinking = body.thinking;
   if (thinking && typeof thinking === 'object') {
     const t = thinking as { type?: unknown; budget_tokens?: unknown; effort?: unknown };
     if (typeof t.effort === 'string') return normalizeEffort(t.effort);
     if (typeof t.budget_tokens === 'number') return budgetToEffort(t.budget_tokens);
-    if (t.type === 'disabled') return 'none';
+    if (t.type === 'disabled' || t.type === 'between_tools') return 'none';
     if (t.type === 'adaptive' || t.type === 'enabled') return 'medium'; // on, unknown depth → default medium
   }
 
-  // 5. Gemini: generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}
+  // 6. Gemini: generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget}
   const gc = body.generationConfig;
   if (gc && typeof gc === 'object') {
     const tc = (gc as { thinkingConfig?: unknown }).thinkingConfig;
@@ -114,7 +118,7 @@ function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
     }
   }
 
-  // 6. Qwen Cloud: enable_thinking (boolean) + optional thinking_budget (token cap).
+  // 7. Qwen Cloud: enable_thinking (boolean) + optional thinking_budget (token cap).
   //    enable_thinking:true  → thinking on (default depth = medium)
   //    enable_thinking:false → thinking off (none)
   //    thinking_budget:N     → infer effort from token budget
@@ -147,16 +151,56 @@ function normalizeEffort(raw: string): ReasoningEffort | null {
 
 /* ────────────────────── provider/model detection ────────────────────── */
 
-/** Claude 3.7+ supports thinking (adaptive on 4.x/5, budget on 3.7). */
-function isAnthropicThinkingModel(model: string): boolean {
-  // claude-3-7-* | claude-4* / opus-4 / sonnet-4 / haiku-4 | claude-5* | fable-5
-  return /^claude-(3-7|[4-9]|1[0-9]|fable|opus|sonnet|haiku)/i.test(model)
-    || /^claude-(3-7|[4-9])/i.test(model);
+/** Claude 5 models have thinking defaults and must not receive adaptive mode. */
+function isAnthropic5Model(model: string): boolean {
+  return /^claude-(?:(?:fable|mythos|opus|sonnet|haiku)-)?5(?:[._-]|$)/i.test(model);
 }
 
-/** Claude 3.7 is the legacy "budget_tokens" generation (4.x+ use adaptive). */
-function isAnthropicLegacyModel(model: string): boolean {
-  return /^claude-3-7/i.test(model);
+/** Models that use manual extended thinking with a token budget. */
+function isAnthropicExtendedThinkingModel(model: string): boolean {
+  return /^claude-3-7(?:[._-]|$)/i.test(model)
+    || /^claude-(?:opus|sonnet|haiku)-4[._-]5(?:[._-]|$)/i.test(model);
+}
+
+/** Claude 4.6–4.8 models support adaptive thinking but do not enable it by default. */
+function isAnthropicAdaptive4Model(model: string): boolean {
+  return /^claude-(?:opus|sonnet)-4[._-](?:6|7|8)(?:[._-]|$)/i.test(model);
+}
+
+/** Models that accept output_config.effort. */
+function isAnthropicEffortModel(model: string): boolean {
+  if (isAnthropic5Model(model) || /^claude-mythos-preview(?:[._-]|$)/i.test(model)) return true;
+  if (/^claude-opus-4[._-](?:5|6|7|8)(?:[._-]|$)/i.test(model)) return true;
+  return /^claude-sonnet-4[._-](?:6|7|8)(?:[._-]|$)/i.test(model);
+}
+
+/** `xhigh` is available only on the newer long-horizon model families. */
+function supportsAnthropicXhigh(model: string): boolean {
+  return isAnthropic5Model(model)
+    || /^claude-opus-4[._-](?:7|8)(?:[._-]|$)/i.test(model);
+}
+
+/** Models whose thinking cannot be disabled. */
+function isAnthropicAlwaysThinkingModel(model: string): boolean {
+  return /^claude-(?:fable|mythos)-5(?:[._-]|$)/i.test(model)
+    || /^claude-opus-5[._-]5(?:[._-]|$)/i.test(model)
+    || /^claude-mythos-preview(?:[._-]|$)/i.test(model);
+}
+
+function isAnthropicSonnet55(model: string): boolean {
+  return /^claude-sonnet-5[._-]5(?:[._-]|$)/i.test(model);
+}
+
+/** Claude effort has no `minimal`; use its lowest supported level. */
+function normalizeAnthropicEffort(effort: ReasoningEffort, model: string): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
+  if (effort === 'none' || effort === 'minimal') return 'low';
+  if (effort === 'xhigh' && !supportsAnthropicXhigh(model)) return 'high';
+  return effort;
+}
+
+/** Extended thinking requires at least 1024 budget tokens. */
+function anthropicThinkingBudget(effort: ReasoningEffort): number {
+  return Math.max(1024, effortToBudget(effort));
 }
 
 /** Gemini 3.x (3.5, 3.6, 3.1, …). */
@@ -195,28 +239,62 @@ function effortToGrok(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
  * Translate `effort` for an Anthropic (Claude) target. Returns the fields to
  * merge into the body (or null if nothing to add).
  *
- *   none  → thinking: { type: 'disabled' }   (model stops thinking)
- *   other → thinking: { type: 'adaptive' }, effort: <e>           (Claude 4.x/5)
- *   other → thinking: { type: 'enabled', budget_tokens: <N> }    (Claude 3.7 legacy)
- *
- * `effort` is accepted as a sibling field by the adaptive generation.
+ *   Claude 5       → output_config.effort only (thinking uses model default)
+ *   Claude 4.6–4.8 → adaptive thinking + output_config.effort
+ *   Claude 3.7/4.5 → extended thinking with budget_tokens
+ *   unsupported    → strip the client reasoning field
  */
 function mapForAnthropic(effort: ReasoningEffort, model: string): Record<string, unknown> | null {
-  if (!isAnthropicThinkingModel(model)) {
-    // Claude 3.5 and earlier have no thinking support — strip the OpenAI field
-    // (sending it would be a no-op, but removing it keeps the body clean).
+  if (effort === 'none') {
+    // Some Claude 5 variants are always-thinking. Lowest supported behavior is
+    // low effort while leaving their default thinking configuration untouched.
+    if (isAnthropicAlwaysThinkingModel(model)) {
+      return { output_config: { effort: 'low' } };
+    }
+    // Sonnet 5.5 rejects disabled; between_tools is its supported lowest mode.
+    if (isAnthropicSonnet55(model)) {
+      return { thinking: { type: 'between_tools' }, output_config: { effort: 'low' } };
+    }
+    if (isAnthropicExtendedThinkingModel(model) || isAnthropicAdaptive4Model(model) || isAnthropic5Model(model)) {
+      return { thinking: { type: 'disabled' } };
+    }
     return { stripReasoningEffort: true };
   }
-  if (effort === 'none') {
-    return { thinking: { type: 'disabled' } };
+
+  const normalizedEffort = normalizeAnthropicEffort(effort, model);
+
+  if (isAnthropicExtendedThinkingModel(model)) {
+    const mapped: Record<string, unknown> = {
+      thinking: { type: 'enabled', budget_tokens: anthropicThinkingBudget(effort) },
+    };
+    // Opus 4.5 is the only extended-thinking Claude that also supports effort.
+    if (isAnthropicEffortModel(model)) mapped.output_config = { effort: normalizedEffort };
+    return mapped;
   }
-  if (isAnthropicLegacyModel(model)) {
-    // 3.7: budget_tokens, no adaptive effort field.
-    return { thinking: { type: 'enabled', budget_tokens: effortToBudget(effort) } };
+
+  if (isAnthropic5Model(model)) {
+    // Claude 5 has model-managed thinking. Sending adaptive explicitly through
+    // the OpenAI-compatible endpoint can be rejected, so control depth only.
+    return { output_config: { effort: normalizedEffort } };
   }
-  // 4.x/5: adaptive thinking + effort. Clamp xhigh→high (Anthropic caps at high).
-  const e = effort === 'xhigh' ? 'high' : effort;
-  return { thinking: { type: 'adaptive' }, effort: e };
+
+  if (isAnthropicAdaptive4Model(model)) {
+    return {
+      thinking: { type: 'adaptive' },
+      output_config: { effort: normalizedEffort },
+    };
+  }
+
+  if (/^claude-mythos-preview(?:[._-]|$)/i.test(model)) {
+    return { output_config: { effort: normalizedEffort } };
+  }
+
+  if (!isAnthropicEffortModel(model)) {
+    // Claude 3.5 and other unsupported models have no compatible control.
+    return { stripReasoningEffort: true };
+  }
+
+  return { output_config: { effort: normalizedEffort } };
 }
 
 /**
@@ -409,7 +487,7 @@ const REASONING_INPUT_FIELDS = [
  * is reused across failover targets, so in-place mutation would leak).
  *
  * TWO-WAY translation: ANY reasoning dialect the client sent — OpenAI
- * `reasoning_effort`, nested `reasoning.effort`, Anthropic `thinking`,
+ * `reasoning_effort`, nested `reasoning.effort`, Anthropic `output_config.effort`/`thinking`,
  * Gemini `generationConfig.thinkingConfig`, OpenRouter `reasoning.max_tokens` —
  * is first normalized to a canonical effort level, then re-translated to the
  * TARGET provider's native shape. This is essential because routes are masked
@@ -439,7 +517,11 @@ export function mapReasoning(
   // additionally triggers re-mapping. A parseable-but-unknown-value field
   // (e.g. `reasoning_effort:"ultra"`) is stripped silently (effort=null → no
   // re-map) rather than leaked.
-  const hasReasoningField = REASONING_INPUT_FIELDS.some((f) => f in body);
+  const inputOutputConfig = body.output_config && typeof body.output_config === 'object' && !Array.isArray(body.output_config)
+    ? body.output_config as Record<string, unknown>
+    : null;
+  const hasOutputConfigEffort = !!inputOutputConfig && 'effort' in inputOutputConfig;
+  const hasReasoningField = REASONING_INPUT_FIELDS.some((f) => f in body) || hasOutputConfigEffort;
   if (!hasReasoningField) return body; // no reasoning field at all → untouched
 
   const effort = parseEffort(body); // may be null if value/format unrecognized
@@ -452,6 +534,7 @@ export function mapReasoning(
   const clean: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
     if ((REASONING_INPUT_FIELDS as readonly string[]).includes(k)) continue;
+    if (k === 'output_config' && hasOutputConfigEffort) continue;
     clean[k] = v;
   }
   // generationConfig may carry non-reasoning keys (temperature, topP, …) on
@@ -463,6 +546,16 @@ export function mapReasoning(
       clean.generationConfig = { ...gcRest, ...((mapped as Record<string, unknown> | null)?.generationConfig as Record<string, unknown> ?? {}) };
     }
   }
+  // output_config may also carry unrelated native options. Remove only effort,
+  // preserve the siblings, then merge the target's freshly mapped effort.
+  const mappedOutputConfig = mapped?.output_config && typeof mapped.output_config === 'object' && !Array.isArray(mapped.output_config)
+    ? mapped.output_config as Record<string, unknown>
+    : null;
+  if (inputOutputConfig) {
+    const { effort: _drop, ...outputConfigRest } = inputOutputConfig;
+    const mergedOutputConfig = { ...outputConfigRest, ...(mappedOutputConfig ?? {}) };
+    if (Object.keys(mergedOutputConfig).length > 0) clean.output_config = mergedOutputConfig;
+  }
 
   // No parseable effort → nothing to re-map. Return the cleaned body (all
   // reasoning fields stripped, other fields preserved). This is the fix for
@@ -470,7 +563,14 @@ export function mapReasoning(
   // forwarded to a provider that would reject it.
   if (effort === null || !mapped || mapped.stripReasoningEffort) return clean;
 
-  return { ...clean, ...mapped };
+  const result = { ...clean, ...mapped };
+  if (mappedOutputConfig) {
+    const preserved = clean.output_config && typeof clean.output_config === 'object' && !Array.isArray(clean.output_config)
+      ? clean.output_config as Record<string, unknown>
+      : {};
+    result.output_config = { ...preserved, ...mappedOutputConfig };
+  }
+  return result;
 }
 
 /**
