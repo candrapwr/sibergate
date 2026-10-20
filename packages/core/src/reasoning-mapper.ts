@@ -20,22 +20,20 @@
  * module returns the body unchanged (provider defaults apply).
  */
 
-/** The effort values a client may send (the OpenAI super-set). */
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+/** Canonical effort values after input normalization. */
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 const VALID_EFFORTS: ReadonlySet<ReasoningEffort> = new Set([
-  'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max',
+  'none', 'low', 'medium', 'high', 'xhigh', 'max',
 ]);
 
 /**
  * Token budget mapping for budget-based formats (Gemini 2.5 thinkingBudget,
  * Claude 3.7 legacy budget_tokens). `xhigh` gets the largest sane budget.
- * `none`/`minimal` map to a tiny budget (effectively "think very little") —
- * note that for the true "off" case, provider-specific disabled fields are
- * used instead (see the per-provider branches).
+ * `none` maps to zero; for the true "off" case, provider-specific disabled
+ * fields are used instead (see the per-provider branches).
  */
 const EFFORT_TO_BUDGET: Record<Exclude<ReasoningEffort, 'none'>, number> = {
-  minimal: 512,
   low: 1024,
   medium: 4096,
   high: 16_384,
@@ -111,6 +109,7 @@ function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
       }
       if (typeof cfg.thinkingLevel === 'string') {
         const lvl = cfg.thinkingLevel.toLowerCase();
+        if (lvl === 'minimal') return 'low';
         if (lvl === 'low') return 'low';
         if (lvl === 'medium') return 'medium';
         if (lvl === 'high') return 'high';
@@ -137,7 +136,6 @@ function parseEffort(body: Record<string, unknown>): ReasoningEffort | null {
 /** Map a token budget back to an effort level (inverse of effortToBudget). */
 function budgetToEffort(budget: number): ReasoningEffort {
   if (budget <= 0) return 'none';
-  if (budget <= 700) return 'minimal';
   if (budget <= 1500) return 'low';
   if (budget <= 8000) return 'medium';
   if (budget <= 20000) return 'high';
@@ -145,7 +143,10 @@ function budgetToEffort(budget: number): ReasoningEffort {
 }
 
 function normalizeEffort(raw: string): ReasoningEffort | null {
-  const v = raw.trim().toLowerCase() as ReasoningEffort;
+  const normalized = raw.trim().toLowerCase();
+  // Accept legacy/provider input, but keep `low` as the lowest canonical mode.
+  if (normalized === 'minimal') return 'low';
+  const v = normalized as ReasoningEffort;
   return VALID_EFFORTS.has(v) ? v : null;
 }
 
@@ -191,9 +192,9 @@ function isAnthropicSonnet55(model: string): boolean {
   return /^claude-sonnet-5[._-]5(?:[._-]|$)/i.test(model);
 }
 
-/** Claude effort has no `minimal`; use its lowest supported level. */
+/** Map disabled Claude requests to its lowest supported effort where needed. */
 function normalizeAnthropicEffort(effort: ReasoningEffort, model: string): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
-  if (effort === 'none' || effort === 'minimal') return 'low';
+  if (effort === 'none') return 'low';
   if (effort === 'xhigh' && !supportsAnthropicXhigh(model)) return 'high';
   return effort;
 }
@@ -226,7 +227,6 @@ function isGemini25ProModel(model: string): boolean {
 function effortToGrok(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
   switch (effort) {
     case 'none':
-    case 'minimal':
     case 'low': return 'low';
     case 'xhigh':
     case 'high': return 'high';
@@ -305,11 +305,11 @@ function mapForAnthropic(effort: ReasoningEffort, model: string): Record<string,
  *   400 "Unknown name 'generationConfig': Cannot find field."
  *
  * The correct, model-agnostic control on the OpenAI-compat endpoint is the
- * top-level `reasoning_effort` (minimal|low|medium|high|none). Google maps it
+ * top-level `reasoning_effort` (low|medium|high|none). Google maps it
  * internally to `thinking_level` (Gemini 3.x) or `thinking_budget` (Gemini 2.5).
  *
  * Model-specific clamps (per Google's reasoning docs):
- *   - Gemini 3.x: cannot truly disable; lowest is "minimal". `none` → `minimal`.
+ *   - Gemini 3.x: cannot truly disable; lowest is "low". `none` → `low`.
  *   - Gemini 2.5 Flash / Flash-Lite: support `none` (thinking off). 2.5 Pro does not.
  *   - `xhigh` is not a Gemini value → clamp to `high`.
  */
@@ -317,13 +317,13 @@ function mapForGemini(effort: ReasoningEffort, model: string): Record<string, un
   // Clamp xhigh → high (Gemini has no xhigh).
   let e: ReasoningEffort = effort === 'xhigh' ? 'high' : effort;
 
-  // Gemini 3.x cannot disable thinking — clamp none/minimal → minimal.
+  // Gemini 3.x cannot disable thinking — clamp none → low.
   if (e === 'none' && isGemini3Model(model)) {
-    e = 'minimal';
+    e = 'low';
   }
   // Gemini 2.5 Pro cannot disable thinking either; only Flash / Flash-Lite can.
   if (e === 'none' && isGemini25ProModel(model)) {
-    e = 'minimal';
+    e = 'low';
   }
   // 'none' passes through as-is for 2.5 Flash / Flash-Lite (genuinely off).
 
@@ -343,7 +343,7 @@ function mapForOpenRouter(effort: ReasoningEffort): Record<string, unknown> {
 /**
  * Translate for xAI Grok (grok-4.5+). Per xAI's docs, Grok uses the nested
  * `reasoning: { effort }` shape (like new OpenAI). Reasoning CANNOT be
- * disabled on reasoning-first variants, so `none`/`minimal` clamp to `low`.
+ * disabled on reasoning-first variants, so `none` clamps to `low`.
  * Accepted values: low / medium / high.
  */
 function mapForGrok(effort: ReasoningEffort): Record<string, unknown> {
@@ -354,13 +354,13 @@ function mapForGrok(effort: ReasoningEffort): Record<string, unknown> {
  * Translate for Qwen Cloud (qwen3.x). Qwen uses a boolean `enable_thinking`
  * toggle plus an optional `thinking_budget` (token cap on thinking).
  *
- *   none / minimal → enable_thinking: false                 (off)
- *   other          → enable_thinking: true + thinking_budget: <N>
+ *   none  → enable_thinking: false                 (off)
+ *   other → enable_thinking: true + thinking_budget: <N>
  *
  * The thinking_budget gives a coarse depth mapping (Qwen has no effort levels).
  */
 function mapForQwen(effort: ReasoningEffort): Record<string, unknown> {
-  if (effort === 'none' || effort === 'minimal') {
+  if (effort === 'none') {
     return { enable_thinking: false };
   }
   return { enable_thinking: true, thinking_budget: effortToBudget(effort) };
@@ -372,7 +372,7 @@ function mapForQwen(effort: ReasoningEffort): Record<string, unknown> {
  * `"high"` or `"none"`. Anything else clamps to `high` (on) or `none` (off).
  */
 function mapForMistral(effort: ReasoningEffort): Record<string, unknown> {
-  const e = effort === 'none' || effort === 'minimal' ? 'none' : 'high';
+  const e = effort === 'none' ? 'none' : 'high';
   return { reasoning_effort: e };
 }
 
@@ -382,7 +382,7 @@ function mapForMistral(effort: ReasoningEffort): Record<string, unknown> {
  * (mapping to its native thinking toggle). medium/low/xhigh/max clamp to high.
  */
 function mapForCohere(effort: ReasoningEffort): Record<string, unknown> {
-  const e = effort === 'none' || effort === 'minimal' ? 'none' : 'high';
+  const e = effort === 'none' ? 'none' : 'high';
   return { reasoning_effort: e };
 }
 
@@ -390,11 +390,11 @@ function mapForCohere(effort: ReasoningEffort): Record<string, unknown> {
  * Translate for Z.AI GLM (GLM-4.6 / GLM-5 / GLM-Z1). Per Z.AI's docs, GLM uses a
  * `thinking` object with `type: "enabled" | "disabled"`. Thinking is enabled by
  * default; there is no effort granularity (just on/off).
- *   none / minimal → thinking: { type: "disabled" }
- *   other          → thinking: { type: "enabled" }
+ *   none  → thinking: { type: "disabled" }
+ *   other → thinking: { type: "enabled" }
  */
 function mapForZai(effort: ReasoningEffort): Record<string, unknown> {
-  const type = effort === 'none' || effort === 'minimal' ? 'disabled' : 'enabled';
+  const type = effort === 'none' ? 'disabled' : 'enabled';
   return { thinking: { type } };
 }
 
@@ -405,17 +405,17 @@ function mapForZai(effort: ReasoningEffort): Record<string, unknown> {
  * as Z.AI GLM.
  */
 function mapForKimi(effort: ReasoningEffort): Record<string, unknown> {
-  const type = effort === 'none' || effort === 'minimal' ? 'disabled' : 'enabled';
+  const type = effort === 'none' ? 'disabled' : 'enabled';
   return { thinking: { type } };
 }
 
 /**
  * Translate for DeepSeek (V4-Pro / V4-Flash). Per the official thinking-mode
  * guide (api-docs.deepseek.com/guides/thinking_mode), DeepSeek accepts the
- * OpenAI-style `reasoning_effort` (low/high/max — no medium/minimal/none) and
+ * OpenAI-style `reasoning_effort` (low/high/max — no medium/none) and
  * a `thinking` object toggle.
  *
- *   none / minimal → thinking: { type: "disabled" }  (truly off)
+ *   none           → thinking: { type: "disabled" }  (truly off)
  *   low            → reasoning_effort: "low"
  *   medium         → reasoning_effort: "high"        (DeepSeek default; no medium)
  *   high           → reasoning_effort: "high"
@@ -426,7 +426,7 @@ function mapForKimi(effort: ReasoningEffort): Record<string, unknown> {
  * client sends no reasoning intent).
  */
 function mapForDeepSeek(effort: ReasoningEffort): Record<string, unknown> {
-  if (effort === 'none' || effort === 'minimal') {
+  if (effort === 'none') {
     return { thinking: { type: 'disabled' } };
   }
   let ds: 'low' | 'high' | 'max';
@@ -449,7 +449,7 @@ function isOpenAiNewReasoningModel(model: string): boolean {
 
 /**
  * Map for OpenAI itself. GPT-5.2+ uses the nested `reasoning: { effort }` shape
- * (and accepts the full value set incl. none/minimal/xhigh/max); older reasoning
+ * (and accepts none/xhigh/max); older reasoning
  * models (o1, o3-mini, early GPT-5) use the flat `reasoning_effort` and only
  * support low/medium/high, so xhigh/max clamp to high.
  */

@@ -58,7 +58,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔑 Multiple API keys per provider** — one provider may own **several keys** (e.g. multiple OpenAI/Gemini accounts), each with a label. Every route target points to a specific key (`provider → model → key`) — handy for cross-account load balancing or quota isolation. One key is marked **default** (used when a target doesn't specify one). Stats are tracked **per upstream key**.
 - **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
 - **🔀 Cross-vendor tool calling without errors** — agentic loops with failover between models of different vendors (e.g. Gemini ↔ DeepSeek) normally crash in multi-turn because each vendor has its own mandatory internal token (Gemini `thought_signature`, DeepSeek `reasoning_content`) that is incompatible and must be round-tripped. SiberGate solves it: set the Gemini target's modality to `tools-text` → the gateway converts `tool_calls` + role `tool` to universal XML text up front, then re-parses back to OpenAI format at the end. The client keeps clean original `tool_calls`, no vendor-specific signature leaks, no `400 missing signature` errors. See [Cross-vendor tool calling](#-cross-vendor-tool-calling).
-- **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|minimal|low|medium|high|xhigh|max`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|low|medium|high|xhigh|max`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation mapping (auto-map)** — every image-gen vendor has a totally different request/response shape (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan with its own params). The client keeps one OpenAI Images format; the gateway translates the body into the target's native dialect (including a 3-class size system — square/landscape/portrait — plus a `quality`⇄`resolution` bridge) and converts the response back to `{created, data:[{url}]}` — including automatic redirect to `/v1/images/edits` multipart when the client sends a reference image to an OpenAI target, plus Kling/Qwen async task polling. **Opt-in per route target** (`verbatim` default / `auto-map`). See [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
@@ -659,12 +659,13 @@ A top-level OpenAI-style field, set to one of:
 | Value | Meaning |
 |---|---|
 | `"none"` | Disable reasoning (if the model supports it) |
-| `"minimal"` | Very little reasoning |
 | `"low"` | Shallow reasoning |
 | `"medium"` | Balanced (default) |
 | `"high"` | Deep |
 | `"xhigh"` | Extra deep (OpenAI GPT-5.2+, DeepSeek→`max`) |
 | `"max"` | Maximum (OpenAI GPT-5.2+, DeepSeek) |
+
+For backward compatibility, `"minimal"` is accepted as an alias for `"low"` and is never sent upstream.
 
 The OpenAI nested form `reasoning: { effort: ... }` is also accepted.
 
@@ -674,12 +675,12 @@ The gateway detects the target from **`provider.id` + model name**, then maps:
 
 | Target provider | Native shape sent upstream |
 |---|---|
-| **OpenAI** (o3, GPT-5.x) & compat (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (top-level, `xhigh`→`high`); GPT-5.2+ uses nested `reasoning:{effort}` & accepts `none`/`minimal`/`xhigh`/`max` |
+| **OpenAI** (o3, GPT-5.x) & compat (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (top-level, `xhigh`→`high`); GPT-5.2+ uses nested `reasoning:{effort}` |
 | **Anthropic** Claude 5.x | `output_config: { effort: <e> }`; no `thinking: adaptive` field is sent |
 | **Anthropic** Claude 4.6–4.8 | `thinking: { type: "adaptive" }` + `output_config: { effort: <e> }` |
 | **Anthropic** Claude 3.7/4.5 extended | `thinking: { type: "enabled", budget_tokens: <N> }`; Opus 4.5 also accepts `output_config.effort` |
 | **Anthropic** Claude 3.5 & older | (unsupported) — field stripped |
-| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google maps it internally to thinking_level/thinking_budget). `none` clamped: 3.x & 2.5 Pro → `minimal` (cannot disable); 2.5 Flash/Flash-Lite → `none` (off) |
+| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google maps it internally to thinking_level/thinking_budget). `none` clamped: 3.x & 2.5 Pro → `low` (cannot disable); 2.5 Flash/Flash-Lite → `none` (off) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalizes to the backing provider) |
 | **xAI Grok** 4.5+ | nested `reasoning:{effort}` (low/medium/high); `none`→`low` (cannot disable) |
 | **Mistral** | `reasoning_effort` (`high`/`none` only; medium/low→high) |
@@ -697,8 +698,8 @@ Claude Sonnet 5.5 uses `thinking:{type:"between_tools"}`.
 host `api.anthropic.com`, the gateway removes the top-level `temperature` field
 before dispatch. The field is preserved for other provider hosts.
 
-Token budgets for budget-based formats: `minimal`→512, `low`→1024,
-`medium`→4096, `high`→16384, `xhigh`→32768. Claude extended thinking
+Token budgets for budget-based formats: `low`→1024, `medium`→4096,
+`high`→16384, `xhigh`→32768. Claude extended thinking
 enforces a minimum of 1024 tokens.
 
 ### Precedence rules & two-way translation

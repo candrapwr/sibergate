@@ -74,7 +74,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔑 Multi API key per provider** — satu provider boleh punya **banyak key** (mis. beberapa akun OpenAI/Gemini), masing-masing diberi label. Setiap route target menunjuk key spesifik (`provider → model → key`) — berguna untuk load-balance antar akun atau isolasi quota. Satu key ditandai **default** (dipakai saat target tidak specify key). Statistik tersedia **per upstream key**.
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🔀 Tool calling lintas-vendor (cross-vendor) anti-error** — agentic loop dgn failover antar model beda vendor (mis. Gemini ↔ DeepSeek) biasanya crash di multi-turn krn setiap vendor punya token internal sendiri (Gemini `thought_signature`, DeepSeek `reasoning_content`) yg tidak kompatibel & wajib di round-trip. SiberGate menyelesaikannya: set modality target Gemini ke `tools-text` → gateway ubah tool_calls + role:tool menjadi text XML universal di awal, lalu re-parse balik ke format OpenAI di akhir. Klien tetap pegang `tool_calls` asli bersih, tidak ada signature vendor-specific yg bocor, tidak ada error `400 missing signature`. Lihat [Tool calling lintas-vendor](#-tool-calling-lintas-vendor-cross-vendor).
-- **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|minimal|low|medium|high|xhigh|max`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|low|medium|high|xhigh|max`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation mapping (auto-map)** — tiap vendor image gen punya bentuk request/response beda total (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan params sendiri). Klien tetap satu format OpenAI Images; gateway translate body ke dialek native target (termasuk size 3-kelas persegi/landscape/portrait + bridge `quality`⇄`resolution`) dan convert response balik ke `{created, data:[{url}]}` — termasuk redirect otomatis ke `/v1/images/edits` multipart saat klien kirim gambar referensi ke target OpenAI, dan polling async Kling/Qwen. **Opt-in per route target** (`verbatim` default / `auto-map`). Lihat [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
@@ -667,12 +667,13 @@ Field tingkat atas gaya OpenAI, di salah satu nilai berikut:
 | Nilai | Arti |
 |---|---|
 | `"none"` | Matikan reasoning (bila model mendukung) |
-| `"minimal"` | Sedikit reasoning |
 | `"low"` | Reasoning dangkal |
 | `"medium"` | Seimbang (default) |
 | `"high"` | Mendalam |
 | `"xhigh"` | Sangat dalam (OpenAI GPT-5.2+, DeepSeek→`max`) |
 | `"max"` | Maksimal (OpenAI GPT-5.2+, DeepSeek) |
+
+Untuk backward compatibility, `"minimal"` tetap diterima sebagai alias `"low"` dan tidak pernah dikirim ke upstream.
 
 Selain itu, gateway juga menerima bentuk nested OpenAI `reasoning: { effort: ... }`.
 
@@ -682,12 +683,12 @@ Gateway mendeteksi target dari **`provider.id` + nama model**, lalu memetakan:
 
 | Provider tujuan | Bentuk native yg dikirim upstream |
 |---|---|
-| **OpenAI** (o3, GPT-5.x) & kompatibel (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (tingkat atas, `xhigh`→`high`); GPT-5.2+ memakai nested `reasoning:{effort}` & menerima `none`/`minimal`/`xhigh`/`max` |
+| **OpenAI** (o3, GPT-5.x) & kompatibel (Mistral, Groq gpt-oss, Together, …) | `reasoning_effort` (tingkat atas, `xhigh`→`high`); GPT-5.2+ memakai nested `reasoning:{effort}` |
 | **Anthropic** Claude 5.x | `output_config: { effort: <e> }`; tidak mengirim `thinking: adaptive` |
 | **Anthropic** Claude 4.6–4.8 | `thinking: { type: "adaptive" }` + `output_config: { effort: <e> }` |
 | **Anthropic** Claude 3.7/4.5 extended | `thinking: { type: "enabled", budget_tokens: <N> }`; Opus 4.5 juga menerima `output_config.effort` |
 | **Anthropic** Claude 3.5 & lebih lama | (tidak support) — field di-strip |
-| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google petakan internal ke thinking_level/thinking_budget). `none` di-clamp: 3.x & 2.5 Pro → `minimal` (tidak bisa mati); 2.5 Flash/Flash-Lite → `none` (mati) |
+| **Gemini** (2.5/3.x) | `reasoning_effort` top-level (Google petakan internal ke thinking_level/thinking_budget). `none` di-clamp: 3.x & 2.5 Pro → `low` (tidak bisa mati); 2.5 Flash/Flash-Lite → `none` (mati) |
 | **OpenRouter** | `reasoning: { effort: <e> }` (OR normalisasi ke provider di belakang) |
 | **xAI Grok** 4.5+ | nested `reasoning:{effort}` (low/medium/high); `none`→`low` (tdk bisa dimatikan) |
 | **Mistral** | `reasoning_effort` (`high`/`none` saja; medium/low→high) |
@@ -705,8 +706,8 @@ Claude Sonnet 5.5 memakai `thinking:{type:"between_tools"}`.
 upstream `api.anthropic.com`, gateway menghapus field tingkat atas `temperature`
 sebelum dispatch. Field ini tetap diteruskan ke host provider lain.
 
-Budget token nominal utk format budget-based: `minimal`→512, `low`→1024,
-`medium`→4096, `high`→16384, `xhigh`→32768. Extended thinking Claude
+Budget token nominal utk format budget-based: `low`→1024, `medium`→4096,
+`high`→16384, `xhigh`→32768. Extended thinking Claude
 menetapkan minimum 1024 token.
 
 ### Aturan prioritas & two-way translation
