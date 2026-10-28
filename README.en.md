@@ -59,6 +59,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🔑 Automatic Gemini `thought_signature` preservation** — multi-turn tool/function calling on Gemini 3.x requires a special signature on every turn. SiberGate auto-captures the signature from the response, strips it from the client payload (pure OpenAI format), and injects it back when a multi-turn request arrives — **transparent, no client code changes**. See [Gemini-specific compatibility](#-gemini-specific-compatibility).
 - **🔀 Cross-vendor tool calling without errors** — agentic loops with failover between models of different vendors (e.g. Gemini ↔ DeepSeek) normally crash in multi-turn because each vendor has its own mandatory internal token (Gemini `thought_signature`, DeepSeek `reasoning_content`) that is incompatible and must be round-tripped. SiberGate solves it: set the Gemini target's modality to `tools-text` → the gateway converts `tool_calls` + role `tool` to universal XML text up front, then re-parses back to OpenAI format at the end. The client keeps clean original `tool_calls`, no vendor-specific signature leaks, no `400 missing signature` errors. See [Cross-vendor tool calling](#-cross-vendor-tool-calling).
 - **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|low|medium|high|xhigh|max`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` and multipart `/v1/images/edits`. Edit uploads are normalized for the target adapter and returned in OpenAI response shape.
 - **🖼️ Image generation mapping (auto-map)** — every image-gen vendor has a totally different request/response shape (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan with its own params). The client keeps one OpenAI Images format; the gateway translates the body into the target's native dialect (including a 3-class size system — square/landscape/portrait — plus a `quality`⇄`resolution` bridge) and converts the response back to `{created, data:[{url}]}` — including automatic redirect to `/v1/images/edits` multipart when the client sends a reference image to an OpenAI target, plus Kling/Qwen async task polling. **Opt-in per route target** (`verbatim` default / `auto-map`). See [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
@@ -134,6 +135,15 @@ curl http://localhost:8787/v1/images/generations \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"model":"image-fast","prompt":"a spacesuit cat in the style of the reference","image":"https://example.com/cat.jpg","size":"1024x1536","negative_prompt":"blur"}'
+
+# Edit an image directly with the OpenAI Images Edits multipart API
+curl http://localhost:8787/v1/images/edits \
+  -H "Authorization: Bearer sg_live_xxx" \
+  -F 'model=image-fast' \
+  -F 'prompt=Change the photo background to a beach at sunset' \
+  -F 'image=@./photo.png' \
+  -F 'size=1024x1024' \
+  -F 'n=1'
 ```
 
 Or open **http://localhost:3000** (or whatever `SIBERGATE_ADMIN_PORT` you set) for the admin dashboard.
@@ -1047,6 +1057,7 @@ the schema), and the result is normalized (`taskRef`, `status`, `imageUrls`,
 | `GET` | `/v1/models` | List enabled routes (tagged with modality) |
 | `POST` | `/v1/chat/completions` | Chat (streaming + JSON) |
 | `POST` | `/v1/images/generations` | Image generation. The route id may come via `model` **or** `model_name`; if the route target is in `auto-map` mode, the body is translated to the target's native dialect (see [Image generation mapping](#️-image-generation-mapping-auto-map)) |
+| `POST` | `/v1/images/edits` | Edit an image with OpenAI-compatible multipart uploads; the file and prompt are mapped for the image target |
 | `POST` | `/v1/audio/speech` | Text-to-speech (binary) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Text embeddings |

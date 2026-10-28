@@ -75,6 +75,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🔑 Preservasi otomatis `thought_signature` Gemini** — multi-turn tool/function calling di Gemini 3.x butuh signature khusus di setiap turn. SiberGate otomatis capture signature dari response, strip dari payload ke klien (format OpenAI murni), lalu inject balik saat request multi-turn datang — **transparan, klien tidak perlu ubah kode**. Lihat [Kompatibilitas khusus Gemini](#-kompatibilitas-khusus-gemini).
 - **🔀 Tool calling lintas-vendor (cross-vendor) anti-error** — agentic loop dgn failover antar model beda vendor (mis. Gemini ↔ DeepSeek) biasanya crash di multi-turn krn setiap vendor punya token internal sendiri (Gemini `thought_signature`, DeepSeek `reasoning_content`) yg tidak kompatibel & wajib di round-trip. SiberGate menyelesaikannya: set modality target Gemini ke `tools-text` → gateway ubah tool_calls + role:tool menjadi text XML universal di awal, lalu re-parse balik ke format OpenAI di akhir. Klien tetap pegang `tool_calls` asli bersih, tidak ada signature vendor-specific yg bocor, tidak ada error `400 missing signature`. Lihat [Tool calling lintas-vendor](#-tool-calling-lintas-vendor-cross-vendor).
 - **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|low|medium|high|xhigh|max`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
+- **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` dan multipart `/v1/images/edits`. Request edit membawa gambar referensi ke adapter; endpoint memetakan file ke dialek target dan meneruskan hasil dalam format OpenAI.
 - **🖼️ Image generation mapping (auto-map)** — tiap vendor image gen punya bentuk request/response beda total (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan params sendiri). Klien tetap satu format OpenAI Images; gateway translate body ke dialek native target (termasuk size 3-kelas persegi/landscape/portrait + bridge `quality`⇄`resolution`) dan convert response balik ke `{created, data:[{url}]}` — termasuk redirect otomatis ke `/v1/images/edits` multipart saat klien kirim gambar referensi ke target OpenAI, dan polling async Kling/Qwen. **Opt-in per route target** (`verbatim` default / `auto-map`). Lihat [Image generation mapping](#️-image-generation-mapping-auto-map).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
@@ -148,6 +149,15 @@ curl http://localhost:8787/v1/images/generations \
   -H "Authorization: Bearer sg_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"model":"image-fast","prompt":"kucing astronot ala foto referensi","image":"https://example.com/kucing.jpg","size":"1024x1536","negative_prompt":"blur"}'
+
+# Edit gambar langsung memakai OpenAI Images Edits multipart API
+curl http://localhost:8787/v1/images/edits \
+  -H "Authorization: Bearer sg_live_xxx" \
+  -F 'model=image-fast' \
+  -F 'prompt=Ganti latar foto menjadi pantai saat matahari terbenam' \
+  -F 'image=@./foto.png' \
+  -F 'size=1024x1024' \
+  -F 'n=1'
 ```
 
 Atau buka **http://localhost:3000** (atau port `SIBERGATE_ADMIN_PORT` yang Anda set) untuk dashboard admin.
@@ -1049,6 +1059,7 @@ hasilnya dinormalisasi (`taskRef`, `status`, `imageUrls`, `videoUrls`, `text`,
 | `GET` | `/v1/models` | Daftar route aktif (diberi tag modalitas) |
 | `POST` | `/v1/chat/completions` | Chat (streaming + JSON) |
 | `POST` | `/v1/images/generations` | Generasi gambar. Route id boleh via `model` **atau** `model_name`; bila route target ber-mode `auto-map`, body diterjemahkan ke dialek native target (lihat [Image generation mapping](#️-image-generation-mapping-auto-map)) |
+| `POST` | `/v1/images/edits` | Edit gambar dengan lampiran multipart OpenAI-compatible; file dan prompt dipetakan ke target image route |
 | `POST` | `/v1/audio/speech` | Text-to-speech (binary) |
 | `POST` | `/v1/audio/transcriptions` | Speech-to-text |
 | `POST` | `/v1/embeddings` | Embedding teks |

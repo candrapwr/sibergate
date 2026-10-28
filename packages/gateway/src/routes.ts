@@ -121,6 +121,20 @@ function redactHeaders(headers: Headers): Record<string, string> {
   return out;
 }
 
+/** Keep uploaded image bytes out of raw traces while retaining field shape. */
+function redactImageDataForTrace(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return value.replace(/data:(image\/[^;,\s]+);base64,([A-Za-z0-9+/=\r\n]+)/gi, (_match, mimeType: string, data: string) =>
+      `data:${mimeType};base64,[redacted ${data.replace(/\s/g, '').length} chars]`,
+    );
+  }
+  if (Array.isArray(value)) return value.map(redactImageDataForTrace);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactImageDataForTrace(item)]));
+  }
+  return value;
+}
+
 /**
  * Persist a raw request trace when there was an upstream error — either a
  * terminal failure OR a failover that recovered (trail contains a failed step).
@@ -157,6 +171,9 @@ function maybeSaveRequestTrace(opts: {
   const upstreamPresent = opts.upstreamUrl || opts.upstreamStatus != null;
   if (!opts.force && !opts.hadFailover && !upstreamPresent) return false;
   try {
+    const traceBody = opts.c.req.path.startsWith('/v1/images/')
+      ? redactImageDataForTrace(opts.upstreamRequestBody ?? opts.body)
+      : opts.upstreamRequestBody ?? opts.body;
     const data: RequestTraceData = {
       requestId: opts.requestId,
       ts: new Date().toISOString(),
@@ -173,7 +190,7 @@ function maybeSaveRequestTrace(opts: {
       // Prefer the real upstream body (captured directly from the adapter/error).
       // Fall back to the raw client body if the upstream body isn't available
       // (e.g. timeout/network errors where no request body was attached).
-      body: opts.upstreamRequestBody ?? opts.body,
+      body: traceBody,
       upstream: upstreamPresent
         ? { url: opts.upstreamUrl, status: opts.upstreamStatus, responseBody: opts.upstreamBody }
         : undefined,
@@ -390,13 +407,41 @@ export function createApp(configStore: ConfigStore) {
   app.use('*', requestIdMiddleware);
   app.use('*', authMiddleware());
 
+  // Public self-description for clients/AI agents: explains what the service is
+  // and how to call it WITHOUT enumerating internal providers or route ids
+  // (those are discovered via GET /v1/models, which is gated by client auth).
   app.get('/', (c) => {
-    const config = configStore.get();
     return c.json({
       name: 'SiberGate',
+      version: '0.1.0',
       status: 'ok',
-      routes: config.routes.map((r) => r.id),
-      providers: config.providers.map((p) => p.id),
+      description:
+        'Self-hosted, OpenAI-compatible AI gateway with smart routing (fallback, fastest, load balancing).',
+      auth: {
+        scheme: 'bearer',
+        header: 'Authorization: Bearer <API_KEY>',
+        key_prefix: 'sg_live_',
+        note: 'All /v1/* endpoints require a valid API key unless the gateway has no keys configured (open mode).',
+      },
+      endpoints: {
+        discover_models: 'GET /v1/models',
+        chat: 'POST /v1/chat/completions',
+        images_generations: 'POST /v1/images/generations',
+        images_edits: 'POST /v1/images/edits',
+        audio_speech: 'POST /v1/audio/speech',
+        audio_transcriptions: 'POST /v1/audio/transcriptions',
+        embeddings: 'POST /v1/embeddings',
+        music_generations: 'POST /v1/music/generations',
+        videos_create: 'POST /v1/videos',
+        videos_status: 'GET /v1/videos/:id',
+        videos_content: 'GET /v1/videos/:id/content',
+        mcp_tools: 'GET /v1/mcp/:routeId/tools',
+        mcp_tool_call: 'POST /v1/mcp/:routeId/tools/:toolName',
+        generic_proxy: 'ANY /v1/generic/*',
+        custom_script: 'ANY /api/custom/:id',
+      },
+      health: 'GET /health',
+      docs: 'See README.md for the full API reference.',
     });
   });
   app.get('/health', (c) => c.json({ status: 'ok' }));
@@ -794,12 +839,13 @@ export function createApp(configStore: ConfigStore) {
    * one generic handler: resolve the route (filtered by that modality), execute,
    * then forward the upstream response — binary (audio/image) or JSON — verbatim.
    *
-   * Pengecualian: /v1/images/generations punya handler khusus (imageHandler) yg
-   * menangani async task-based provider (mis. Kling AI). Provider tsb balas
-   * data.task_id alih-alih URL gambar, lalu gateway poll sampai sukses dan
-   * return format OpenAI. Provider sync (DALL-E, dll) tetap diteruskan verbatim.
+   * Pengecualian: endpoint generations dan edits memakai imageHandler. Handler
+   * juga menangani async task-based provider (mis. Kling AI) dan mengubah
+   * upload multipart edits menjadi data URL kanonik sebelum adapter memetakan
+   * request ke dialek target.
    */
   app.post('/v1/images/generations', (c) => imageHandler(c, configStore));
+  app.post('/v1/images/edits', (c) => imageHandler(c, configStore, { edits: true }));
   app.post('/v1/audio/speech', (c) => modalityHandler(c, configStore, 'speech', '/v1/audio/speech'));
   app.post('/v1/audio/transcriptions', (c) => modalityHandler(c, configStore, 'transcribe', '/v1/audio/transcriptions'));
   app.post('/v1/embeddings', (c) => modalityHandler(c, configStore, 'embed', '/v1/embeddings'));
@@ -966,7 +1012,7 @@ async function modalityHandler(
 }
 
 /**
- * Image handler khusus /v1/images/generations. Mendukung dua jenis provider:
+ * Image handler untuk /v1/images/generations dan /v1/images/edits. Mendukung dua jenis provider:
  *
  *  1. Provider sync (DALL-E, dll): response upstream sudah berisi URL gambar
  *     dgn format OpenAI (`{created, data:[{url}]}`). Diteruskan verbatim.
@@ -981,15 +1027,78 @@ async function modalityHandler(
  * Failover engine tetap berlaku saat POST pertama gagal (provider down); polling
  * hanya aktif setelah POST berhasil dan mengembalikan task_id.
  */
-async function imageHandler(c: Context, configStore: ConfigStore) {
+function isUploadedImage(value: FormDataEntryValue): value is File {
+  return typeof value !== 'string' && typeof value.arrayBuffer === 'function' && typeof value.name === 'string';
+}
+
+function uploadedImageMimeType(file: File): string {
+  const supplied = file.type.trim().toLowerCase().split(';', 1)[0] ?? '';
+  if (supplied.startsWith('image/')) return supplied === 'image/jpg' ? 'image/jpeg' : supplied;
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const byExtension: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+    gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
+  };
+  const mimeType = byExtension[extension];
+  if (!mimeType) throw new Error(`Uploaded image '${file.name}' must have an image MIME type.`);
+  return mimeType;
+}
+
+async function parseImageEditsForm(c: Context): Promise<Record<string, unknown> | null> {
+  const contentType = c.req.header('content-type') ?? '';
+  if (!/^multipart\/form-data\b/i.test(contentType)) return null;
+  const form = await c.req.formData().catch(() => null);
+  if (!form) return null;
+
+  const body: Record<string, unknown> = {};
+  const images: string[] = [];
+  for (const [name, value] of form.entries()) {
+    if (name === 'image' || name === 'image[]') {
+      if (typeof value === 'string') {
+        if (value.trim()) images.push(value.trim());
+      } else if (isUploadedImage(value)) {
+        const mimeType = uploadedImageMimeType(value);
+        const bytes = Buffer.from(await value.arrayBuffer());
+        if (!bytes.length) throw new Error(`Uploaded image '${value.name}' is empty.`);
+        images.push(`data:${mimeType};base64,${bytes.toString('base64')}`);
+      }
+      continue;
+    }
+
+    if (name === 'mask' && isUploadedImage(value)) {
+      const mimeType = uploadedImageMimeType(value);
+      const bytes = Buffer.from(await value.arrayBuffer());
+      body.mask = `data:${mimeType};base64,${bytes.toString('base64')}`;
+      continue;
+    }
+    if (typeof value === 'string') body[name] = name === 'n' ? Number(value) : value;
+  }
+  if (!images.length) return null;
+  body.image = images.length === 1 ? images[0] : images;
+  return body;
+}
+
+async function imageHandler(c: Context, configStore: ConfigStore, { edits = false }: { edits?: boolean } = {}) {
   const config = configStore.get();
   const requestId = c.get('requestId');
   const startedAt = c.get('startedAt');
   const passthroughHeaders = extractPassthroughHeaders(c);
-  const path = '/v1/images/generations';
+  const path = edits ? '/v1/images/edits' : '/v1/images/generations';
 
-  const parsed = await c.req.json().catch(() => null);
-  if (!parsed) return errorResponse(c, 400, 'Request body must be valid JSON.', 'invalid_request_error');
+  let parsed: Record<string, unknown> | null;
+  try {
+    parsed = edits
+      ? await parseImageEditsForm(c)
+      : await c.req.json().catch(() => null);
+  } catch (error) {
+    return errorResponse(c, 400, (error as Error).message, 'invalid_request_error', 'invalid_image_upload', 'image');
+  }
+  if (!parsed) {
+    const message = edits
+      ? 'Request body must be valid multipart/form-data and include at least one image file.'
+      : 'Request body must be valid JSON.';
+    return errorResponse(c, 400, message, 'invalid_request_error');
+  }
 
   const body = parsed as Record<string, unknown>;
   // Route id boleh dikirim via `model` (OpenAI) ATAU `model_name` (dialek
@@ -998,11 +1107,17 @@ async function imageHandler(c: Context, configStore: ConfigStore) {
   const routeId = String(body.model ?? body.model_name ?? '');
   const routeAccessError = enforceApiRoute(c, routeId);
   if (routeAccessError) return routeAccessError;
-  let route;
+  let route: Route;
   try {
     route = getRoute(config, routeId);
   } catch {
     return errorResponse(c, 404, `Model/route '${routeId}' not found.`, 'invalid_request_error', 'model_not_found', 'model');
+  }
+  if (edits) {
+    // The public edit endpoint is OpenAI-shaped. Always translate its uploaded
+    // files to the target image provider's edit dialect, regardless of the
+    // route target's default body-mapping setting.
+    route = { ...route, targets: route.targets.map((target) => ({ ...target, mapping: 'auto' })) };
   }
   if ((route.modality ?? 'chat') !== 'image') {
     return errorResponse(
