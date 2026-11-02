@@ -43,7 +43,7 @@ export {
   clearRequestTraces,
   type RequestTraceData,
 } from './request-trace.js';
-export { logRequest, touchApiKey, type LogRequest } from './logger.js';
+export { logRequest, touchApiKey, slimRequestMetadata, type LogRequest } from './logger.js';
 export {
   pushConsoleLog,
   recentConsoleLogs,

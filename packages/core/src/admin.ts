@@ -8,6 +8,7 @@ import { listSignatures as listSigs, resetSignatures as resetSigs, type Signatur
 import { clearRequestTraces as clearTraces } from './request-trace.js';
 import { clearProxyLogs } from './proxy/log.js';
 import { pushConsoleLog } from './console-log.js';
+import { slimRequestMetadata } from './logger.js';
 import type { McpToolMeta, Provider, VideoJob, VideoJobStatus } from './types.js';
 import { mcpToolsCall, mcpToolsList, resetMcpClient } from './mcp/client.js';
 import {
@@ -1225,7 +1226,21 @@ export function regenerateApiKey(id: string): CreatedKey | null {
 /* ─────────────────────────── LOGS / STATS ─────────────────────────── */
 
 export function recentRequests(limit = 50): Record<string, unknown>[] {
-  return getDb().prepare('SELECT * FROM requests ORDER BY id DESC LIMIT ?').all(limit) as any[];
+  const rows = getDb().prepare('SELECT * FROM requests ORDER BY id DESC LIMIT ?').all(limit) as Array<Record<string, unknown>>;
+  // Defensively slim metadata on read: rows written before slimRequestMetadata
+  // existed can carry multi-MB requestBody/trail blobs in `metadata`. The full
+  // trace already lives in request_traces/*.json on disk (hasTrace flag), so
+  // the list payload only needs the small audit fields.
+  for (const row of rows) {
+    const raw = row.metadata;
+    if (typeof raw !== 'string' || raw.length < 2 || raw === '{}') continue;
+    try {
+      row.metadata = JSON.stringify(slimRequestMetadata(JSON.parse(raw) as Record<string, unknown>));
+    } catch {
+      /* malformed JSON — leave as-is */
+    }
+  }
+  return rows;
 }
 
 export interface UsageStats {

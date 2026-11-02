@@ -34,6 +34,50 @@ export interface LogRequest {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * Slim request metadata before persisting to the `requests.metadata` column.
+ *
+ * Why: the failover trail carries full upstream diagnostics (requestBody =
+ * entire LLM request incl. base64 images; requestHeaders; upstreamBody).
+ * The raw trace files on disk (request_traces/) already capture the full
+ * payload per-request — storing megabytes in the DB metadata bloated the
+ * /admin/logs list payload (a single row once reached 1.3 MB) and made the
+ * Logs page heavy. This keeps the audit-relevant fields only.
+ */
+const UPSTREAM_BODY_CAP = 4000;
+
+function truncate(v: unknown, max: number): unknown {
+  if (typeof v === 'string' && v.length > max) return v.slice(0, max) + '…[truncated]';
+  return v;
+}
+
+export function slimRequestMetadata(meta: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...meta };
+  if (Array.isArray(out.trail)) {
+    out.trail = (out.trail as Array<Record<string, unknown>>).map((step) => {
+      if (!step || typeof step !== 'object') return step;
+      const s = { ...step };
+      // Full request body/headers live in the on-disk trace file (hasTrace),
+      // never in the DB. Upstream body is capped for inline display.
+      delete s.requestBody;
+      delete s.requestHeaders;
+      if ('upstreamBody' in s) s.upstreamBody = truncate(s.upstreamBody, UPSTREAM_BODY_CAP);
+      if (typeof s.errorMessage === 'string') s.errorMessage = truncate(s.errorMessage, 500);
+      return s;
+    });
+  }
+  if (out.upstream && typeof out.upstream === 'object') {
+    const u = { ...(out.upstream as Record<string, unknown>) };
+    delete u.requestBody;
+    delete u.requestHeaders;
+    if ('body' in u) u.body = truncate(u.body, UPSTREAM_BODY_CAP);
+    out.upstream = u;
+  }
+  out.streamError = truncate(out.streamError, 1000) ?? out.streamError ?? undefined;
+  if (out.streamError === undefined) delete out.streamError;
+  return out;
+}
+
 const insertStmt = `
   INSERT INTO requests
     (request_id, method, path, status, latency_ms, route, provider, model, strategy,
@@ -74,11 +118,11 @@ export function logRequest(entry: LogRequest): void {
         totalTokens: entry.totalTokens ?? 0,
         costUsd: entry.costUsd ?? 0,
         errorCode: entry.errorCode ?? null,
-        errorMessage: entry.errorMessage ?? null,
+        errorMessage: truncate(entry.errorMessage, 2000) ?? null,
         clientIp: entry.clientIp ?? null,
         apiKeyId: entry.apiKeyId ?? null,
         upstreamKeyId: entry.upstreamKeyId ?? null,
-        metadata: JSON.stringify(entry.metadata ?? {}),
+        metadata: JSON.stringify(slimRequestMetadata(entry.metadata ?? {})),
         hadFailover: hadFailover ? 1 : 0,
       });
   } catch (err) {
