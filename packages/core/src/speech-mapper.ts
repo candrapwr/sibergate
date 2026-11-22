@@ -28,7 +28,7 @@ import type { Provider } from './types.js';
 export interface CanonicalSpeechIntent {
   /** Teks yang akan diucapkan. */
   text: string;
-  /** Voice id (OpenAI: alloy/echo/…; Qwen: longanfengyue/Cherry/…). */
+  /** Voice id (OpenAI: alloy/echo/…; Qwen: longanlingxin/Cherry/…). */
   voice: string;
   /** Format audio output: mp3 | wav | pcm | opus (Qwen tidak punya aac/flac). */
   format: string;
@@ -46,7 +46,7 @@ export const QWEN_SPEECH_FORMATS: Record<string, string> = {
   opus: 'audio/ogg',
 };
 
-export const DEFAULT_SPEECH_VOICE = 'longanfengyue';
+export const DEFAULT_SPEECH_VOICE = 'longanlingxin';
 export const DEFAULT_SPEECH_SAMPLE_RATE = 22050;
 
 /**

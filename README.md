@@ -894,7 +894,7 @@ per-target saat dispatch sehingga failover antar target dgn mode campur aman.
 | **OpenAI / OpenAI-compat** | passthrough body OpenAI + model upstream | binary audio, diteruskan verbatim |
 
 Pemetaan field: `input`→`input.text`, `voice`→`input.voice` (default
-`longanfengyue`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+`longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
 `aac`/`flac` fallback `mp3` — tidak ada padanan Qwen), `speed`→`input.rate`,
 `sample_rate`→`input.sample_rate` (default 22050). Error DashScope top-level
 (`{code, message}`, kadang HTTP 200) dilempar sebagai error upstream biasa →

@@ -888,7 +888,7 @@ per-target at dispatch so failover across mixed-mode targets stays safe.
 | **OpenAI / OpenAI-compat** | OpenAI body passthrough + upstream model | binary audio, forwarded verbatim |
 
 Field mapping: `input`→`input.text`, `voice`→`input.voice` (default
-`longanfengyue`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+`longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
 `aac`/`flac` fall back to `mp3` — no Qwen equivalent), `speed`→`input.rate`,
 `sample_rate`→`input.sample_rate` (default 22050). Top-level DashScope errors
 (`{code, message}`, sometimes HTTP 200) are thrown as regular upstream errors →
