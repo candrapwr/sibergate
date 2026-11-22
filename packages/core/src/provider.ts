@@ -265,16 +265,20 @@ export async function sendUpstream(opts: {
         // Error body dapat berupa object {error:{message}} atau ARRAY
         // [{"error":{...}}] (Gemini OpenAI-compat sering balas array). Resolve
         // ke elemen error pertama supaya detail message tidak hilang.
+        // Dialek DashScope (Qwen TTS/image/…) memakai {code, message} top-level
+        // tanpa bungkus 'error' — fallback ke sana supaya detail tidak hilang.
         const errBody = (Array.isArray(parsed) ? parsed[0] : parsed) as
-          | { error?: { message?: string } | string }
+          | { error?: { message?: string } | string; code?: string; message?: string }
           | undefined;
         detail = errBody?.error
           ? typeof errBody.error === 'string'
             ? errBody.error
             : errBody.error.message ?? ''
-          : typeof parsed === 'string'
-            ? parsed
-            : '';
+          : typeof errBody?.message === 'string' && errBody.message
+            ? `${errBody.code ? `${errBody.code}: ` : ''}${errBody.message}`
+            : typeof parsed === 'string'
+              ? parsed
+              : '';
         rawBody = JSON.stringify(parsed).slice(0, 1000);
       } else {
         rawBody = (await res.clone().text()).slice(0, 1000);

@@ -77,6 +77,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|low|medium|high|xhigh|max`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` dan multipart `/v1/images/edits`. Request edit membawa gambar referensi ke adapter; endpoint memetakan file ke dialek target dan meneruskan hasil dalam format OpenAI.
 - **🖼️ Image generation mapping (auto-map)** — tiap vendor image gen punya bentuk request/response beda total (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan params sendiri). Klien tetap satu format OpenAI Images; gateway translate body ke dialek native target (termasuk size 3-kelas persegi/landscape/portrait + bridge `quality`⇄`resolution`) dan convert response balik ke `{created, data:[{url}]}` — termasuk redirect otomatis ke `/v1/images/edits` multipart saat klien kirim gambar referensi ke target OpenAI, dan polling async Kling/Qwen. **Opt-in per route target** (`verbatim` default / `auto-map`). Lihat [Image generation mapping](#️-image-generation-mapping-auto-map).
+- **🔊 Speech/TTS mapping (auto-map)** — pola yang sama untuk TTS: klien tetap body standar OpenAI `/v1/audio/speech`; target Qwen/DashScope menerima envelope native `SpeechSynthesizer` dan response JSON `{output:{audio}}` di-decode gateway menjadi binary audio. **Opt-in per route target**. Contoh jadi: route `python-qwen`. Lihat [Speech/TTS mapping](#-speechtts-mapping-auto-map).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
@@ -876,6 +877,60 @@ Klien (selalu JSON, format OpenAI)
   ├─ target OpenAI (auto-map) → JSON /generations ── atau ── multipart /edits (bila ada image)
   └─ target apa pun (verbatim) → diteruskan apa adanya (perilaku lama)
 ```
+
+---
+
+## 🔊 Speech/TTS mapping (auto-map)
+
+Pola yang sama dengan image mapping, untuk TTS: klien selalu mengirim body
+standar OpenAI `/v1/audio/speech`, gateway menerjemahkannya ke dialek native
+target dan menormalkan response kembali menjadi **binary audio**. Bersifat
+**opt-in per route target** (`verbatim` default / `auto-map`), dibaca
+per-target saat dispatch sehingga failover antar target dgn mode campur aman.
+
+| Dialek target | Request native | Response upstream → klien |
+|---|---|---|
+| **Qwen / DashScope** (qwencloud, qwenplan, host dashscope/aliyuncs/qwencloudapi, model `qwen*-tts`/`cosyvoice*`/`sambert*`) | `{model, input:{text, voice, format, sample_rate, rate?}}` ke endpoint `SpeechSynthesizer` | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type sesuai format |
+| **OpenAI / OpenAI-compat** | passthrough body OpenAI + model upstream | binary audio, diteruskan verbatim |
+
+Pemetaan field: `input`→`input.text`, `voice`→`input.voice` (default
+`longanfengyue`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+`aac`/`flac` fallback `mp3` — tidak ada padanan Qwen), `speed`→`input.rate`,
+`sample_rate`→`input.sample_rate` (default 22050). Error DashScope top-level
+(`{code, message}`, kadang HTTP 200) dilempar sebagai error upstream biasa →
+failover jalan seperti biasa. TTS synchronous — tidak ada polling seperti
+image/video.
+
+Aktifkan di dashboard: editor route (modality **speech**) → dropdown per
+target: **verbatim / auto-map**.
+
+### Contoh: route `python-qwen` (Qwen TTS)
+
+Setup sekali jalan (idempotent):
+
+```bash
+npm run build:core
+npx tsx scripts/setup-python-qwen-tts.ts
+# membuat: endpoint speech qwencloud + model qwen-audio-3.0-tts-flash
+#          + route speech python-qwen (mapping=auto, native DashScope)
+```
+
+Klien tetap body standar OpenAI — tidak ada custom script / proses Python:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer sg_live_..." -H 'Content-Type: application/json' \
+  -d '{"model":"python-qwen","input":"Halo dari Qwen TTS","voice":"longanfengyue","response_format":"mp3"}' \
+  --output out.mp3
+```
+
+Mapper: `packages/core/src/speech-mapper.ts` + adapter `adapters/speech.ts`.
+Ganti model/voice cukup edit route target di dashboard.
+
+> Catatan akun: model TTS Qwen (`qwen-audio-*-tts-*`) dilayani endpoint regional
+> `*.maas.qwencloudapi.com` dengan key region tsb. Key akun *plan* (`sk-sp-…`,
+> host `token-plan.*`) tidak melayani model TTS — pakai credential provider akun
+> Qwen Cloud (`sk-ws-…`).
 
 ---
 

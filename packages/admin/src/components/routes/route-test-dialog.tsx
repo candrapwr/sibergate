@@ -69,6 +69,8 @@ export function RouteTestDialog({ route }: { route: Route }) {
   const run = async () => {
     try {
       const r = await sendRaw({ method, proxyPath: path, headers, body });
+      // Revoke object URL audio dari run sebelumnya supaya tidak bocor memory.
+      if (result?.audioUrl) URL.revokeObjectURL(result.audioUrl);
       setResult(r);
       if (r.ok) toast.success(`${r.status} in ${formatMs(r.latencyMs)}`);
       else if (r.status === 0) toast.error(r.statusText || 'Network error');
@@ -215,9 +217,18 @@ function ResponsePanel({ result }: { result: RawResult }) {
       {/* Body */}
       <div className="space-y-1">
         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Response body</div>
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[11px]">
-          {prettyBody || '(empty)'}
-        </pre>
+        {result.audioUrl ? (
+          <div className="space-y-1.5 rounded-md border border-border bg-card p-2">
+            <audio controls src={result.audioUrl} className="w-full" />
+            <a href={result.audioUrl} download="speech-output" className="text-[11px] text-primary hover:underline">
+              Download audio ({result.headers['content-type'] ?? 'audio'})
+            </a>
+          </div>
+        ) : (
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[11px]">
+            {prettyBody || '(empty)'}
+          </pre>
+        )}
       </div>
     </div>
   );

@@ -117,6 +117,17 @@ export {
   type CanonicalImageIntent,
 } from './image-mapper.js';
 export {
+  mapSpeechInput,
+  parseSpeechIntent,
+  detectSpeechDialect,
+  isQwenSpeechAudioBody,
+  decodeQwenSpeechAudio,
+  qwenSpeechAudioUrl,
+  speechContentType,
+  type SpeechDialect,
+  type CanonicalSpeechIntent,
+} from './speech-mapper.js';
+export {
   // MCP client (provider protocol='mcp')
   mcpToolsList,
   mcpToolsCall,

@@ -449,12 +449,12 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                       {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                     </select>
                   )}
-                  {form.modality === 'image' && (
+                  {(form.modality === 'image' || form.modality === 'speech') && (
                     <select
                       value={t.mapping}
                       onChange={(e) => updateTarget(i, { mapping: e.target.value })}
                       className="h-7 rounded-md border border-border bg-background px-1.5 text-[11px]"
-                      title="Body mapping — verbatim: teruskan request/response apa adanya (default). auto: translate body ke format native target (Kling/Qwen/OpenAI edits) dan convert response balik ke format OpenAI."
+                      title="Body mapping — verbatim: teruskan request/response apa adanya (default). auto: translate body ke format native target (Kling/Qwen/OpenAI edits; Qwen TTS) dan convert response balik ke format OpenAI/binary audio."
                     >
                       <option value="">verbatim</option>
                       <option value="auto">auto-map</option>
@@ -493,12 +493,12 @@ const ROUTE_TO_MODEL_MODALITY: Record<string, string[]> = {
                   {targetModalityChoices(form.modality).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                 </select>
               )}
-              {form.modality === 'image' && (
+              {(form.modality === 'image' || form.modality === 'speech') && (
                 <select
                   value={newTarget.mapping}
                   onChange={(e) => setNewTarget({ ...newTarget, mapping: e.target.value })}
                   className="h-9 w-28 rounded-md border border-border bg-background px-2 text-[11px]"
-                  title="Body mapping — verbatim: teruskan apa adanya (default). auto: translate body ke format native target dan convert response balik ke format OpenAI."
+                  title="Body mapping — verbatim: teruskan apa adanya (default). auto: translate body ke format native target (mis. Qwen TTS) dan convert response balik ke format OpenAI/binary audio."
                 >
                   <option value="">verbatim</option>
                   <option value="auto">auto-map</option>

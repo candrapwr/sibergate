@@ -61,6 +61,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|low|medium|high|xhigh|max`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` and multipart `/v1/images/edits`. Edit uploads are normalized for the target adapter and returned in OpenAI response shape.
 - **🖼️ Image generation mapping (auto-map)** — every image-gen vendor has a totally different request/response shape (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan with its own params). The client keeps one OpenAI Images format; the gateway translates the body into the target's native dialect (including a 3-class size system — square/landscape/portrait — plus a `quality`⇄`resolution` bridge) and converts the response back to `{created, data:[{url}]}` — including automatic redirect to `/v1/images/edits` multipart when the client sends a reference image to an OpenAI target, plus Kling/Qwen async task polling. **Opt-in per route target** (`verbatim` default / `auto-map`). See [Image generation mapping](#️-image-generation-mapping-auto-map).
+- **🔊 Speech/TTS mapping (auto-map)** — the same pattern for TTS: the client keeps the standard OpenAI `/v1/audio/speech` body; Qwen/DashScope targets receive the native `SpeechSynthesizer` envelope and the JSON `{output:{audio}}` response is decoded by the gateway into binary audio. **Opt-in per route target**. Ready-made example: the `python-qwen` route. See [Speech/TTS mapping](#-speechtts-mapping-auto-map).
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
@@ -870,6 +871,59 @@ Client (always JSON, OpenAI format)
   ├─ OpenAI target (auto-map)  → JSON /generations —— or —— multipart /edits (when image present)
   └─ any target (verbatim)     → forwarded as-is (old behavior)
 ```
+
+---
+
+## 🔊 Speech/TTS mapping (auto-map)
+
+The same pattern as image mapping, for TTS: the client always sends the
+standard OpenAI `/v1/audio/speech` body; the gateway translates it into the
+target's native dialect and normalizes the response back into **binary
+audio**. **Opt-in per route target** (`verbatim` default / `auto-map`), read
+per-target at dispatch so failover across mixed-mode targets stays safe.
+
+| Target dialect | Native request | Upstream response → client |
+|---|---|---|
+| **Qwen / DashScope** (qwencloud, qwenplan, dashscope/aliyuncs/qwencloudapi hosts, `qwen*-tts`/`cosyvoice*`/`sambert*` models) | `{model, input:{text, voice, format, sample_rate, rate?}}` to the `SpeechSynthesizer` endpoint | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type matching the format |
+| **OpenAI / OpenAI-compat** | OpenAI body passthrough + upstream model | binary audio, forwarded verbatim |
+
+Field mapping: `input`→`input.text`, `voice`→`input.voice` (default
+`longanfengyue`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+`aac`/`flac` fall back to `mp3` — no Qwen equivalent), `speed`→`input.rate`,
+`sample_rate`→`input.sample_rate` (default 22050). Top-level DashScope errors
+(`{code, message}`, sometimes HTTP 200) are thrown as regular upstream errors →
+failover works as usual. TTS is synchronous — no polling like image/video.
+
+Enable in the dashboard: route editor (modality **speech**) → per-target
+dropdown: **verbatim / auto-map**.
+
+### Example: the `python-qwen` route (Qwen TTS)
+
+One-shot setup (idempotent):
+
+```bash
+npm run build:core
+npx tsx scripts/setup-python-qwen-tts.ts
+# creates: qwencloud speech endpoint + qwen-audio-3.0-tts-flash model
+#          + python-qwen speech route (mapping=auto, native DashScope)
+```
+
+The client keeps the standard OpenAI body — no custom script / Python process:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer sg_live_..." -H 'Content-Type: application/json' \
+  -d '{"model":"python-qwen","input":"Hello from Qwen TTS","voice":"longanfengyue","response_format":"mp3"}' \
+  --output out.mp3
+```
+
+Mapper: `packages/core/src/speech-mapper.ts` + adapter `adapters/speech.ts`.
+Change model/voice by editing the route target in the dashboard.
+
+> Account note: Qwen TTS models (`qwen-audio-*-tts-*`) are served by the regional
+> `*.maas.qwencloudapi.com` endpoint with a key from that region. *Plan* account
+> keys (`sk-sp-…`, host `token-plan.*`) do not serve TTS models — use a Qwen Cloud
+> credential provider (`sk-ws-…`).
 
 ---
 

@@ -44,6 +44,8 @@ export interface RawResult {
   latencyMs: number;
   headers: Record<string, string>;
   body: string;
+  /** Object URL utk response audio/* (speech preview). Di-revoke saat run berikutnya. */
+  audioUrl?: string;
 }
 
 const DEFAULT_PROMPT = 'Reply with exactly: OK';
@@ -191,9 +193,17 @@ export function useRouteTest() {
         body: hasBody ? opts.body : undefined,
       });
       const latencyMs = Math.round(performance.now() - start);
-      const text = await res.text();
       const respHeaders: Record<string, string> = {};
       res.headers.forEach((v, k) => { respHeaders[k] = v; });
+      const ct = res.headers.get('content-type') ?? '';
+      // Response binary audio (speech/TTS) → object URL utk preview player.
+      // Body text tidak diisi (bytes audio bukan teks); revoke URL run sebelumnya.
+      if (ct.startsWith('audio/') && res.ok) {
+        const blob = await res.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        return { ok: res.ok, status: res.status, statusText: res.statusText, latencyMs, headers: respHeaders, body: '', audioUrl };
+      }
+      const text = await res.text();
       return { ok: res.ok, status: res.status, statusText: res.statusText, latencyMs, headers: respHeaders, body: text };
     } catch (err) {
       const latencyMs = Math.round(performance.now() - start);

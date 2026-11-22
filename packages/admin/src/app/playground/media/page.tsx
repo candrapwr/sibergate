@@ -185,9 +185,18 @@ function SpeechGen({ routes, apiKey }: { routes: string[]; apiKey: string }) {
           </div>
           <div className="space-y-1.5">
             <Label>Voice</Label>
-            <select value={voice} onChange={(e) => setVoice(e.target.value)} className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]">
-              {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map((v) => <option key={v}>{v}</option>)}
-            </select>
+            {/* Datalist: preset OpenAI + Qwen/DashScope, tapi tetap bisa diketik
+                manual (voice native provider lain tidak terbatas daftar ini). */}
+            <input
+              value={voice}
+              onChange={(e) => setVoice(e.target.value)}
+              list="speech-voice-options"
+              placeholder="alloy / longanfengyue / Cherry …"
+              className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]"
+            />
+            <datalist id="speech-voice-options">
+              {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'longanfengyue', 'longxiaochun', 'Cherry', 'Serena', 'Ethan', 'Chelsie'].map((v) => <option key={v} value={v} />)}
+            </datalist>
           </div>
         </div>
         <div className="space-y-1.5">
