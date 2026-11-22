@@ -120,6 +120,7 @@ export {
   mapSpeechInput,
   parseSpeechIntent,
   detectSpeechDialect,
+  defaultVoiceForModel,
   isQwenSpeechAudioBody,
   decodeQwenSpeechAudio,
   qwenSpeechAudioUrl,

@@ -191,11 +191,11 @@ function SpeechGen({ routes, apiKey }: { routes: string[]; apiKey: string }) {
               value={voice}
               onChange={(e) => setVoice(e.target.value)}
               list="speech-voice-options"
-              placeholder="alloy / longanfengyue / Cherry …"
+              placeholder="alloy / longanlingxi / Cherry …"
               className="flex h-9 w-full rounded-md border border-border bg-background px-2 text-[12px]"
             />
             <datalist id="speech-voice-options">
-              {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'longanlingxin', 'longanfengyue', 'longxiaochun', 'Cherry', 'Serena', 'Ethan', 'Chelsie'].map((v) => <option key={v} value={v} />)}
+              {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer', 'longanlingxi', 'longanfengyue', 'longxiaochun', 'Cherry', 'Serena', 'Ethan', 'Chelsie'].map((v) => <option key={v} value={v} />)}
             </datalist>
           </div>
         </div>

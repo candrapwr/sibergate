@@ -893,8 +893,8 @@ per-target saat dispatch sehingga failover antar target dgn mode campur aman.
 | **Qwen / DashScope** (qwencloud, qwenplan, host dashscope/aliyuncs/qwencloudapi, model `qwen*-tts`/`cosyvoice*`/`sambert*`) | `{model, input:{text, voice, format, sample_rate, rate?}}` ke endpoint `SpeechSynthesizer` | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type sesuai format |
 | **OpenAI / OpenAI-compat** | passthrough body OpenAI + model upstream | binary audio, diteruskan verbatim |
 
-Pemetaan field: `input`→`input.text`, `voice`→`input.voice` (default
-`longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+Pemetaan field: `input`→`input.text`, `voice`→`input.voice` (tanpa voice →
+default per model: flash `longanlingxi`, plus `longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
 `aac`/`flac` fallback `mp3` — tidak ada padanan Qwen), `speed`→`input.rate`,
 `sample_rate`→`input.sample_rate` (default 22050). Error DashScope top-level
 (`{code, message}`, kadang HTTP 200) dilempar sebagai error upstream biasa →

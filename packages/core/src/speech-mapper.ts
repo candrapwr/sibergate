@@ -28,8 +28,10 @@ import type { Provider } from './types.js';
 export interface CanonicalSpeechIntent {
   /** Teks yang akan diucapkan. */
   text: string;
-  /** Voice id (OpenAI: alloy/echo/…; Qwen: longanlingxin/Cherry/…). */
+  /** Voice id (OpenAI: alloy/echo/…; Qwen per-model: longanlingxi/longanlingxin/…). */
   voice: string;
+  /** true bila klien mengirim `voice` sendiri; false = pakai default per-model. */
+  voiceExplicit: boolean;
   /** Format audio output: mp3 | wav | pcm | opus (Qwen tidak punya aac/flac). */
   format: string;
   /** Sample rate Hz (default 22050 — default Qwen TTS). */
@@ -46,7 +48,19 @@ export const QWEN_SPEECH_FORMATS: Record<string, string> = {
   opus: 'audio/ogg',
 };
 
-export const DEFAULT_SPEECH_VOICE = 'longanlingxin';
+// Voice default utk dialek Qwen BILA klien tidak mengirim `voice`.
+// Voice id bersifat PER-MODEL (teruji live di upstream):
+//   qwen-audio-3.0-tts-flash → 'longanlingxi'   ('longanlingxin' → engine 411)
+//   qwen-audio-3.0-tts-plus  → 'longanlingxin'  ('longanlingxi'  → engine 411)
+//   qwen-audio-3.1-*         → 'longanlingxin_v3.1' (suffiks versi)
+// Karena itu default di-resolve per nama model, bukan satu konstanta.
+export function defaultVoiceForModel(model: string): string {
+  const m = model.toLowerCase();
+  if (/3[.-]1/.test(m)) return 'longanlingxin_v3.1';
+  if (/plus/.test(m)) return 'longanlingxin';
+  return 'longanlingxi';
+}
+export const DEFAULT_SPEECH_VOICE = 'longanlingxi';
 export const DEFAULT_SPEECH_SAMPLE_RATE = 22050;
 
 /**
@@ -61,7 +75,12 @@ export function parseSpeechIntent(body: Record<string, unknown>): CanonicalSpeec
     throw new Error("Field 'input' (teks yang akan diucapkan) wajib diisi.");
   }
 
-  const voice = typeof body.voice === 'string' && body.voice.trim() ? body.voice.trim() : DEFAULT_SPEECH_VOICE;
+  const voiceRaw = typeof body.voice === 'string' ? body.voice.trim() : '';
+  // Voice default di-resolve per model (lihat defaultVoiceForModel) —
+  // parseIntent belum tahu model, jadi tandai non-eksplisit di sini dan
+  // mapSpeechInput yang meng-isi setelah dialek+model diketahui.
+  const voiceExplicit = voiceRaw.length > 0;
+  const voice = voiceExplicit ? voiceRaw : DEFAULT_SPEECH_VOICE;
 
   let format = String(body.response_format ?? 'mp3').toLowerCase();
   // OpenAI mengenal aac/flac; Qwen TTS hanya mp3/wav/pcm/opus → fallback mp3.
@@ -73,7 +92,7 @@ export function parseSpeechIntent(body: Record<string, unknown>): CanonicalSpeec
   const speed = Number(body.speed);
   const rate = Number.isFinite(speed) && speed > 0 ? speed : null;
 
-  return { text, voice, format, sampleRate, rate };
+  return { text, voice, voiceExplicit, format, sampleRate, rate };
 }
 
 /* ───────────────────────────── deteksi dialek ───────────────────────────── */
@@ -130,7 +149,13 @@ export function mapSpeechInput(
 ): { dialect: SpeechDialect; intent: CanonicalSpeechIntent; body: Record<string, unknown> } {
   const dialect = detectSpeechDialect(provider, model);
   const intent = parseSpeechIntent(body);
-  if (dialect === 'qwen') return { dialect, intent, body: emitQwenSpeech(intent, model) };
+  if (dialect === 'qwen') {
+    // Klien tidak kirim voice → pakai default yang cocok utk model target
+    // (id voice beda per model: flash 'longanlingxi', plus 'longanlingxin',
+    // 3.1 'longanlingxin_v3.1').
+    if (!intent.voiceExplicit) intent.voice = defaultVoiceForModel(model);
+    return { dialect, intent, body: emitQwenSpeech(intent, model) };
+  }
   return { dialect, intent, body: { ...body, model } };
 }
 

@@ -887,8 +887,8 @@ per-target at dispatch so failover across mixed-mode targets stays safe.
 | **Qwen / DashScope** (qwencloud, qwenplan, dashscope/aliyuncs/qwencloudapi hosts, `qwen*-tts`/`cosyvoice*`/`sambert*` models) | `{model, input:{text, voice, format, sample_rate, rate?}}` to the `SpeechSynthesizer` endpoint | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type matching the format |
 | **OpenAI / OpenAI-compat** | OpenAI body passthrough + upstream model | binary audio, forwarded verbatim |
 
-Field mapping: `input`→`input.text`, `voice`→`input.voice` (default
-`longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
+Field mapping: `input`→`input.text`, `voice`→`input.voice` (no voice →
+per-model default: flash `longanlingxi`, plus `longanlingxin`), `response_format`→`input.format` (`mp3`/`wav`/`pcm`/`opus`;
 `aac`/`flac` fall back to `mp3` — no Qwen equivalent), `speed`→`input.rate`,
 `sample_rate`→`input.sample_rate` (default 22050). Top-level DashScope errors
 (`{code, message}`, sometimes HTTP 200) are thrown as regular upstream errors →
