@@ -17,6 +17,16 @@ import type { Provider } from './types.js';
  *                    usage: { characters }, request_id }
  *             atau error top-level { code, message }.
  *
+ * Dialek 'gemini' = Google generateContent dengan responseModalities AUDIO:
+ *   request : POST {baseUrl}/models/{model}:generateContent
+ *             { contents:[{role:'user',parts:[{text}]}],
+ *               generationConfig:{ responseModalities:['AUDIO'],
+ *                 speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName}}} } }
+ *   response: { candidates:[{content:{parts:[{inlineData:{mimeType, data:base64}}]}}] }
+ *   Model baru mengembalikan WAV (RIFF) 24 kHz siap pakai; model lama
+ *   'audio/L16;…' (raw PCM) → dibungkus header WAV oleh gateway. 'pcm'
+ *   diminta → header WAV dilepas, dikirim raw.
+ *
  * Dialek 'openai' = passthrough body OpenAI + model upstream (response sudah
  * binary audio; tidak ada yang perlu dikonversi).
  *
@@ -63,6 +73,13 @@ export function defaultVoiceForModel(model: string): string {
 export const DEFAULT_SPEECH_VOICE = 'longanlingxi';
 export const DEFAULT_SPEECH_SAMPLE_RATE = 22050;
 
+// Voice default dialek Gemini TTS bila klien tidak mengirim `voice`.
+// Daftar prebuilt voice Gemini (30): Zephyr, Puck, Charon, Kore, Fenrir,
+// Leda, Orus, Aoede, … — case-sensitive di upstream.
+export const DEFAULT_GEMINI_SPEECH_VOICE = 'Kore';
+/** Gemini TTS selalu mengeluarkan raw PCM s16le mono pada rate ini. */
+export const GEMINI_SPEECH_SAMPLE_RATE = 24000;
+
 /**
  * Parse body OpenAI /v1/audio/speech menjadi intent kanonik. Field yang tidak
  * dikenal diabaikan (dialek native punya field sendiri). `input` boleh string
@@ -97,7 +114,7 @@ export function parseSpeechIntent(body: Record<string, unknown>): CanonicalSpeec
 
 /* ───────────────────────────── deteksi dialek ───────────────────────────── */
 
-export type SpeechDialect = 'qwen' | 'openai';
+export type SpeechDialect = 'qwen' | 'gemini' | 'openai';
 
 /** Strip prefix provider ('qwencloud/qwen3-tts-flash' → 'qwen3-tts-flash'). */
 function bareModel(model: string): string {
@@ -116,9 +133,12 @@ function bareModel(model: string): string {
 export function detectSpeechDialect(provider: Pick<Provider, 'id' | 'baseUrl'>, model: string): SpeechDialect {
   const pid = provider.id.toLowerCase();
   if (pid === 'qwen' || pid === 'qwencloud' || pid === 'qwenplan' || pid === 'dashscope' || pid === 'alibaba' || pid === 'aliyun') return 'qwen';
+  if (pid === 'gemini' || pid === 'google' || pid === 'googleai' || pid === 'vertex') return 'gemini';
   if (/dashscope|aliyuncs|qwencloudapi/i.test(provider.baseUrl)) return 'qwen';
+  if (/generativelanguage\.googleapis|aiplatform\.googleapis/i.test(provider.baseUrl)) return 'gemini';
   const m = bareModel(model);
   if (/tts|cosyvoice|sambert/.test(m) && /^qwen|^cosyvoice|^sambert/.test(m)) return 'qwen';
+  if (/^gemini.*tts/.test(m)) return 'gemini';
   return 'openai';
 }
 
@@ -134,6 +154,23 @@ export function emitQwenSpeech(intent: CanonicalSpeechIntent, model: string): Re
   };
   if (intent.rate !== null) input.rate = intent.rate;
   return { model, input };
+}
+
+/**
+ * Body native Gemini TTS (generateContent + responseModalities AUDIO).
+ * Format/sampleRate/rate OpenAI tidak punya padanan di Gemini TTS —
+ * audio selalu PCM 24 kHz; format di-handle saat menormalkan response.
+ */
+export function emitGeminiSpeech(intent: CanonicalSpeechIntent): Record<string, unknown> {
+  return {
+    contents: [{ role: 'user', parts: [{ text: intent.text }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: intent.voice } },
+      },
+    },
+  };
 }
 
 /**
@@ -155,6 +192,10 @@ export function mapSpeechInput(
     // 3.1 'longanlingxin_v3.1').
     if (!intent.voiceExplicit) intent.voice = defaultVoiceForModel(model);
     return { dialect, intent, body: emitQwenSpeech(intent, model) };
+  }
+  if (dialect === 'gemini') {
+    if (!intent.voiceExplicit) intent.voice = DEFAULT_GEMINI_SPEECH_VOICE;
+    return { dialect, intent, body: emitGeminiSpeech(intent) };
   }
   return { dialect, intent, body: { ...body, model } };
 }
@@ -202,4 +243,86 @@ export function qwenSpeechAudioUrl(body: unknown): string | null {
 /** Content-Type binary untuk format audio hasil (default audio/mpeg). */
 export function speechContentType(format: string): string {
   return QWEN_SPEECH_FORMATS[format] ?? 'application/octet-stream';
+}
+
+/* ───────────────────── Gemini: response → binary ───────────────────── */
+
+/**
+ * Ambil audio dari response generateContent Gemini TTS:
+ * candidates[].content.parts[].inlineData { mimeType, data(base64) }.
+ * Bisa terpecah di beberapa part/candidate (streaming) → digabung berurutan.
+ * Return { pcm, mimeType } atau null bila tidak ada inline audio.
+ */
+export function decodeGeminiSpeechAudio(body: unknown): { audio: Buffer; mimeType: string } | null {
+  const candidates = (body as { candidates?: unknown })?.candidates;
+  if (!Array.isArray(candidates)) return null;
+  const chunks: Buffer[] = [];
+  let mimeType = '';
+  for (const cand of candidates) {
+    const parts = (cand as { content?: { parts?: unknown } })?.content?.parts;
+    if (!Array.isArray(parts)) continue;
+    for (const part of parts) {
+      const inline = (part as { inlineData?: { mimeType?: unknown; data?: unknown } })?.inlineData;
+      if (inline && typeof inline.data === 'string' && inline.data) {
+        const b64 = inline.data.replace(/\s+/g, '');
+        chunks.push(Buffer.from(b64, 'base64'));
+        if (!mimeType && typeof inline.mimeType === 'string') mimeType = inline.mimeType;
+      }
+    }
+  }
+  if (chunks.length === 0) return null;
+  return { audio: Buffer.concat(chunks), mimeType: mimeType || 'audio/L16;codec=pcm;rate=24000' };
+}
+
+/** Parse sample rate dari mimeType Gemini ('audio/L16;codec=pcm;rate=24000'). */
+export function geminiPcmRate(mimeType: string): number {
+  const m = /rate=(\d+)/i.exec(mimeType);
+  return m ? Number(m[1]) : GEMINI_SPEECH_SAMPLE_RATE;
+}
+
+/**
+ * Bungkus raw PCM s16le mono menjadi WAV (header RIFF 44-byte) supaya bisa
+ * langsung diputar client. Gemini TTS hanya mengeluarkan PCM; tanpa header
+ * ini player/browser tidak bisa memainkannya.
+ */
+export function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // fmt chunk size
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
+}
+
+/**
+ * Normalisasi audio Gemini ke format yang diminta klien. Upstream bisa
+ * memberi WAV (RIFF, model baru) atau raw PCM (audio/L16, model lama).
+ * Tidak ada encoder mp3/opus di gateway — selain 'pcm', hasil selalu WAV
+ * (header valid utk player umum): WAV diteruskan, PCM dibungkus header.
+ * 'pcm' → raw s16le (header WAV dilepas bila ada).
+ * Return { audio, contentType }.
+ */
+export function geminiSpeechToFormat(audio: Buffer, mimeType: string, requested: string): { audio: Buffer; contentType: string } {
+  const isWav = audio.length >= 44 && audio.toString('ascii', 0, 4) === 'RIFF' && audio.toString('ascii', 8, 12) === 'WAVE';
+  if (requested === 'pcm') {
+    // Cari chunk 'data' bila WAV (header fmt bisa bervariasi); fallback 44.
+    if (isWav) {
+      const idx = audio.indexOf(Buffer.from('data', 'ascii'), 12);
+      return { audio: audio.subarray(idx >= 0 ? idx + 8 : 44), contentType: 'audio/L16' };
+    }
+    return { audio, contentType: 'audio/L16' };
+  }
+  if (isWav) return { audio, contentType: 'audio/wav' };
+  return { audio: pcmToWav(audio, geminiPcmRate(mimeType)), contentType: 'audio/wav' };
 }

@@ -61,7 +61,7 @@ await client.chat.completions.create({ model: "smart", messages: [...] });
 - **🧠 Cross-vendor reasoning/thinking mapping** — every provider controls "thinking" differently (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). The client sends **one canonical shape** (`reasoning_effort: none|low|medium|high|xhigh|max`) and the gateway auto-translates it to the target provider's native format. Cross-vendor failover stays correct (each target is mapped independently). See [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` and multipart `/v1/images/edits`. Edit uploads are normalized for the target adapter and returned in OpenAI response shape.
 - **🖼️ Image generation mapping (auto-map)** — every image-gen vendor has a totally different request/response shape (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan with its own params). The client keeps one OpenAI Images format; the gateway translates the body into the target's native dialect (including a 3-class size system — square/landscape/portrait — plus a `quality`⇄`resolution` bridge) and converts the response back to `{created, data:[{url}]}` — including automatic redirect to `/v1/images/edits` multipart when the client sends a reference image to an OpenAI target, plus Kling/Qwen async task polling. **Opt-in per route target** (`verbatim` default / `auto-map`). See [Image generation mapping](#️-image-generation-mapping-auto-map).
-- **🔊 Speech/TTS mapping (auto-map)** — the same pattern for TTS: the client keeps the standard OpenAI `/v1/audio/speech` body; Qwen/DashScope targets receive the native `SpeechSynthesizer` envelope and the JSON `{output:{audio}}` response is decoded by the gateway into binary audio. **Opt-in per route target**. Ready-made example: the `python-qwen` route. See [Speech/TTS mapping](#-speechtts-mapping-auto-map).
+- **🔊 Speech/TTS mapping (auto-map)** — the same pattern for TTS: the client keeps the standard OpenAI `/v1/audio/speech` body; Qwen/DashScope targets receive the native `SpeechSynthesizer` envelope, Gemini targets receive `generateContent` + `responseModalities:["AUDIO"]` (PCM/WAV → binary), and the upstream JSON response is decoded by the gateway into binary audio. **Opt-in per route target**. Ready-made example: the `python-qwen` route. See [Speech/TTS mapping](#-speechtts-mapping-auto-map).
 - **🪄 Tool calling via text/XML (`tools-text`)** — a parallel modality that bypasses native function calling, with strong reasons: (1) **partial chunking** of arguments token-by-token (typing UX, vs Gemini's atomic native); (2) **dodge provider quirks** — no `thought_signature`, no `extra_content`, no wrong `finish_reason` on Gemini; (3) **~50% token savings** (input −49%, output −33%, since compact tool list vs heavy JSON schema); (4) **enables tool calling on models/providers that previously didn't support it** — as long as a model can chat + follow instructions, it can "call tools" via the XML pattern. The gateway injects a system prompt pattern `<tool_call><name>..</name><args>..</args></tool_call>`, streams the text, and re-parses it to OpenAI format. Opt-in per route target. See [Tool calling via text/XML](#-tool-calling-via-textxml-tools-text).
 - **🌐 A gateway for plain APIs too** — via `/v1/generic/:routeId/*`, SiberGate doubles as a reverse proxy for REST APIs, webhooks, or internal microservices — with the same key vault, failover, and logging.
 - **🛡️ Seamless failover** — a provider goes down? SiberGate silently moves to the next. Your client never notices.
@@ -885,6 +885,7 @@ per-target at dispatch so failover across mixed-mode targets stays safe.
 | Target dialect | Native request | Upstream response → client |
 |---|---|---|
 | **Qwen / DashScope** (qwencloud, qwenplan, dashscope/aliyuncs/qwencloudapi hosts, `qwen*-tts`/`cosyvoice*`/`sambert*` models) | `{model, input:{text, voice, format, sample_rate, rate?}}` to the `SpeechSynthesizer` endpoint | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type matching the format |
+| **Gemini** (gemini/google, generativelanguage/aiplatform.googleapis hosts, `gemini*-tts` models) | `{contents:[{role:'user',parts:[{text}]}], generationConfig:{responseModalities:['AUDIO'], speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName}}` to `{baseUrl}/models/{model}:generateContent` (`x-goog-api-key` header) | JSON `candidates[].content.parts[].inlineData` → 24 kHz WAV (legacy PCM gets a WAV header); `response_format:"pcm"` → raw s16le |
 | **OpenAI / OpenAI-compat** | OpenAI body passthrough + upstream model | binary audio, forwarded verbatim |
 
 Field mapping: `input`→`input.text`, `voice`→`input.voice` (no voice →
@@ -920,10 +921,33 @@ curl -X POST http://127.0.0.1:8787/v1/audio/speech \
 Mapper: `packages/core/src/speech-mapper.ts` + adapter `adapters/speech.ts`.
 Change model/voice by editing the route target in the dashboard.
 
-> Account note: Qwen TTS models (`qwen-audio-*-tts-*`) are served by the regional
-> `*.maas.qwencloudapi.com` endpoint with a key from that region. *Plan* account
-> keys (`sk-sp-…`, host `token-plan.*`) do not serve TTS models — use a Qwen Cloud
-> credential provider (`sk-ws-…`).
+### Example: Gemini TTS
+
+No setup script needed — create a speech route in the dashboard: target
+provider **gemini** + model `gemini/gemini-3.8-flash-lite-tts` (or
+`gemini-2.5-flash-tts` / `gemini-3.1-flash-tts`) with **auto-map**. The
+`:generateContent` endpoint and `x-goog-api-key` header are handled by the
+adapter automatically; the provider's endpoint config stays untouched.
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer sg_live_..." -H 'Content-Type: application/json' \
+  -d '{"model":"<gemini-tts-route>","input":"The legend of Lake Toba…","voice":"Bodi"}' \
+  --output out.wav
+```
+
+Gemini note: default voice (no `voice` field) is `Kore`; voice names are
+case-sensitive (`Bodi`, `Puck`, `Charon`, `Leda`, …). Gemini TTS only emits
+24 kHz WAV/PCM — `response_format` mp3/opus/aac/flac is still answered with
+WAV (no encoder in the gateway); `speed` is ignored upstream.
+
+> Account note: Qwen TTS **flash** models are only served by Qwen Cloud
+> accounts (`sk-ws-…`, regional `*.maas.qwencloudapi.com` / dashscope-intl
+> endpoints). *Plan* account keys (`sk-sp-…`, host `token-plan.*`) reject
+> flash (`AccessDenied.Unpurchased`) — but the **plus** series
+> (`qwen-audio-3.0-tts-plus`) does work on some plan accounts (depends on the
+> key's entitlement). Voice ids also differ per model — see the per-model
+> defaults above.
 
 ---
 

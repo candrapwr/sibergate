@@ -77,7 +77,7 @@ dengan key provider Anda sendiri. Ini cocok banget ketika hal-hal berikut pentin
 - **🧠 Reasoning/thinking mapping lintas-vendor** — tiap provider punya cara berbeda mengatur "thinking" (OpenAI `reasoning_effort`, Anthropic `output_config.effort`, Gemini `thinkingConfig`, OpenRouter `reasoning.effort`). Klien cukup kirim **satu format** (`reasoning_effort: none|low|medium|high|xhigh|max`) dan gateway otomatis translate ke format native provider tujuan. Failover antar-vendor tetap benar (tiap target di-mapping independen). Lihat [Reasoning/thinking mapping](#-reasoningthinking-mapping).
 - **🖼️ Image generation and edits** — OpenAI Images-compatible `/v1/images/generations` dan multipart `/v1/images/edits`. Request edit membawa gambar referensi ke adapter; endpoint memetakan file ke dialek target dan meneruskan hasil dalam format OpenAI.
 - **🖼️ Image generation mapping (auto-map)** — tiap vendor image gen punya bentuk request/response beda total (OpenAI flat JSON, Kling `model_name`+`aspect_ratio`, Qwen-Image `input.messages`, Wan params sendiri). Klien tetap satu format OpenAI Images; gateway translate body ke dialek native target (termasuk size 3-kelas persegi/landscape/portrait + bridge `quality`⇄`resolution`) dan convert response balik ke `{created, data:[{url}]}` — termasuk redirect otomatis ke `/v1/images/edits` multipart saat klien kirim gambar referensi ke target OpenAI, dan polling async Kling/Qwen. **Opt-in per route target** (`verbatim` default / `auto-map`). Lihat [Image generation mapping](#️-image-generation-mapping-auto-map).
-- **🔊 Speech/TTS mapping (auto-map)** — pola yang sama untuk TTS: klien tetap body standar OpenAI `/v1/audio/speech`; target Qwen/DashScope menerima envelope native `SpeechSynthesizer` dan response JSON `{output:{audio}}` di-decode gateway menjadi binary audio. **Opt-in per route target**. Contoh jadi: route `python-qwen`. Lihat [Speech/TTS mapping](#-speechtts-mapping-auto-map).
+- **🔊 Speech/TTS mapping (auto-map)** — pola yang sama untuk TTS: klien tetap body standar OpenAI `/v1/audio/speech`; target Qwen/DashScope menerima envelope native `SpeechSynthesizer`, target Gemini menerima `generateContent` + `responseModalities:["AUDIO"]` (PCM/WAV → binary), dan response JSON upstream di-decode gateway menjadi binary audio. **Opt-in per route target**. Contoh jadi: route `python-qwen`. Lihat [Speech/TTS mapping](#-speechtts-mapping-auto-map).
 - **🌐 Gateway untuk API biasa juga** — lewat `/v1/generic/<route>/*` (route id boleh multi-segment, mis. `team/prod/chat`), SiberGate bisa dijadikan reverse proxy untuk REST API, webhook, atau microservice internal — dengan brankas key, failover, dan logging yang sama.
 - **🛡️ Failover mulus** — provider down? SiberGate diam-diam pindah ke berikutnya. Klien Anda tidak sadar.
 - **⏱️ Timeout per-target** — `route.timeoutMs` berlaku untuk **setiap target failover**, bukan dibagi rata. Route 30s dengan 4 target → tiap target dapat 30s penuh. Failover jadi nyata: target lambat tak lagi memakan jatah target berikutnya.
@@ -891,6 +891,7 @@ per-target saat dispatch sehingga failover antar target dgn mode campur aman.
 | Dialek target | Request native | Response upstream → klien |
 |---|---|---|
 | **Qwen / DashScope** (qwencloud, qwenplan, host dashscope/aliyuncs/qwencloudapi, model `qwen*-tts`/`cosyvoice*`/`sambert*`) | `{model, input:{text, voice, format, sample_rate, rate?}}` ke endpoint `SpeechSynthesizer` | JSON `{output:{audio:{data\|url}}}` → decode base64 / download URL → binary audio + Content-Type sesuai format |
+| **Gemini** (gemini/google, host generativelanguage/aiplatform.googleapis, model `gemini*-tts`) | `{contents:[{role:'user',parts:[{text}]}], generationConfig:{responseModalities:['AUDIO'], speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName}}` ke `{baseUrl}/models/{model}:generateContent` (header `x-goog-api-key`) | JSON `candidates[].content.parts[].inlineData` → WAV 24 kHz (PCM lama dibungkus header WAV); `response_format:"pcm"` → raw s16le |
 | **OpenAI / OpenAI-compat** | passthrough body OpenAI + model upstream | binary audio, diteruskan verbatim |
 
 Pemetaan field: `input`→`input.text`, `voice`→`input.voice` (tanpa voice →
@@ -900,6 +901,11 @@ default per model: flash `longanlingxi`, plus `longanlingxin`), `response_format
 (`{code, message}`, kadang HTTP 200) dilempar sebagai error upstream biasa →
 failover jalan seperti biasa. TTS synchronous — tidak ada polling seperti
 image/video.
+
+Catatan Gemini: voice default (tanpa `voice`) = `Kore`; nama voice
+case-sensitive (`Bodi`, `Puck`, `Charon`, `Leda`, …). Gemini TTS hanya
+mengeluarkan WAV/PCM 24 kHz — `response_format` mp3/opus/aac/flac tetap
+dibalas WAV (tidak ada encoder di gateway); `speed` diabaikan upstream.
 
 Aktifkan di dashboard: editor route (modality **speech**) → dropdown per
 target: **verbatim / auto-map**.
@@ -927,10 +933,27 @@ curl -X POST http://127.0.0.1:8787/v1/audio/speech \
 Mapper: `packages/core/src/speech-mapper.ts` + adapter `adapters/speech.ts`.
 Ganti model/voice cukup edit route target di dashboard.
 
-> Catatan akun: model TTS Qwen (`qwen-audio-*-tts-*`) dilayani endpoint regional
-> `*.maas.qwencloudapi.com` dengan key region tsb. Key akun *plan* (`sk-sp-…`,
-> host `token-plan.*`) tidak melayani model TTS — pakai credential provider akun
-> Qwen Cloud (`sk-ws-…`).
+### Contoh: Gemini TTS
+
+Tidak perlu setup script — cukup buat route speech di dashboard: target
+provider **gemini** + model `gemini/gemini-3.8-flash-lite-tts` (atau
+`gemini-2.5-flash-tts` / `gemini-3.1-flash-tts`) dengan mapping **auto-map**.
+Endpoint `:generateContent` dan header `x-goog-api-key` di-handle otomatis oleh
+adapter; konfigurasi endpoint provider tidak perlu diubah.
+
+```bash
+curl -X POST http://127.0.0.1:8787/v1/audio/speech \
+  -H "Authorization: Bearer sg_live_..." -H 'Content-Type: application/json' \
+  -d '{"model":"<route-gemini-tts>","input":"Kisah Danau Toba…","voice":"Bodi"}' \
+  --output out.wav
+```
+
+> Catatan akun: model TTS Qwen seri **flash** hanya dilayani akun Qwen Cloud
+> (`sk-ws-…`, endpoint regional `*.maas.qwencloudapi.com` / dashscope-intl).
+> Key akun *plan* (`sk-sp-…`, host `token-plan.*`) menolak flash
+> (`AccessDenied.Unpurchased`) — tapi seri **plus** (`qwen-audio-3.0-tts-plus`)
+> terbukti jalan di akun plan tertentu (tergantung entitlement key). Voice id
+> juga beda per model — lihat default per-model di atas.
 
 ---
 

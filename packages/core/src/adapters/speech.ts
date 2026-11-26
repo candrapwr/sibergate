@@ -3,6 +3,8 @@ import {
   mapSpeechInput,
   qwenSpeechAudioUrl,
   decodeQwenSpeechAudio,
+  decodeGeminiSpeechAudio,
+  geminiSpeechToFormat,
   speechContentType,
 } from '../speech-mapper.js';
 
@@ -24,21 +26,38 @@ function toArrayBuffer(buf: Buffer): ArrayBuffer {
  *
  *  auto — body OpenAI-kanonik diterjemahkan ke dialek native target via
  *  mapSpeechInput() (lihat speech-mapper.ts): Qwen/DashScope
- *  (input.text/voice/format/sample_rate), OpenAI passthrough. Response JSON
- *  DashScope ({output:{audio:{data|url}}}) dinormalkan di sini menjadi binary
- *  audio + Content-Type yang benar, sehingga handler gateway tetap meneruskan
- *  binary apa adanya — klien tidak melihat perbedaan dialek upstream.
+ *  (input.text/voice/format/sample_rate), Gemini generateContent
+ *  (contents + generationConfig.speechConfig; response PCM → WAV),
+ *  OpenAI passthrough. Response JSON upstream dinormalkan di sini menjadi
+ *  binary audio + Content-Type yang benar, sehingga handler gateway tetap
+ *  meneruskan binary apa adanya — klien tidak melihat perbedaan dialek.
  */
 export async function speech(call: AdapterCall): Promise<Response> {
-  const { provider, model, body, signal } = call;
-  const url = upstreamUrl(provider, 'speech', model);
+  let { provider } = call;
+  const { model, body, signal } = call;
+  // Mode auto + dialek Gemini: model ada di URL (:generateContent), bukan body.
+  // Endpoint provider mungkin masih template OpenAI-compat — override di sini
+  // supaya route auto-map tidak perlu mengubah konfigurasi provider.
+  const auto = call.mapping === 'auto' ? mapSpeechInput(body, provider, model) : null;
+  let url: string;
+  if (auto?.dialect === 'gemini') {
+    const base = provider.baseUrl.replace(/\/+$/, '');
+    url = `${base}/models/${encodeURIComponent(model)}:generateContent`;
+    // Native Google API menolak Authorization: Bearer utk API key (401) —
+    // harus header x-goog-api-key. Provider gemini umumnya authScheme
+    // 'bearer' (utk endpoint OpenAI-compat), jadi override khusus panggilan
+    // ini saja; konfigurasi provider tidak diubah.
+    provider = { ...provider, authScheme: 'none', headers: { ...provider.headers, 'x-goog-api-key': provider.apiKey } };
+  } else {
+    url = upstreamUrl(provider, 'speech', model);
+  }
 
-  if (call.mapping !== 'auto') {
+  if (!auto) {
     return sendUpstream({ url, provider, body: JSON.stringify({ ...body, model }), signal, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher, relay: call.relay });
   }
 
   // ── mode auto: translate body OpenAI-kanonik → dialek native target ──
-  const mapped = mapSpeechInput(body, provider, model);
+  const mapped = auto;
   const res = await sendUpstream({ url, provider, body: JSON.stringify(mapped.body), signal, passthroughHeaders: call.passthroughHeaders, dispatcher: call.dispatcher, relay: call.relay });
 
   // Response sudah binary (provider OpenAI-compat) → teruskan verbatim.
@@ -64,6 +83,15 @@ export async function speech(call: AdapterCall): Promise<Response> {
     throw new GatewayCallError('server_error', `${provider.id} TTS failed: ${detail}`.slice(0, 400), res.status, {
       upstreamUrl: url, upstreamStatus: res.status, upstreamBody: buf.toString('utf8').slice(0, 1000),
     });
+  }
+
+  // Gemini: candidates[].content.parts[].inlineData (PCM base64) → WAV/PCM.
+  if (mapped.dialect === 'gemini') {
+    const g = decodeGeminiSpeechAudio(json);
+    if (g && g.audio.length > 0) {
+      const norm = geminiSpeechToFormat(g.audio, g.mimeType, mapped.intent.format);
+      return new Response(toArrayBuffer(norm.audio), { status: 200, headers: { 'Content-Type': norm.contentType, 'Content-Length': String(norm.audio.length) } });
+    }
   }
 
   const audio = decodeQwenSpeechAudio(json);
